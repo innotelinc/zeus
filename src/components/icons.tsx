@@ -109,3 +109,7 @@ export function FileTextIcon({ size = 24, ...p }: IconProps) {
 export function XIcon({ size = 24, ...p }: IconProps) {
   return <svg {...mks(size)} {...p}><line x1="18" x2="6" y1="6" y2="18"/><line x1="6" x2="18" y1="6" y2="18"/></svg>;
 }
+
+export function EyeIcon({ size = 24, ...p }: IconProps) {
+  return <svg {...mks(size)} {...p}><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>;
+}

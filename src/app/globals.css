@@ -149,6 +149,15 @@ body {
   animation: toast-bar 4s linear forwards;
 }
 
+@keyframes scale-in {
+  from { opacity: 0; transform: scale(0.92); }
+  to { opacity: 1; transform: scale(1); }
+}
+
+.animate-scale-in {
+  animation: scale-in 0.2s cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+
 /* ---------- Form primitives ---------- */
 
 .input-base {

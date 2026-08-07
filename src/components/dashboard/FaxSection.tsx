@@ -11,6 +11,7 @@ import {
   UploadIcon,
   FileTextIcon,
   DownloadIcon,
+  EyeIcon,
   CheckCircleIcon,
   AlertCircleIcon,
   XIcon,
@@ -39,6 +40,7 @@ export default function FaxSection({ faxAccount, faxes: initialFaxes, numbers }:
   const [progress, setProgress] = useState(0);
   const [progressLabel, setProgressLabel] = useState("");
   const [dragOver, setDragOver] = useState(false);
+  const [previewFax, setPreviewFax] = useState<Fax | null>(null);
 
   const avantfaxUrl =
     process.env.NEXT_PUBLIC_AVANTFAX_URL ?? "https://voice.innotel.us/fax";
@@ -421,7 +423,15 @@ export default function FaxSection({ faxAccount, faxes: initialFaxes, numbers }:
                 {faxes.map((fax) => (
                   <div
                     key={fax.id}
-                    className="flex items-center justify-between rounded-xl border border-white/[0.06] bg-white/[0.02] px-4 py-3"
+                    role="button"
+                    tabIndex={0}
+                    onClick={() => fax.file_path && setPreviewFax(fax)}
+                    onKeyDown={(e) => { if (e.key === "Enter" && fax.file_path) setPreviewFax(fax); }}
+                    className={`flex items-center justify-between rounded-xl border border-white/[0.06] bg-white/[0.02] px-4 py-3 ${
+                      fax.file_path
+                        ? "cursor-pointer hover:bg-white/[0.04] hover:border-white/[0.10] transition-colors"
+                        : ""
+                    }`}
                   >
                     <div className="flex items-center gap-3">
                       {IS_DONE(fax.status) ? (
@@ -457,14 +467,25 @@ export default function FaxSection({ faxAccount, faxes: initialFaxes, numbers }:
                         {fax.status}
                       </span>
                       {fax.file_path && (
-                        <a
-                          href={`/api/fax/download?id=${encodeURIComponent(fax.id)}`}
-                          download
-                          className="text-white/30 hover:text-white/60 transition-colors"
-                          title="Download fax"
-                        >
-                          <DownloadIcon size={14} />
-                        </a>
+                        <>
+                          <button
+                            type="button"
+                            onClick={(e) => { e.stopPropagation(); setPreviewFax(fax); }}
+                            className="text-white/30 hover:text-white/60 transition-colors"
+                            title="Preview fax"
+                          >
+                            <EyeIcon size={14} />
+                          </button>
+                          <a
+                            href={`/api/fax/download?id=${encodeURIComponent(fax.id)}`}
+                            download
+                            onClick={(e) => e.stopPropagation()}
+                            className="text-white/30 hover:text-white/60 transition-colors"
+                            title="Download fax"
+                          >
+                            <DownloadIcon size={14} />
+                          </a>
+                        </>
                       )}
                     </div>
                   </div>
@@ -473,6 +494,70 @@ export default function FaxSection({ faxAccount, faxes: initialFaxes, numbers }:
             )}
           </div>
         </>
+      )}
+
+      {/* ── Fax Preview Modal ──────────────────────────── */}
+      {previewFax && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center p-4"
+          role="dialog"
+          aria-modal="true"
+          aria-label="Fax preview"
+        >
+          {/* Backdrop */}
+          <div
+            className="absolute inset-0 bg-black/70 backdrop-blur-sm"
+            onClick={() => setPreviewFax(null)}
+          />
+
+          {/* Modal */}
+          <div className="relative z-10 flex max-h-[90vh] w-full max-w-3xl flex-col rounded-3xl bg-[#0d0d1a] border border-white/[0.08] shadow-2xl animate-scale-in">
+            {/* Header */}
+            <div className="flex items-center justify-between gap-4 border-b border-white/[0.06] px-6 py-4">
+              <div className="min-w-0 flex-1">
+                <h3 className="truncate text-base font-semibold text-white">
+                  {previewFax.subject ?? `Fax · ${previewFax.pages} page(s)`}
+                </h3>
+                <p className="mt-0.5 text-xs text-white/40">
+                  {previewFax.direction === "outbound" ? "To: " : "From: "}
+                  {previewFax.direction === "outbound"
+                    ? previewFax.to_number
+                    : (previewFax.from_number ?? "Unknown")}
+                  {" · "}{previewFax.pages} page{previewFax.pages !== 1 ? "s" : ""}
+                  {" · "}{fmtDate(previewFax.created_at)}
+                </p>
+              </div>
+              <div className="flex items-center gap-2 shrink-0">
+                <a
+                  href={`/api/fax/download?id=${encodeURIComponent(previewFax.id)}`}
+                  download
+                  className="btn-ghost px-3 py-2 text-xs"
+                >
+                  <DownloadIcon size={14} />
+                  Download
+                </a>
+                <button
+                  type="button"
+                  onClick={() => setPreviewFax(null)}
+                  className="rounded-xl p-2 text-white/30 hover:bg-white/[0.06] hover:text-white/60 transition-colors"
+                  title="Close"
+                >
+                  <XIcon size={18} />
+                </button>
+              </div>
+            </div>
+
+            {/* PDF Viewer */}
+            <div className="flex-1 min-h-0 rounded-b-3xl bg-white/[0.01]">
+              <iframe
+                src={`/api/fax/download?id=${encodeURIComponent(previewFax.id)}`}
+                className="h-[70vh] w-full rounded-b-3xl"
+                title="Fax document preview"
+                sandbox="allow-scripts allow-same-origin"
+              />
+            </div>
+          </div>
+        </div>
       )}
     </div>
   );
