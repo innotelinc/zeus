@@ -7,9 +7,12 @@ CREATE TABLE IF NOT EXISTS users (
   plan TEXT NOT NULL DEFAULT 'consumer',
   plan_status TEXT NOT NULL DEFAULT 'active',
   country TEXT DEFAULT 'US',
+  stripe_subscription_id TEXT,
   created_at TEXT NOT NULL DEFAULT (datetime('now')),
   updated_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
+
+-- stripe_subscription_id added via migration 002 for existing databases
 
 CREATE TABLE IF NOT EXISTS sessions (
   id TEXT PRIMARY KEY,

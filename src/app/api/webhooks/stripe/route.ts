@@ -34,16 +34,27 @@ export async function POST(req: Request) {
     return NextResponse.json({ error: "Invalid signature" }, { status: 400 });
   }
 
-  // Handle checkout completion
+  // Handle checkout completion — store the subscription ID + activate plan
   if (event.type === "checkout.session.completed") {
     const session = event.data.object as Stripe.Checkout.Session;
     const userId = session.metadata?.user_id;
+    const subscriptionId =
+      typeof session.subscription === "string" ? session.subscription : null;
 
     if (userId) {
       db.prepare(
-        "UPDATE users SET plan_status = 'active' WHERE id = ?",
-      ).run(userId);
+        "UPDATE users SET plan_status = 'active', stripe_subscription_id = COALESCE(?, stripe_subscription_id), updated_at = datetime('now') WHERE id = ?",
+      ).run(subscriptionId, userId);
     }
+  }
+
+  // Handle subscription deletion (customer cancelled or subscription ended)
+  if (event.type === "customer.subscription.deleted") {
+    const subscription = event.data.object as Stripe.Subscription;
+
+    db.prepare(
+      "UPDATE users SET plan_status = 'canceled', stripe_subscription_id = NULL, updated_at = datetime('now') WHERE stripe_subscription_id = ?",
+    ).run(subscription.id);
   }
 
   // Handle invoice payment
@@ -52,7 +63,6 @@ export async function POST(req: Request) {
     const userId = invoice.metadata?.user_id;
 
     if (userId) {
-      // Mark any pending invoices as paid
       db.prepare(
         `UPDATE billing_invoices SET status = 'paid', amount_paid = amount_due, paid_at = datetime('now')
          WHERE user_id = ? AND status = 'pending'`,

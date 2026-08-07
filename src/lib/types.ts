@@ -8,6 +8,7 @@ export interface User {
   plan: Plan;
   plan_status: string;
   country: string;
+  stripe_subscription_id: string | null;
   created_at: string;
   updated_at: string;
 }

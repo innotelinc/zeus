@@ -15,7 +15,7 @@ import type {
 export function getUserDashboard(userId: string): UserDashboard {
   const user = db
     .prepare(
-      "SELECT id, email, name, phone, plan, plan_status, country, created_at, updated_at FROM users WHERE id = ?",
+      "SELECT id, email, name, phone, plan, plan_status, country, stripe_subscription_id, created_at, updated_at FROM users WHERE id = ?",
     )
     .get(userId) as User;
 
