@@ -4,6 +4,7 @@ node_modules
 .next
 data
 *.log
+.env
 .env.local
 .env.development
 .env.test
@@ -13,3 +14,6 @@ coverage
 .DS_Store
 *.md
 !README.md
+docker-compose.full.yml
+Dockerfile.full
+docker-entrypoint-full.sh

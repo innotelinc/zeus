@@ -12,7 +12,7 @@ WORKDIR /app
 FROM base AS deps
 RUN apk add --no-cache python3 make g++ sqlite-dev
 
-COPY package.json package-lock.json* ./
+COPY package.json package-lock.json ./
 RUN npm ci
 
 # ─── Stage 2: Build the application ──────────────────────────
@@ -45,6 +45,8 @@ RUN addgroup --system --gid 1001 nodejs \
 COPY --from=builder /app/.next/standalone ./
 COPY --from=builder /app/.next/static ./.next/static
 COPY --from=builder /app/public ./public
+
+# Copy scripts for seeding and migrations
 COPY --from=builder /app/scripts ./scripts
 
 # Copy entrypoint
@@ -52,7 +54,7 @@ COPY docker-entrypoint.sh /app/docker-entrypoint.sh
 RUN chmod +x /app/docker-entrypoint.sh
 
 # Create data directory for SQLite (persistent volume mount point)
-RUN mkdir -p /app/data && chown -R nextjs:nodejs /app/data
+RUN mkdir -p /app/data && chown -R nextjs:nodejs /app/data /app/scripts
 
 USER nextjs
 

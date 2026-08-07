@@ -3,6 +3,12 @@
 # ═══════════════════════════════════════════════════════════════
 # Deploys the PBX portal standalone (no Asterisk/FreePBX).
 # Requires a running VoIP infrastructure on the network.
+#
+# Quick start:
+#   cp .env.docker.example .env   # then fill in your values
+#   docker compose up -d
+#
+# Demo login: demo@innotel.us / demo1234
 # ═══════════════════════════════════════════════════════════════
 
 services:
@@ -22,16 +28,17 @@ services:
       - NODE_ENV=production
       - PORT=3000
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:3000/api/ami/status"]
+      test: ["CMD", "curl", "-f", "http://localhost:3000/api/health"]
       interval: 30s
-      timeout: 5s
+      timeout: 10s
       retries: 3
-      start_period: 15s
+      start_period: 20s
     networks:
       - pbx-net
 
   # ─── Optional: Coturn TURN server for WebRTC softphone ─────
   # Uncomment if you need a TURN server for NAT traversal.
+  # Set NEXT_PUBLIC_TURN_SERVER=turn:pbx-coturn:3478 in .env
   # coturn:
   #   image: coturn/coturn:latest
   #   container_name: pbx-coturn
