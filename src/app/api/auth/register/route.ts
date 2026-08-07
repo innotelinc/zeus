@@ -7,6 +7,7 @@ import { registerSchema } from "@/lib/validators";
 import { createSessionToken, SESSION_COOKIE } from "@/lib/auth";
 import { rateLimitByIp } from "@/lib/rate-limit";
 import { notifyAtlasSignup } from "@/lib/atlas-api";
+import { buildWelcomeEmail } from "@/lib/mail-templates";
 
 export const dynamic = "force-dynamic";
 
@@ -66,6 +67,9 @@ export async function POST(req: Request) {
     path: "/",
     maxAge: 60 * 60 * 24 * 7,
   });
+
+  // Send welcome email (async, non-blocking)
+  buildWelcomeEmail({ name, email: email.toLowerCase(), plan }).catch(() => {});
 
   // Notify Atlas about the signup (async, don't block)
   notifyAtlasSignup({
