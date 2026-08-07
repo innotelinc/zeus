@@ -1,0 +1,557 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# ─────────────────────────────────────────────────────────────
+# Innotel PBX Portal — Full Stack Setup Script
+# ─────────────────────────────────────────────────────────────
+# This script sets up the complete Innotel VoIP stack:
+#   1. FreePBX 17 + Asterisk (Debian 12)
+#   2. AvantFax + HylaFAX+ (via Docker)
+#   3. PBX Customer Portal (this app, port 3000)
+#   4. VoIP.ms trunk configuration
+#   5. AMI / WebSocket / WebRTC configuration
+#   6. Systemd services for everything
+#
+# Atlas runs on another server. This server runs on port 3000.
+# ─────────────────────────────────────────────────────────────
+
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+RED='\033[0;31m'
+CYAN='\033[0;36m'
+NC='\033[0m'
+
+log()  { echo -e "${GREEN}[✓]${NC} $*"; }
+warn() { echo -e "${YELLOW}[!]${NC} $*"; }
+err()  { echo -e "${RED}[✗]${NC} $*"; }
+info() { echo -e "${CYAN}[i]${NC} $*"; }
+
+# ─── Configuration (edit these or pass as env vars) ───
+
+FREEPBX_HOST="${FREEPBX_HOST:-voice.innotel.us}"
+FREEPBX_AMI_USER="${FREEPBX_AMI_USER:-pbxportal}"
+FREEPBX_AMI_SECRET="${FREEPBX_AMI_SECRET:-$(openssl rand -hex 16)}"
+FREEPBX_CLIENT_ID="${FREEPBX_CLIENT_ID:-pbxportal-api}"
+FREEPBX_CLIENT_SECRET="${FREEPBX_CLIENT_SECRET:-$(openssl rand -hex 24)}"
+FREEPBX_WSS_PORT="${FREEPBX_WSS_PORT:-8089}"
+
+VOIPMS_USER="${VOIPMS_USER:-}"
+VOIPMS_PASS="${VOIPMS_PASS:-}"
+
+ATLAS_URL="${ATLAS_URL:-http://atlas-server:3000}"
+ATLAS_API_KEY="${ATLAS_API_KEY:-$(openssl rand -hex 32)}"
+
+SESSION_SECRET="${SESSION_SECRET:-$(openssl rand -hex 32)}"
+STRIPE_SECRET_KEY="${STRIPE_SECRET_KEY:-}"
+STRIPE_WEBHOOK_SECRET="${STRIPE_WEBHOOK_SECRET:-}"
+STRIPE_PUBLISHABLE_KEY="${STRIPE_PUBLISHABLE_KEY:-}"
+
+TURN_SERVER="${TURN_SERVER:-}"
+TURN_USERNAME="${TURN_USERNAME:-}"
+TURN_CREDENTIAL="${TURN_CREDENTIAL:-}"
+
+APP_DIR="/opt/innotel-pbx"
+DATA_DIR="/var/lib/innotel-pbx"
+
+# ─────────────────────────────────────────────────────────────
+# 1. Host checks
+# ─────────────────────────────────────────────────────────────
+
+info "=== Innotel PBX Full Stack Setup ==="
+echo ""
+
+if [[ $EUID -ne 0 ]]; then
+   err "This script must be run as root"
+   exit 1
+fi
+
+OS_ID=$(grep -oP '^ID=\K.+' /etc/os-release 2>/dev/null | tr -d '"' || echo "unknown")
+OS_VERSION=$(grep -oP '^VERSION_ID=\K.+' /etc/os-release 2>/dev/null | tr -d '"' || echo "0")
+
+info "Detected OS: ${OS_ID} ${OS_VERSION}"
+
+# ─────────────────────────────────────────────────────────────
+# 2. Install FreePBX 17 + Asterisk (Debian 12)
+# ─────────────────────────────────────────────────────────────
+
+install_freepbx() {
+    if systemctl is-active --quiet freepbx 2>/dev/null; then
+        log "FreePBX is already running — skipping install"
+        return 0
+    fi
+
+    if [[ "$OS_ID" != "debian" || "${OS_VERSION%%.*}" -lt 12 ]]; then
+        err "FreePBX 17 requires Debian 12. Detected: ${OS_ID} ${OS_VERSION}"
+        err "Please install Debian 12 first, then re-run this script."
+        exit 1
+    fi
+
+    info "Installing FreePBX 17 + Asterisk... (this may take 20-30 minutes)"
+
+    cd /tmp
+    wget -q https://github.com/FreePBX/sng_freepbx_debian_install/raw/master/sng_freepbx_debian_install.sh \
+        -O /tmp/sng_freepbx_debian_install.sh
+    chmod +x /tmp/sng_freepbx_debian_install.sh
+
+    # The official script is interactive; run it but accept defaults
+    yes "" | bash /tmp/sng_freepbx_debian_install.sh 2>&1 | tee /var/log/freepbx-install.log || {
+        err "FreePBX install failed. Check /var/log/freepbx-install.log"
+        exit 1
+    }
+
+    log "FreePBX 17 installed successfully"
+}
+
+# ─────────────────────────────────────────────────────────────
+# 3. Configure Asterisk for WebRTC (PJSIP WebSocket)
+# ─────────────────────────────────────────────────────────────
+
+configure_webrtc() {
+    info "Configuring Asterisk HTTP server for WebRTC WebSocket..."
+
+    HTTP_CONF="/etc/asterisk/http.conf"
+
+    if [[ -f "$HTTP_CONF" ]]; then
+        # Enable HTTP server
+        sed -i 's/^enabled=.*/enabled=yes/' "$HTTP_CONF"
+        sed -i 's/^bindaddr=.*/bindaddr=0.0.0.0/' "$HTTP_CONF"
+
+        # Ensure WebSocket ports are set
+        if ! grep -q "^tlsenable=" "$HTTP_CONF"; then
+            cat >> "$HTTP_CONF" <<'EOF'
+
+; WebRTC / WebSocket support
+tlsenable=yes
+tlsbindaddr=0.0.0.0:8089
+tlscertfile=/etc/asterisk/keys/asterisk.pem
+tlsprivatekey=/etc/asterisk/keys/asterisk.key
+EOF
+        fi
+
+        log "HTTP/WebSocket configured on port ${FREEPBX_WSS_PORT}"
+    else
+        warn "http.conf not found — WebRTC WebSocket may need manual setup"
+    fi
+
+    # Reload Asterisk
+    fwconsole reload 2>/dev/null || asterisk -rx "module reload" 2>/dev/null || true
+}
+
+# ─────────────────────────────────────────────────────────────
+# 4. Configure AMI (Asterisk Manager Interface)
+# ─────────────────────────────────────────────────────────────
+
+configure_ami() {
+    info "Configuring AMI manager user: ${FREEPBX_AMI_USER}"
+
+    AMI_CONF="/etc/asterisk/manager_custom.conf"
+
+    cat > "$AMI_CONF" <<EOF
+; Auto-generated by Innotel PBX setup
+[${FREEPBX_AMI_USER}]
+secret = ${FREEPBX_AMI_SECRET}
+deny = 0.0.0.0/0.0.0.0
+permit = 127.0.0.1/255.255.255.0
+read = system,call,log,verbose,command,agent,user,config,dtmf,reporting,cdr,dialplan,originate
+write = system,call,log,verbose,command,agent,user,config,dtmf,reporting,cdr,dialplan,originate
+eventfilter=!Event: RTCP*
+eventfilter=!Event: VarSet
+eventfilter=!Event: Newexten
+EOF
+
+    # Also enable AMI in general
+    if [[ -f "/etc/asterisk/manager.conf" ]]; then
+        sed -i 's/^enabled=.*/enabled=yes/' /etc/asterisk/manager.conf
+        sed -i 's/^bindaddr=.*/bindaddr=0.0.0.0/' /etc/asterisk/manager.conf
+    fi
+
+    chown asterisk:asterisk "$AMI_CONF" 2>/dev/null || true
+    chmod 640 "$AMI_CONF" 2>/dev/null || true
+
+    fwconsole reload 2>/dev/null || asterisk -rx "module reload manager" 2>/dev/null || true
+    log "AMI configured: ${FREEPBX_AMI_USER} / ${FREEPBX_AMI_SECRET}"
+}
+
+# ─────────────────────────────────────────────────────────────
+# 5. Create FreePBX API OAuth2 client
+# ─────────────────────────────────────────────────────────────
+
+configure_freepbx_api() {
+    info "Configuring FreePBX API OAuth2 client..."
+
+    # FreePBX API OAuth is configured via the GUI, but we auto-generate creds
+    # and store them for the portal. The admin must finalize in the GUI.
+    log "API credentials generated:"
+    log "  Client ID:     ${FREEPBX_CLIENT_ID}"
+    log "  Client Secret: ${FREEPBX_CLIENT_SECRET}"
+    warn "Complete the OAuth2 setup in FreePBX GUI → Connectivity → API → OAuth2"
+}
+
+# ─────────────────────────────────────────────────────────────
+# 6. Install AvantFax + HylaFAX+ (via Docker)
+# ─────────────────────────────────────────────────────────────
+
+install_avantfax() {
+    info "Setting up AvantFax + HylaFAX+ via Docker..."
+
+    # Check if Docker is installed
+    if ! command -v docker &>/dev/null; then
+        info "Installing Docker..."
+        curl -fsSL https://get.docker.com | bash
+    fi
+
+    # Create AvantFax data directory
+    mkdir -p /opt/avantfax/{spool,etc,www}
+
+    # Write docker-compose for AvantFax
+    cat > /opt/avantfax/docker-compose.yml <<'DOCKEREOF'
+version: "3.8"
+services:
+  hylafax:
+    image: influxdb/hylafax:latest
+    container_name: innotel-hylafax
+    restart: unless-stopped
+    ports:
+      - "4559:4559"
+    volumes:
+      - ./spool:/var/spool/hylafax
+      - ./etc:/etc/hylafax
+    environment:
+      - HOSTNAME=${HOSTNAME:-fax.innotel.us}
+    devices:
+      - /dev/ttyS0:/dev/modem
+
+  avantfax:
+    image: avantfax/avantfax:latest
+    container_name: innotel-avantfax
+    restart: unless-stopped
+    ports:
+      - "8080:80"
+    volumes:
+      - ./www:/var/www/html/avantfax
+      - ./spool:/var/spool/hylafax
+    environment:
+      - DB_HOST=mysql
+      - DB_NAME=avantfax
+      - DB_USER=avantfax
+      - DB_PASS=avantfax
+
+  mysql:
+    image: mysql:8.0
+    container_name: innotel-avantfax-db
+    restart: unless-stopped
+    environment:
+      - MYSQL_ROOT_PASSWORD=rootpassword
+      - MYSQL_DATABASE=avantfax
+      - MYSQL_USER=avantfax
+      - MYSQL_PASSWORD=avantfax
+    volumes:
+      - ./mysql:/var/lib/mysql
+DOCKEREOF
+
+    cd /opt/avantfax
+    docker compose up -d 2>&1 || {
+        warn "AvantFax Docker setup had issues — continuing. Check /opt/avantfax/"
+    }
+
+    log "AvantFax running at http://${FREEPBX_HOST}:8080/avantfax"
+}
+
+# ─────────────────────────────────────────────────────────────
+# 7. Configure VoIP.ms trunk (via FreePBX API)
+# ─────────────────────────────────────────────────────────────
+
+configure_voipms_trunk() {
+    info "Configuring VoIP.ms trunk..."
+
+    if [[ -z "$VOIPMS_USER" ]]; then
+        warn "VOIPMS_USER not set — skipping VoIP.ms trunk setup"
+        warn "Configure the trunk manually in FreePBX → Connectivity → Trunks → SIP"
+        return 0
+    fi
+
+    # Create a PJSIP trunk configuration file
+    TRUNK_CONF="/etc/asterisk/pjsip_custom_post.conf"
+
+    cat >> "$TRUNK_CONF" <<EOF
+
+; VoIP.ms trunk (auto-generated by Innotel PBX setup)
+[voipms](!)
+type = registration
+outbound_auth = voipms_auth
+server_uri = sip:${VOIPMS_USER}:${VOIPMS_PASS}@sip.voip.ms
+client_uri = sip:${VOIPMS_USER}@sip.voip.ms
+retry_interval = 30
+max_retries = 10
+forbidden_retry_interval = 300
+
+[voipms_auth](auth_type=userpass)
+type = auth
+username = ${VOIPMS_USER}
+password = ${VOIPMS_PASS}
+
+[voipms_endpoint](voipms)
+type = endpoint
+context = from-trunk
+disallow = all
+allow = ulaw
+allow = alaw
+EOF
+
+    fwconsole reload 2>/dev/null || asterisk -rx "pjsip reload" 2>/dev/null || true
+    log "VoIP.ms trunk configured"
+}
+
+# ─────────────────────────────────────────────────────────────
+# 8. Install PBX Customer Portal (this app)
+# ─────────────────────────────────────────────────────────────
+
+install_portal() {
+    info "Installing PBX Customer Portal..."
+
+    # Install Node.js if needed
+    if ! command -v node &>/dev/null; then
+        info "Installing Node.js 20..."
+        curl -fsSL https://deb.nodesource.com/setup_20.x | bash -
+        apt-get install -y nodejs
+    fi
+
+    # Create app directory
+    mkdir -p "$APP_DIR"
+    mkdir -p "$DATA_DIR"
+
+    # Copy the portal from this repo location
+    SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+    REPO_DIR="$(dirname "$SCRIPT_DIR")"
+
+    if [[ -f "$REPO_DIR/package.json" ]]; then
+        info "Copying portal from $REPO_DIR to $APP_DIR..."
+        rsync -a --exclude='node_modules' --exclude='.git' --exclude='data' --exclude='.next' \
+            "$REPO_DIR/" "$APP_DIR/"
+    elif [[ -d "/usr/src/projects/pbx" ]]; then
+        info "Copying portal from /usr/src/projects/pbx..."
+        rsync -a --exclude='node_modules' --exclude='.git' --exclude='data' --exclude='.next' \
+            /usr/src/projects/pbx/ "$APP_DIR/"
+    else
+        warn "PBX portal source not found — clone from GitHub"
+        git clone https://github.com/innotelinc/pbx-portal.git "$APP_DIR"
+    fi
+
+    cd "$APP_DIR"
+    npm ci --production 2>&1 | tail -5
+
+    # Generate .env file
+    generate_env
+
+    # Build
+    npm run build 2>&1 | tail -10
+
+    log "PBX Portal installed at ${APP_DIR}"
+}
+
+# ─────────────────────────────────────────────────────────────
+# 9. Generate .env configuration
+# ─────────────────────────────────────────────────────────────
+
+generate_env() {
+    info "Generating .env configuration..."
+
+    cat > "${APP_DIR}/.env" <<EOF
+# ── Generated by Innotel PBX setup ──
+# Server: ${FREEPBX_HOST}
+# Date:    $(date -u +"%Y-%m-%dT%H:%M:%SZ")
+
+# Session
+SESSION_SECRET=${SESSION_SECRET}
+
+# VoIP.ms
+VOIPMS_API_USERNAME=${VOIPMS_USER}
+VOIPMS_API_PASSWORD=${VOIPMS_PASS}
+
+# FreePBX
+FREEPBX_URL=https://${FREEPBX_HOST}
+FREEPBX_CLIENT_ID=${FREEPBX_CLIENT_ID}
+FREEPBX_CLIENT_SECRET=${FREEPBX_CLIENT_SECRET}
+
+# WebRTC Softphone
+NEXT_PUBLIC_FREEPBX_WSS_URL=wss://${FREEPBX_HOST}:${FREEPBX_WSS_PORT}/ws
+NEXT_PUBLIC_TURN_SERVER=${TURN_SERVER}
+NEXT_PUBLIC_TURN_USERNAME=${TURN_USERNAME}
+NEXT_PUBLIC_TURN_CREDENTIAL=${TURN_CREDENTIAL}
+
+# Asterisk AMI
+ASTERISK_AMI_HOST=127.0.0.1
+ASTERISK_AMI_PORT=5038
+ASTERISK_AMI_USERNAME=${FREEPBX_AMI_USER}
+ASTERISK_AMI_SECRET=${FREEPBX_AMI_SECRET}
+
+# AvantFax
+AVANTFAX_URL=http://${FREEPBX_HOST}:8080/avantfax
+NEXT_PUBLIC_AVANTFAX_URL=http://${FREEPBX_HOST}:8080/avantfax
+
+# Atlas (runs on another server)
+ATLAS_API_URL=${ATLAS_URL}
+ATLAS_API_KEY=${ATLAS_API_KEY}
+
+# Stripe
+STRIPE_SECRET_KEY=${STRIPE_SECRET_KEY}
+STRIPE_WEBHOOK_SECRET=${STRIPE_WEBHOOK_SECRET}
+NEXT_PUBLIC_STRIPE_PUBLISHABLE_KEY=${STRIPE_PUBLISHABLE_KEY}
+
+# Public
+NEXT_PUBLIC_URL=https://${FREEPBX_HOST}:3000
+NODE_ENV=production
+EOF
+
+    log ".env generated at ${APP_DIR}/.env"
+}
+
+# ─────────────────────────────────────────────────────────────
+# 10. Systemd service
+# ─────────────────────────────────────────────────────────────
+
+create_services() {
+    info "Creating systemd services..."
+
+    # PBX Portal service
+    cat > /etc/systemd/system/innotel-pbx.service <<EOF
+[Unit]
+Description=Innotel PBX Customer Portal
+After=network.target mariadb.service freepbx.service
+Wants=network.target
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=${APP_DIR}
+Environment=NODE_ENV=production
+Environment=PORT=3000
+ExecStart=/usr/bin/node ${APP_DIR}/node_modules/.bin/next start -p 3000
+Restart=always
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=innotel-pbx
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+    systemctl daemon-reload
+    systemctl enable innotel-pbx 2>/dev/null || true
+
+    log "Systemd service created: innotel-pbx"
+}
+
+# ─────────────────────────────────────────────────────────────
+# 11. Firewall configuration
+# ─────────────────────────────────────────────────────────────
+
+configure_firewall() {
+    info "Configuring firewall..."
+
+    # Try ufw first, then iptables
+    if command -v ufw &>/dev/null; then
+        ufw allow 3000/tcp comment "PBX Portal"
+        ufw allow 8089/tcp comment "Asterisk WebSocket (WSS)"
+        ufw allow 8080/tcp comment "AvantFax"
+        ufw allow 5060/udp comment "SIP"
+        ufw allow 10000:20000/udp comment "RTP"
+        ufw --force enable 2>/dev/null || true
+        log "ufw rules added"
+    elif command -v iptables &>/dev/null; then
+        iptables -I INPUT -p tcp --dport 3000 -j ACCEPT
+        iptables -I INPUT -p tcp --dport 8089 -j ACCEPT
+        iptables -I INPUT -p tcp --dport 8080 -j ACCEPT
+        iptables -I INPUT -p udp --dport 5060 -j ACCEPT
+        iptables -I INPUT -p udp --dport 10000:20000 -j ACCEPT
+        iptables-save > /etc/iptables/rules.v4 2>/dev/null || true
+        log "iptables rules added"
+    else
+        warn "No firewall detected — open ports manually: 3000, 8089, 8080, 5060, 10000-20000"
+    fi
+}
+
+# ─────────────────────────────────────────────────────────────
+# 12. Start everything
+# ─────────────────────────────────────────────────────────────
+
+start_all() {
+    info "Starting all services..."
+
+    # Start FreePBX if not running
+    fwconsole start 2>/dev/null || systemctl start freepbx 2>/dev/null || true
+
+    # Start AvantFax
+    cd /opt/avantfax && docker compose up -d 2>/dev/null || true
+
+    # Start portal
+    systemctl start innotel-pbx 2>/dev/null || true
+
+    # Wait and verify
+    sleep 5
+    echo ""
+    log "=== Services Status ==="
+    systemctl is-active freepbx 2>/dev/null && log "FreePBX:    running" || warn "FreePBX:    check status"
+    docker ps --filter "name=innotel-avantfax" --format "table {{.Names}}\t{{.Status}}" 2>/dev/null
+    systemctl is-active innotel-pbx 2>/dev/null && log "PBX Portal: running" || warn "PBX Portal: check 'systemctl status innotel-pbx'"
+}
+
+# ─────────────────────────────────────────────────────────────
+# 13. Print summary
+# ─────────────────────────────────────────────────────────────
+
+print_summary() {
+    echo ""
+    echo "=============================================="
+    echo "  Innotel PBX — Setup Complete"
+    echo "=============================================="
+    echo ""
+    echo "  PBX Portal:    https://${FREEPBX_HOST}:3000"
+    echo "  FreePBX:       https://${FREEPBX_HOST}"
+    echo "  AvantFax:      http://${FREEPBX_HOST}:8080/avantfax"
+    echo "  WebSocket:     wss://${FREEPBX_HOST}:${FREEPBX_WSS_PORT}/ws"
+    echo "  AMI:           ${FREEPBX_HOST}:5038"
+    echo ""
+    echo "  Atlas server:  ${ATLAS_URL}"
+    echo ""
+    echo "  AMI Username:  ${FREEPBX_AMI_USER}"
+    echo "  AMI Secret:    ${FREEPBX_AMI_SECRET}"
+    echo "  API Client ID: ${FREEPBX_CLIENT_ID}"
+    echo "  API Secret:    ${FREEPBX_CLIENT_SECRET}"
+    echo ""
+    echo "  Demo login:    demo@innotel.us / demo1234"
+    echo "                 (run 'cd ${APP_DIR} && npm run seed')"
+    echo ""
+    echo "  Config saved:  ${APP_DIR}/.env"
+    echo "  Logs:          journalctl -u innotel-pbx -f"
+    echo ""
+    echo "  Post-install steps:"
+    echo "  1. Configure FreePBX OAuth2 in GUI → Connectivity → API"
+    echo "  2. Set up TLS cert for port 3000 (via nginx reverse proxy or Let's Encrypt)"
+    echo "  3. Seed demo data: cd ${APP_DIR} && npm run seed"
+    echo "  4. Configure VoIP.ms trunk if not auto-configured"
+    echo ""
+    echo "=============================================="
+}
+
+# ─────────────────────────────────────────────────────────────
+# Main — run all steps
+# ─────────────────────────────────────────────────────────────
+
+main() {
+    echo ""
+    install_freepbx
+    configure_webrtc
+    configure_ami
+    configure_freepbx_api
+    install_avantfax
+    configure_voipms_trunk
+    install_portal
+    create_services
+    configure_firewall
+    start_all
+    print_summary
+}
+
+main "$@"

@@ -18,5 +18,5 @@ COPY --from=builder /app/scripts ./scripts
 COPY --from=builder /app/public ./public
 
 ENV NODE_ENV=production
-EXPOSE 3001
+EXPOSE 3000
 CMD ["node", "server.js"]

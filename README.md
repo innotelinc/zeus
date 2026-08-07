@@ -73,7 +73,7 @@ Built with **Next.js 16 (App Router) + React 19 + Tailwind CSS v4** and **SQLite
 npm install
 cp .env.example .env   # fill in your credentials
 npm run seed           # creates demo@innotel.us / demo1234
-npm run dev            # runs on http://localhost:3001
+npm run dev            # runs on http://localhost:3000
 ```
 
 ### Demo account
@@ -122,7 +122,7 @@ docker compose up -d --build
 docker compose exec pbx npm run seed
 ```
 
-The SQLite database is persisted in a named volume (`pbx-data`). Port `3001` is exposed.
+The SQLite database is persisted in a named volume (`pbx-data`). Port `3000` is exposed.
 
 ---
 
@@ -171,7 +171,7 @@ src/
 ```
                     ┌─────────────────────────┐
                     │   PBX Portal (Next.js)   │
-                    │      port 3001           │
+                    │      port 3000           │
                     └──────────┬──────────────┘
                                │
         ┌──────────────────────┼──────────────────────┐
