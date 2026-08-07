@@ -35,8 +35,10 @@ ARI_HTTP_PORT="${ARI_HTTP_PORT:-8088}"
 # PBX Portal variables
 VOIPMS_USER="${VOIPMS_USER:-}"
 VOIPMS_PASS="${VOIPMS_PASS:-}"
-VOIPMS_SIP_SERVER="${VOIPMS_SIP_SERVER:-atlanta.voip.ms}"
+VOIPMS_SIP_SERVER="${VOIPMS_SIP_SERVER:-newyork1.voip.ms}"
 VOIPMS_MAIN_ACCOUNT="${VOIPMS_MAIN_ACCOUNT:-}"
+VOIPMS_SIP_USER="${VOIPMS_SIP_USER:-}"
+VOIPMS_SIP_PASS="${VOIPMS_SIP_PASS:-}"
 ATLAS_URL="${ATLAS_URL:-http://atlas-server:3000}"
 ATLAS_API_KEY="${ATLAS_API_KEY:-$(openssl rand -hex 32)}"
 SESSION_SECRET="${SESSION_SECRET:-$(openssl rand -hex 32)}"
@@ -708,10 +710,8 @@ cat > /etc/logrotate.d/asterisk <<'EOF'
 EOF
 
 # ─── VoIP.ms SIP Trunk auto-configuration ────────────────────
-if [ -n "${VOIPMS_USER}" ] && [ -n "${VOIPMS_PASS}" ] && [ -n "${VOIPMS_MAIN_ACCOUNT}" ]; then
+if [ -n "${VOIPMS_SIP_USER}" ] && [ -n "${VOIPMS_SIP_PASS}" ] && [ -n "${VOIPMS_SIP_SERVER}" ]; then
   info "Configuring VoIP.ms SIP trunk (${VOIPMS_SIP_SERVER})"
-
-  VOIPMS_SIP_USER="${VOIPMS_MAIN_ACCOUNT}_sub"
 
   cat > /etc/asterisk/pjsip_voipms_custom.conf <<'VOIPMSPJSIPEOF'
 ; ═══════════════════════════════════════════════════════════════
@@ -724,7 +724,7 @@ type = auth
 auth_type = userpass
 VOIPMSPJSIPEOF
   cat >> /etc/asterisk/pjsip_voipms_custom.conf <<VOIPMSAUTH
-password = ${VOIPMS_PASS}
+password = ${VOIPMS_SIP_PASS}
 username = ${VOIPMS_SIP_USER}
 VOIPMSAUTH
 
@@ -790,7 +790,7 @@ VOIPMSID
 
   # Also build an outbound route via FreePBX CLI if fwconsole is available
   if command -v fwconsole &>/dev/null; then
-    fwconsole trunks --add=voipms --tech=pjsip --detail='{"username":"'"${VOIPMS_SIP_USER}"'","secret":"'"${VOIPMS_PASS}"'","host":"'"${VOIPMS_SIP_SERVER}"'","context":"from-trunk","disallow":"all","allow":"ulaw","allow":"alaw"}' 2>/dev/null || true
+    fwconsole trunks --add=voipms --tech=pjsip --detail='{"username":"'"${VOIPMS_SIP_USER}"'","secret":"'"${VOIPMS_SIP_PASS}"'","host":"'"${VOIPMS_SIP_SERVER}"'","context":"from-trunk","disallow":"all","allow":"ulaw","allow":"alaw"}' 2>/dev/null || true
   fi
 
   chown asterisk:asterisk /etc/asterisk/pjsip_voipms_custom.conf
@@ -800,7 +800,7 @@ VOIPMSID
 
   log "VoIP.ms SIP trunk configured — server: ${VOIPMS_SIP_SERVER}, user: ${VOIPMS_SIP_USER}"
 else
-  warn "Skipping VoIP.ms trunk — set VOIPMS_USER, VOIPMS_PASS, and VOIPMS_MAIN_ACCOUNT env vars"
+  warn "Skipping VoIP.ms trunk — set VOIPMS_SIP_USER, VOIPMS_SIP_PASS, and VOIPMS_SIP_SERVER env vars"
 fi
 
 # ─── FreePBX OAuth2 API Client auto-configuration ───────────

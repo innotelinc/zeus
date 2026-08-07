@@ -1,11 +1,14 @@
 /**
  * VoIP.ms REST API client for PBX portal.
  *
- * API docs: https://voip.ms/m/apidocs.php
+ * Uses main account (VOIPMS_API_USERNAME / VOIPMS_API_PASSWORD) for all
+ * REST API calls (provisioning, DID management, SMS, CDRs).
  *
- * Required env vars:
- *   VOIPMS_API_USERNAME – your VoIP.ms API username (email)
- *   VOIPMS_API_PASSWORD – your VoIP.ms API password
+ * SIP trunk registration uses the sub-account (VOIPMS_SIP_USER / VOIPMS_SIP_PASS)
+ * against VOIPMS_SIP_SERVER (e.g. newyork1.voip.ms). These are consumed by
+ * setup.sh for PJSIP config generation, not by this REST client.
+ *
+ * API docs: https://voip.ms/m/apidocs.php
  */
 
 const BASE_URL = "https://voip.ms/api/v1/rest.php";
@@ -17,6 +20,16 @@ function credentials(): { api_username: string; api_password: string } {
     throw new Error("VOIPMS_API_USERNAME and VOIPMS_API_PASSWORD must be set");
   }
   return { api_username, api_password };
+}
+
+/** SIP trunk sub-account credentials (for PJSIP registration, not REST API). */
+export function getSipCredentials() {
+  return {
+    sipUser: process.env.VOIPMS_SIP_USER ?? null,
+    sipPass: process.env.VOIPMS_SIP_PASS ?? null,
+    sipServer: process.env.VOIPMS_SIP_SERVER ?? "newyork1.voip.ms",
+    mainAccount: process.env.VOIPMS_MAIN_ACCOUNT ?? null,
+  };
 }
 
 async function call<T = unknown>(
