@@ -97,6 +97,7 @@ Copy `.env.example` to `.env` and configure:
 | `SESSION_SECRET` | auto | Auto-generated if not set (sessions reset on restart) |
 | `VOIPMS_API_USERNAME` | yes | VoIP.ms API username (email) |
 | `VOIPMS_API_PASSWORD` | yes | VoIP.ms API password |
+| `VOIPMS_WEBHOOK_SECRET` | — | Shared secret for SMS webhook verification |
 | `FREEPBX_URL` | yes | FreePBX server URL |
 | `FREEPBX_CLIENT_ID` | yes | FreePBX OAuth2 client ID |
 | `FREEPBX_CLIENT_SECRET` | yes | FreePBX OAuth2 client secret |
@@ -204,7 +205,9 @@ src/
 
 **VoIP.ms:**
 - API access enabled in your VoIP.ms portal
-- SMS URL callback pointed to `https://your-domain.com/api/webhooks/voipms`
+- SMS URL callback pointed to `https://pbx.innotel.us/api/webhooks/voipms`
+- VoIP.ms sends POST as `application/x-www-form-urlencoded`; GET returns 200 for URL verification
+- Optional `VOIPMS_WEBHOOK_SECRET` env var for `?token=` challenge verification
 
 ---
 
