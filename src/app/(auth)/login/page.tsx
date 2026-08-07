@@ -20,12 +20,17 @@ export default function LoginPage() {
     setLoading(true);
 
     try {
-      await api("/api/auth/login", {
+      const data = await api<{ success: boolean }>("/api/auth/login", {
         method: "POST",
         body: JSON.stringify({ email, password }),
       });
-      router.push("/dashboard");
-      router.refresh();
+
+      if (data?.success) {
+        // Full page reload ensures the session cookie is sent
+        window.location.href = "/dashboard";
+      } else {
+        setError("Unexpected response from server. Please try again.");
+      }
     } catch (e) {
       setError(e instanceof Error ? e.message : "Login failed");
     } finally {
@@ -57,6 +62,7 @@ export default function LoginPage() {
                 placeholder="jane@example.com"
                 value={email}
                 onChange={(e) => setEmail(e.target.value)}
+                autoComplete="email"
                 required
               />
             </label>
@@ -69,6 +75,7 @@ export default function LoginPage() {
                 placeholder="Your password"
                 value={password}
                 onChange={(e) => setPassword(e.target.value)}
+                autoComplete="current-password"
                 required
               />
             </label>
