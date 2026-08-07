@@ -43,6 +43,9 @@ export default function FaxSection({ faxAccount, faxes: initialFaxes, numbers }:
   const avantfaxUrl =
     process.env.NEXT_PUBLIC_AVANTFAX_URL ?? "https://voice.innotel.us/fax";
 
+  const IS_DONE = (s: string) =>
+    s === "completed" || s === "success" || s === "sent" || s === "received";
+
   async function setupFaxAccount() {
     setLoading(true);
     try {
@@ -421,7 +424,7 @@ export default function FaxSection({ faxAccount, faxes: initialFaxes, numbers }:
                     className="flex items-center justify-between rounded-xl border border-white/[0.06] bg-white/[0.02] px-4 py-3"
                   >
                     <div className="flex items-center gap-3">
-                      {fax.status === "completed" || fax.status === "success" || fax.status === "sent" ? (
+                      {IS_DONE(fax.status) ? (
                         <CheckCircleIcon size={18} className="text-mint-400" />
                       ) : fax.status === "failed" ? (
                         <AlertCircleIcon size={18} className="text-rose-500" />
@@ -444,9 +447,7 @@ export default function FaxSection({ faxAccount, faxes: initialFaxes, numbers }:
                     <div className="flex items-center gap-2">
                       <span
                         className={`rounded-full px-2 py-0.5 text-[11px] font-medium ${
-                          fax.status === "completed" ||
-                          fax.status === "success" ||
-                          fax.status === "sent"
+                          IS_DONE(fax.status)
                             ? "bg-mint-500/10 text-mint-400"
                             : fax.status === "failed"
                               ? "bg-rose-500/10 text-rose-300"
