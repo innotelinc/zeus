@@ -6,6 +6,16 @@ Built with **Next.js 16 (App Router) + React 19 + Tailwind CSS v4** and **SQLite
 
 ---
 
+## Which deployment do I need?
+
+| You want to… | Use |
+|---|---|
+| Run **just the portal** (you already have FreePBX/Asterisk) | [Docker (portal only)](#option-1-docker---portal-only) or [npm](#option-3-npm-dev) |
+| Run the **entire stack** (Asterisk + FreePBX + Portal) | [Docker (full stack)](#option-2-docker---full-stack) or [setup.sh](#option-4-bare-metal---setupsh) |
+| **Develop / contribute** to the portal | [npm dev](#option-3-npm-dev) |
+
+---
+
 ## Features
 
 ### 🔐 Customer Signup & Plans
@@ -22,7 +32,7 @@ Built with **Next.js 16 (App Router) + React 19 + Tailwind CSS v4** and **SQLite
 ### 💬 SMS Messaging
 - Full web messaging UI: conversation list, chat bubbles, real-time compose
 - Contact name auto-population from the contacts directory
-- VoIP.ms SMS send/receive + inbound webhook endpoint
+- VoIP.ms SMS send/receive + inbound webhook endpoint (`/api/webhooks/voipms`)
 - Quick-message contact selector
 
 ### 📠 Fax
@@ -38,7 +48,6 @@ Built with **Next.js 16 (App Router) + React 19 + Tailwind CSS v4** and **SQLite
 - DTMF keypad for IVR interactions ("press 1 for support")
 - Live call timer, incoming call ring with caller ID
 - STUN/TURN server support for NAT traversal
-- Transport disconnect detection with auto-reconnect guidance
 
 ### 📡 Asterisk AMI Integration
 - Real-time call event monitoring via TCP (port 5038)
@@ -51,15 +60,10 @@ Built with **Next.js 16 (App Router) + React 19 + Tailwind CSS v4** and **SQLite
 - Full CRUD with name, phone, email, notes
 - Auto-syncs conversation names when contacts are added/edited
 - Deep-link from contacts to messages
-- Quick-select widget in the SMS compose view
 
-### 📞 Voicemail
+### 📞 Voicemail & Call History
 - Voicemail inbox with caller ID, duration, and transcriptions
-- New message indicators
-
-### 📊 Call History
 - Live CDR table populated by Asterisk AMI events
-- Direction, caller, duration, and status for every call
 
 ### 💰 Billing
 - Stripe webhook integration for checkout + invoice processing
@@ -67,7 +71,7 @@ Built with **Next.js 16 (App Router) + React 19 + Tailwind CSS v4** and **SQLite
 
 ---
 
-## Getting Started
+## Quick Start
 
 ```bash
 npm install
@@ -88,42 +92,215 @@ npm run dev            # runs on http://localhost:3000
 
 ---
 
-## Environment Variables
+## Deployment Options
 
-Copy `.env.example` to `.env` and configure:
+### Option 1: Docker — Portal Only
 
-| Variable | Required | Description |
+The portal connects to your **existing** FreePBX/Asterisk server.  This is the quickest way to get started if your VoIP infrastructure is already running.
+
+```bash
+git clone https://github.com/innotelinc/pbx-portal.git
+cd pbx-portal
+cp .env.docker.example .env   # edit with your server addresses
+docker compose up -d          # portal at http://localhost:3000
+```
+
+**What you still need running externally:**
+- FreePBX 17 (with API module for OAuth2)
+- Asterisk AMI (port 5038) for call monitoring
+- PJSIP WebSocket (port 8089 WSS) for the softphone
+- AvantFax (optional, for fax)
+
+**Files used:** `Dockerfile`, `docker-compose.yml`, `.env.docker.example`
+
+Pre-built images are published to GitHub Container Registry:
+
+```bash
+docker pull ghcr.io/innotelinc/pbx-portal:latest
+```
+
+### Option 2: Docker — Full Stack
+
+Provisions **everything**: Asterisk 22.9 + FreePBX 17 + AvantFax + PBX Portal.  Use this if you want a self-contained deployment.
+
+```bash
+git clone https://github.com/innotelinc/pbx-portal.git
+cd pbx-portal
+
+# 1. Build the Asterisk+FreePBX image (45-90 min, one-time)
+docker build -f Dockerfile.full -t innotel/freepbx .
+
+# 2. Configure
+cp .env.docker.example .env   # edit with your credentials
+
+# 3. Start everything
+docker compose -f docker-compose.full.yml up -d
+```
+
+**Files used:** `Dockerfile.full`, `docker-compose.full.yml`, `docker-entrypoint-full.sh`
+
+| Service | Image | Ports |
 |---|---|---|
-| `SESSION_SECRET` | auto | Auto-generated if not set (sessions reset on restart) |
-| `VOIPMS_API_USERNAME` | yes | VoIP.ms API username (email) |
-| `VOIPMS_API_PASSWORD` | yes | VoIP.ms API password |
-| `VOIPMS_WEBHOOK_SECRET` | — | Shared secret for SMS webhook verification |
-| `FREEPBX_URL` | yes | FreePBX server URL |
-| `FREEPBX_CLIENT_ID` | yes | FreePBX OAuth2 client ID |
-| `FREEPBX_CLIENT_SECRET` | yes | FreePBX OAuth2 client secret |
-| `NEXT_PUBLIC_FREEPBX_WSS_URL` | — | WebSocket URL for softphone (e.g. `wss://voice.innotel.us:8089/ws`) |
-| `ASTERISK_AMI_HOST` | — | Asterisk AMI host (default: 127.0.0.1) |
-| `ASTERISK_AMI_PORT` | — | AMI TCP port (default: 5038) |
-| `ASTERISK_AMI_USERNAME` | — | AMI manager username |
-| `ASTERISK_AMI_SECRET` | — | AMI manager secret |
-| `NEXT_PUBLIC_TURN_SERVER` | — | TURN server URL for WebRTC NAT traversal |
-| `AVANTFAX_URL` | — | AvantFax web interface URL |
-| `ATLAS_API_URL` | — | Atlas platform URL for cross-system signup |
-| `ATLAS_API_KEY` | — | Shared secret for Atlas API auth |
-| `STRIPE_SECRET_KEY` | — | Stripe secret key for billing |
-| `STRIPE_WEBHOOK_SECRET` | — | Stripe webhook signing secret |
+| MariaDB | `mariadb:10.11` | 3306 (internal) |
+| Asterisk + FreePBX | `innotel/freepbx` | 80, 5060/udp, 8088, 8089, 5038, 10000-20000/udp |
+| AvantFax | `innotel/avantfax` | 8080 |
+| PBX Portal | `innotel/pbx-portal` | 3000 |
+
+Pre-built full-stack images (release only):
+
+```bash
+docker pull ghcr.io/innotelinc/pbx-portal:fullstack-latest
+```
+
+### Option 3: npm (dev)
+
+Standard Next.js development workflow:
+
+```bash
+npm install
+cp .env.example .env
+npm run seed
+npm run dev
+```
+
+Runs on `http://localhost:3000` with hot reload.  Configure `.env` to point at your FreePBX/Asterisk servers.
+
+### Option 4: Bare Metal — setup.sh
+
+A single 1,500+ line script provisions the entire stack on **Debian 12** from source:
+
+```bash
+sudo VOIPMS_USER=you@email.com \
+     VOIPMS_PASS=yourpass \
+     bash scripts/setup.sh
+```
+
+This installs and configures:
+- Asterisk 22.9.0 LTS (compiled from source)
+- FreePBX 17 (Sangoma official installer)
+- PJSIP WebSocket transport (port 8089 WSS)
+- Asterisk AMI (port 5038)
+- AvantFax 3.4.1 + HylaFAX 7.0.11 + IAXModem
+- VoIP.ms SIP trunk auto-configuration
+- FreePBX OAuth2 API client
+- VOSK speech-to-text + AI CDR summarisation
+- PBX Portal (Next.js, auto-started via systemd)
+
+**File:** `scripts/setup.sh`
 
 ---
 
-## Docker
+## Environment Variables
+
+All deployment methods use the same environment variables. Copy the appropriate template:
+
+| Template | For |
+|---|---|
+| `.env.example` | npm / local dev |
+| `.env.docker.example` | Docker (portal-only or full-stack) |
+
+### Required for core functionality
+
+| Variable | Description |
+|---|---|
+| `SESSION_SECRET` | Auto-generated session signing key |
+| `VOIPMS_API_USERNAME` | VoIP.ms API username (email) |
+| `VOIPMS_API_PASSWORD` | VoIP.ms API password |
+| `VOIPMS_WEBHOOK_SECRET` | Shared secret for SMS webhook `?token=` verification |
+| `FREEPBX_URL` | FreePBX server URL (e.g. `https://voice.innotel.us`) |
+| `FREEPBX_CLIENT_ID` | FreePBX OAuth2 client ID |
+| `FREEPBX_CLIENT_SECRET` | FreePBX OAuth2 client secret |
+| `ATLAS_API_URL` | Atlas platform URL for cross-system signup |
+| `ATLAS_API_KEY` | Shared secret matching Atlas server's `ATLAS_API_KEY` |
+
+### Optional — enable additional features
+
+| Variable | Feature |
+|---|---|
+| `ASTERISK_AMI_HOST` / `_PORT` / `_USERNAME` / `_SECRET` | Real-time call monitoring (AMI) |
+| `NEXT_PUBLIC_FREEPBX_WSS_URL` | WebRTC softphone (e.g. `wss://voice.innotel.us:8089/ws`) |
+| `NEXT_PUBLIC_TURN_SERVER` / `_USERNAME` / `_CREDENTIAL` | NAT traversal for WebRTC |
+| `AVANTFAX_URL` / `NEXT_PUBLIC_AVANTFAX_URL` | Fax web interface |
+| `STRIPE_SECRET_KEY` / `STRIPE_WEBHOOK_SECRET` | Billing and payments |
+| `NEXT_PUBLIC_URL` | Public-facing URL of the portal |
+
+---
+
+## Setting Up PBX Components
+
+If you're deploying the portal standalone (Option 1 or 3), you need these services running externally:
+
+### FreePBX 17 + Asterisk
+
+Install on Debian 12 using the official installer:
 
 ```bash
-cp .env.example .env
-docker compose up -d --build
-docker compose exec pbx npm run seed
+cd /tmp
+wget https://github.com/FreePBX/sng_freepbx_debian_install/raw/master/sng_freepbx_debian_install.sh
+bash sng_freepbx_debian_install.sh
 ```
 
-The SQLite database is persisted in a named volume (`pbx-data`). Port `3000` is exposed.
+After installation, configure:
+
+**1. API Module (OAuth2)**
+```bash
+fwconsole ma downloadinstall api restapi
+fwconsole ma enable api restapi
+fwconsole reload
+```
+Then in FreePBX Admin → API → Add Application to create OAuth2 credentials.  Copy the Client ID and Secret to your portal's `.env`.
+
+**2. PJSIP WebSocket (for softphone)**
+```ini
+# /etc/asterisk/pjsip_wss.conf
+[transport-wss]
+type = transport
+protocol = wss
+bind = 0.0.0.0:8089
+cert_file = /etc/asterisk/keys/asterisk.crt
+priv_key_file = /etc/asterisk/keys/asterisk.key
+```
+```bash
+# Generate self-signed cert
+mkdir -p /etc/asterisk/keys
+openssl req -x509 -newkey rsa:2048 -nodes \
+  -keyout /etc/asterisk/keys/asterisk.key \
+  -out /etc/asterisk/keys/asterisk.crt \
+  -days 3650 -subj "/CN=voice.innotel.us"
+chown -R asterisk:asterisk /etc/asterisk/keys
+
+# Load the module
+asterisk -rx 'module load res_pjsip_transport_websocket.so'
+asterisk -rx 'pjsip reload'
+```
+
+**3. AMI (Manager Interface)**
+```ini
+# /etc/asterisk/manager.conf
+[general]
+enabled = yes
+bindaddr = 0.0.0.0
+
+[pbxportal]
+secret = your-ami-secret
+permit = 0.0.0.0/0.0.0.0
+read = system,call,log,verbose,command,agent,user,config,dtmf,reporting,cdr,dialplan,originate
+write = system,call,log,verbose,command,agent,user,config,dtmf,reporting,cdr,dialplan,originate
+```
+
+### VoIP.ms
+
+1. Enable API access in your [VoIP.ms portal](https://voip.ms)
+2. Set the SMS URL Callback to `https://pbx.innotel.us/api/webhooks/voipms`
+3. Copy your API username (email) and password to the portal's `.env`
+
+### AvantFax (optional)
+
+Install alongside FreePBX:
+```bash
+# See scripts/setup.sh Phase 10 for the full installation
+# AvantFax runs on port 8080 by default
+```
 
 ---
 
@@ -131,12 +308,13 @@ The SQLite database is persisted in a named volume (`pbx-data`). Port `3000` is 
 
 ```
 scripts/
-  schema.sql              # SQLite schema (users, phone_numbers, extensions, SMS, fax, CDR, etc.)
+  setup.sh                # 1,500-line full-stack installer (Debian 12)
+  schema.sql              # SQLite schema
   seed.mjs                # Demo account seed
   migrations/             # Schema migrations
 src/
   app/
-    page.tsx              # Marketing landing page
+    page.tsx              # Landing page
     (auth)/login          # Sign in
     (auth)/signup         # Create account (with plan selection)
     dashboard/
@@ -148,9 +326,16 @@ src/
       history/            # Call history (CDR)
       billing/            # Plan & invoices
       settings/           # Account settings
-    api/                  # REST route handlers
-  components/
-    dashboard/            # DashboardShell, PhoneSection, MessagesSection,
+    api/
+      auth/               # Register, login, logout, me
+      phone/              # DID search, order, extensions
+      messages/           # SMS conversations, send, read
+      fax/                # Send fax, account management
+      ami/status/         # AMI connection status
+      health/             # Service healthcheck (public)
+      webhooks/voipms/    # VoIP.ms SMS webhook
+      contacts/           # Contact CRUD
+  components/dashboard/   # DashboardShell, PhoneSection, MessagesSection,
                           # ContactsSection, FaxSection, SoftphoneSection
   lib/
     ami.ts                # Asterisk AMI TCP client
@@ -183,11 +368,11 @@ src/
    │  (REST) │          │ (GQL+WSS)│          │ (HylaFAX)│
    └─────────┘          └──────────┘          └──────────┘
         │                      │
-        │              ┌───────┴───────┐
-        │              │  Asterisk     │
-        │              │   AMI :5038   │
-        │              │  (real-time)  │
-        │              └───────────────┘
+   SMS webhook           ┌─────┴──────┐
+   (form-encoded)        │  Asterisk   │
+                         │   AMI :5038 │
+                         │  (real-time)│
+                         └────────────┘
         │
         ▼
    ┌─────────┐
@@ -196,18 +381,33 @@ src/
    └─────────┘
 ```
 
-## Server Prerequisites
+### Endpoints
 
-**FreePBX / Asterisk:**
-- PJSIP extensions with WebSocket transport enabled (port 8089 for WSS) for the softphone
-- AMI enabled in `/etc/asterisk/manager.conf` with a manager user for call monitoring
-- WebSocket module loaded (`res_pjsip_transport_websocket`)
+| Endpoint | Method | Auth | Purpose |
+|---|---|---|---|
+| `/api/health` | GET | Public | Healthcheck — probes DB, VoIP.ms, FreePBX, AMI, Stripe |
+| `/api/webhooks/voipms` | POST | Public | Inbound SMS from VoIP.ms (form-encoded) |
+| `/api/webhooks/stripe` | POST | Stripe sig | Stripe checkout + invoice events |
+| `/api/auth/*` | POST | Public/ Session | Register, login, logout, me |
+| `/api/phone/*` | GET/POST | Session | DID search, order, extensions |
+| `/api/messages/*` | GET/POST | Session | SMS conversations, send, read |
+| `/api/fax/*` | GET/POST | Session | Fax send, account management |
+| `/api/contacts/*` | GET/POST/PATCH/DELETE | Session | Contact CRUD |
+| `/api/ami/status` | GET | Session | AMI connection + device state |
 
-**VoIP.ms:**
-- API access enabled in your VoIP.ms portal
-- SMS URL callback pointed to `https://pbx.innotel.us/api/webhooks/voipms`
-- VoIP.ms sends POST as `application/x-www-form-urlencoded`; GET returns 200 for URL verification
-- Optional `VOIPMS_WEBHOOK_SECRET` env var for `?token=` challenge verification
+---
+
+## CI / CD
+
+GitHub Actions builds and publishes Docker images on push:
+
+| Trigger | Image | Tag |
+|---|---|---|
+| Push to `master` | `ghcr.io/innotelinc/pbx-portal` | `latest`, `sha-xxxxx`, `master` |
+| Release `v*` | `ghcr.io/innotelinc/pbx-portal` | semver (`1.0.0`, `1.0`) |
+| Release `v*` | `ghcr.io/innotelinc/pbx-portal` | `fullstack-latest`, `fullstack-v1.0.0` |
+
+**Workflow:** `.github/workflows/docker-publish.yml`
 
 ---
 
