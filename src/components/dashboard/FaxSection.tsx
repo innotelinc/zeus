@@ -26,9 +26,12 @@ interface Props {
 export default function FaxSection({ faxAccount, faxes: initialFaxes, numbers }: Props) {
   const { toast } = useToast();
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const PAGE = 20;
   const [faxes, setFaxes] = useState<Fax[]>(initialFaxes);
   const [account, setAccount] = useState<FaxAccount | null>(faxAccount);
   const [loading, setLoading] = useState(false);
+  const [hasMore, setHasMore] = useState(initialFaxes.length >= PAGE);
+  const [loadingMore, setLoadingMore] = useState(false);
 
   const [sendMode, setSendMode] = useState(false);
   const [toNumber, setToNumber] = useState("");
@@ -190,6 +193,22 @@ export default function FaxSection({ faxAccount, faxes: initialFaxes, numbers }:
     } finally {
       if (progressInterval) clearInterval(progressInterval);
       setSending(false);
+    }
+  }
+
+  async function loadMore() {
+    setLoadingMore(true);
+    try {
+      const offset = faxes.length;
+      const res = await api<{ faxes: Fax[]; hasMore: boolean }>(
+        `/api/fax/send?limit=${PAGE}&offset=${offset}`,
+      );
+      setFaxes((prev) => [...prev, ...res.faxes]);
+      setHasMore(res.hasMore);
+    } catch {
+      toast.error("Failed to load more faxes");
+    } finally {
+      setLoadingMore(false);
     }
   }
 
@@ -521,6 +540,25 @@ export default function FaxSection({ faxAccount, faxes: initialFaxes, numbers }:
                     </div>
                   </div>
                 ))}
+              </div>
+            )}
+
+            {/* ── Load More / counter ────────────────── */}
+            {faxes.length > 0 && (
+              <div className="mt-4 flex items-center justify-between">
+                <p className="text-xs text-white/30">
+                  Showing {faxes.length} fax{hasMore ? "" : " total"}
+                </p>
+                {hasMore && (
+                  <button
+                    type="button"
+                    onClick={loadMore}
+                    disabled={loadingMore}
+                    className="btn-ghost px-4 py-2 text-xs"
+                  >
+                    {loadingMore ? "Loading..." : `Load ${PAGE} more`}
+                  </button>
+                )}
               </div>
             )}
           </div>

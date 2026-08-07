@@ -130,15 +130,29 @@ export async function POST(req: Request) {
   return NextResponse.json({ fax, sent }, { status: 201 });
 }
 
-export async function GET() {
+export async function GET(req: Request) {
   const { user, error } = await requireUser();
   if (error) return error;
 
-  const faxes = db
-    .prepare("SELECT * FROM faxes WHERE user_id = ? ORDER BY created_at DESC LIMIT 50")
-    .all(user.id) as Fax[];
+  const { searchParams } = new URL(req.url);
+  const limit = Math.min(Math.max(parseInt(searchParams.get("limit") ?? "20", 10) || 20, 1), 100);
+  const offset = Math.max(parseInt(searchParams.get("offset") ?? "0", 10) || 0, 0);
 
-  return NextResponse.json({ faxes });
+  const total = (
+    db.prepare("SELECT COUNT(*) as count FROM faxes WHERE user_id = ?").get(user.id) as { count: number }
+  ).count;
+
+  const faxes = db
+    .prepare("SELECT * FROM faxes WHERE user_id = ? ORDER BY created_at DESC LIMIT ? OFFSET ?")
+    .all(user.id, limit, offset) as Fax[];
+
+  return NextResponse.json({
+    faxes,
+    total,
+    offset,
+    limit,
+    hasMore: offset + faxes.length < total,
+  });
 }
 
 // ── Simple text-to-PDF generator (no external deps) ──────────
