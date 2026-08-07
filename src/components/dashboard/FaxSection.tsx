@@ -35,6 +35,7 @@ export default function FaxSection({ faxAccount, faxes: initialFaxes, numbers }:
   const [subject, setSubject] = useState("");
   const [body, setBody] = useState("");
   const [file, setFile] = useState<File | null>(null);
+  const [scheduledAt, setScheduledAt] = useState("");
   const [selectedDidId, setSelectedDidId] = useState(numbers[0]?.id ?? "");
   const [sending, setSending] = useState(false);
   const [progress, setProgress] = useState(0);
@@ -46,7 +47,7 @@ export default function FaxSection({ faxAccount, faxes: initialFaxes, numbers }:
     process.env.NEXT_PUBLIC_AVANTFAX_URL ?? "https://voice.innotel.us/fax";
 
   const IS_DONE = (s: string) =>
-    s === "completed" || s === "success" || s === "sent" || s === "received";
+    s === "completed" || s === "success" || s === "sent" || s === "received" || s === "scheduled";
 
   async function setupFaxAccount() {
     setLoading(true);
@@ -142,6 +143,7 @@ export default function FaxSection({ faxAccount, faxes: initialFaxes, numbers }:
       if (subject) formData.set("subject", subject);
       if (body.trim()) formData.set("body", body.trim());
       if (file) formData.set("file", file);
+      if (scheduledAt) formData.set("scheduled_at", scheduledAt);
 
       const res = await fetch("/api/fax/send", {
         method: "POST",
@@ -151,7 +153,7 @@ export default function FaxSection({ faxAccount, faxes: initialFaxes, numbers }:
       clearTimeout(tm1);
       clearTimeout(tm2);
       setProgress(100);
-      setProgressLabel("Sent!");
+      setProgressLabel(scheduledAt ? "Scheduled!" : "Sent!");
 
       if (!res.ok) {
         const err = await res.json().catch(() => ({}));
@@ -160,7 +162,13 @@ export default function FaxSection({ faxAccount, faxes: initialFaxes, numbers }:
 
       const data = (await res.json()) as { fax: Fax; sent: boolean };
       setFaxes((prev) => [data.fax, ...prev]);
-      toast.success(data.sent ? "Fax sent!" : "Fax queued for delivery");
+      toast.success(
+        data.sent
+          ? "Fax sent!"
+          : scheduledAt
+            ? `Fax scheduled for ${new Date(scheduledAt).toLocaleString()}`
+            : "Fax queued for delivery",
+      );
 
       // Reset after a moment
       setTimeout(() => {
@@ -169,6 +177,7 @@ export default function FaxSection({ faxAccount, faxes: initialFaxes, numbers }:
         setSubject("");
         setBody("");
         setFile(null);
+        setScheduledAt("");
         setProgress(0);
         setProgressLabel("");
       }, 800);
@@ -295,6 +304,19 @@ export default function FaxSection({ faxAccount, faxes: initialFaxes, numbers }:
                       onChange={(e) => setSubject(e.target.value)}
                     />
                   </label>
+                  <label className="block">
+                    <span className="input-label">Schedule (optional)</span>
+                    <input
+                      type="datetime-local"
+                      className="input-base"
+                      value={scheduledAt}
+                      onChange={(e) => setScheduledAt(e.target.value)}
+                      min={new Date().toISOString().slice(0, 16)}
+                    />
+                    <p className="mt-1 text-[11px] text-white/25">
+                      Leave blank to send immediately.
+                    </p>
+                  </label>
                 </div>
 
                 {/* ── File upload area ──────────────────────── */}
@@ -399,6 +421,7 @@ export default function FaxSection({ faxAccount, faxes: initialFaxes, numbers }:
                         setBody("");
                         setToNumber("");
                         setSubject("");
+                        setScheduledAt("");
                       }}
                       className="btn-ghost px-6 py-2.5 text-sm"
                     >
@@ -451,6 +474,14 @@ export default function FaxSection({ faxAccount, faxes: initialFaxes, numbers }:
                         <div className="text-xs text-white/35">
                           {fax.subject ?? `Fax · ${fax.pages} page(s)`} ·{" "}
                           {fmtDate(fax.created_at)}
+                          {fax.status === "scheduled" && fax.scheduled_at && (
+                            <span className="ml-1 text-brand-300">
+                              → {new Date(fax.scheduled_at).toLocaleString(
+                                "en-US",
+                                { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" },
+                              )}
+                            </span>
+                          )}
                         </div>
                       </div>
                     </div>

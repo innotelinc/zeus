@@ -35,6 +35,14 @@ export async function POST(req: Request) {
   const subject = (formData.get("subject") as string)?.trim() || undefined;
   const body = (formData.get("body") as string)?.trim() || undefined;
   const file = formData.get("file") as File | null;
+  const scheduledAt = (formData.get("scheduled_at") as string)?.trim() || undefined;
+
+  // Validate scheduled_at is in the future
+  if (scheduledAt) {
+    const parsed = new Date(scheduledAt);
+    if (isNaN(parsed.getTime())) return badRequest("Invalid schedule date");
+    if (parsed <= new Date()) return badRequest("Schedule time must be in the future");
+  }
 
   if (!toNumber) return badRequest("Destination fax number is required");
   if (!fromDidId) return badRequest("Source DID is required");
@@ -88,29 +96,33 @@ export async function POST(req: Request) {
 
   const pages = estimatePages(file?.size ?? Buffer.byteLength(body ?? ""));
 
+  const status = scheduledAt ? "scheduled" : "queued";
+
   db.prepare(
-    `INSERT INTO faxes (id, user_id, direction, status, to_number, subject, pages, file_path, file_type, notes)
-     VALUES (?, ?, 'outbound', 'queued', ?, ?, ?, ?, 'pdf', ?)`,
-  ).run(faxId, user.id, toNumber, subject ?? null, pages, filePath, body ?? null);
+    `INSERT INTO faxes (id, user_id, direction, status, to_number, subject, pages, file_path, file_type, notes, scheduled_at)
+     VALUES (?, ?, 'outbound', ?, ?, ?, ?, ?, 'pdf', ?, ?)`,
+  ).run(faxId, user.id, status, toNumber, subject ?? null, pages, filePath, body ?? null, scheduledAt ?? null);
 
-  // Queue fax via AvantFax/HylaFAX+
+  // Queue fax via AvantFax/HylaFAX+ (skip if scheduled)
   let sent = false;
-  try {
-    const result = await sendFax({
-      fromDid: did.did,
-      toNumber: toNumber,
-      filePath: fileName,
-      subject: subject ?? undefined,
-    });
+  if (!scheduledAt) {
+    try {
+      const result = await sendFax({
+        fromDid: did.did,
+        toNumber: toNumber,
+        filePath: fileName,
+        subject: subject ?? undefined,
+      });
 
-    if (result.success) {
-      db.prepare(
-        "UPDATE faxes SET status = 'sent', completed_at = datetime('now') WHERE id = ?",
-      ).run(faxId);
-      sent = true;
+      if (result.success) {
+        db.prepare(
+          "UPDATE faxes SET status = 'sent', completed_at = datetime('now') WHERE id = ?",
+        ).run(faxId);
+        sent = true;
+      }
+    } catch {
+      db.prepare("UPDATE faxes SET status = 'failed' WHERE id = ?").run(faxId);
     }
-  } catch {
-    db.prepare("UPDATE faxes SET status = 'failed' WHERE id = ?").run(faxId);
   }
 
   const fax = db.prepare("SELECT * FROM faxes WHERE id = ?").get(faxId) as Fax;

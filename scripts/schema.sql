@@ -111,7 +111,8 @@ CREATE TABLE IF NOT EXISTS faxes (
   subject TEXT,
   notes TEXT,
   created_at TEXT NOT NULL DEFAULT (datetime('now')),
-  completed_at TEXT
+  completed_at TEXT,
+  scheduled_at TEXT
 );
 
 CREATE TABLE IF NOT EXISTS voicemails (

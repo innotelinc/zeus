@@ -103,6 +103,7 @@ export interface Fax {
   notes: string | null;
   created_at: string;
   completed_at: string | null;
+  scheduled_at: string | null;
 }
 
 export interface Voicemail {
