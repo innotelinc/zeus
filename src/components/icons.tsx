@@ -113,3 +113,7 @@ export function XIcon({ size = 24, ...p }: IconProps) {
 export function EyeIcon({ size = 24, ...p }: IconProps) {
   return <svg {...mks(size)} {...p}><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>;
 }
+
+export function PrinterIcon({ size = 24, ...p }: IconProps) {
+  return <svg {...mks(size)} {...p}><polyline points="6 9 6 2 18 2 18 9"/><path d="M6 12H4a2 2 0 0 0-2 2v5h4v-7h12v7h4v-5a2 2 0 0 0-2-2h-2"/><rect x="6" y="14" width="12" height="8"/></svg>;
+}

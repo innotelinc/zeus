@@ -12,6 +12,7 @@ import {
   FileTextIcon,
   DownloadIcon,
   EyeIcon,
+  PrinterIcon,
   CheckCircleIcon,
   AlertCircleIcon,
   XIcon,
@@ -45,6 +46,7 @@ export default function FaxSection({ faxAccount, faxes: initialFaxes, numbers }:
   const [progressLabel, setProgressLabel] = useState("");
   const [dragOver, setDragOver] = useState(false);
   const [previewFax, setPreviewFax] = useState<Fax | null>(null);
+  const previewIframeRef = useRef<HTMLIFrameElement>(null);
 
   const avantfaxUrl =
     process.env.NEXT_PUBLIC_AVANTFAX_URL ?? "https://voice.innotel.us/fax";
@@ -597,6 +599,15 @@ export default function FaxSection({ faxAccount, faxes: initialFaxes, numbers }:
                 </p>
               </div>
               <div className="flex items-center gap-2 shrink-0">
+                <button
+                  type="button"
+                  onClick={() => previewIframeRef.current?.contentWindow?.print()}
+                  className="btn-ghost px-3 py-2 text-xs"
+                  title="Print fax"
+                >
+                  <PrinterIcon size={14} />
+                  Print
+                </button>
                 <a
                   href={`/api/fax/download?id=${encodeURIComponent(previewFax.id)}`}
                   download
@@ -619,6 +630,7 @@ export default function FaxSection({ faxAccount, faxes: initialFaxes, numbers }:
             {/* PDF Viewer */}
             <div className="flex-1 min-h-0 rounded-b-3xl bg-white/[0.01]">
               <iframe
+                ref={previewIframeRef}
                 src={`/api/fax/download?id=${encodeURIComponent(previewFax.id)}`}
                 className="h-[70vh] w-full rounded-b-3xl"
                 title="Fax document preview"
