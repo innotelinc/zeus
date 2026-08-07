@@ -124,16 +124,18 @@ export default function FaxSection({ faxAccount, faxes: initialFaxes, numbers }:
                   </div>
                 </div>
               </div>
-              <a
-                href={account.avantfax_username
-                  ? `${avantfaxUrl}/client/?user=${encodeURIComponent(account.avantfax_username)}`
-                  : avantfaxUrl}
-                target="_blank"
-                rel="noopener noreferrer"
+              <button
+                type="button"
+                onClick={() => {
+                  const url = account.avantfax_username
+                    ? `${avantfaxUrl}/client/?user=${encodeURIComponent(account.avantfax_username)}`
+                    : avantfaxUrl;
+                  window.open(url, "_blank", "noopener,noreferrer");
+                }}
                 className="btn-ghost px-4 py-2 text-xs"
               >
                 Open AvantFax
-              </a>
+              </button>
             </div>
           </div>
 
