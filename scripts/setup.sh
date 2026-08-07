@@ -394,6 +394,83 @@ uri = ${DOGRAH_WS_URI}
 protocols = audio
 EOF
 
+# ─── PJSIP WebSocket Transport (WSS port 8089) for WebRTC ────
+info "Configuring PJSIP WebSocket transport for WebRTC (wss://0.0.0.0:8089)"
+
+# Generate self-signed TLS certificate for WSS
+mkdir -p /etc/asterisk/keys
+openssl req -x509 -newkey rsa:2048 -nodes \
+  -keyout /etc/asterisk/keys/asterisk.key \
+  -out /etc/asterisk/keys/asterisk.crt \
+  -days 3650 \
+  -subj "/CN=${HOSTNAME}" 2>/dev/null
+chown -R asterisk:asterisk /etc/asterisk/keys
+chmod 640 /etc/asterisk/keys/asterisk.key
+chmod 644 /etc/asterisk/keys/asterisk.crt
+
+# PJSIP WebSocket transport + WebRTC endpoint template
+cat > /etc/asterisk/pjsip_wss.conf <<PJSIPEOF
+; ═══════════════════════════════════════════════════════════════
+; PJSIP WebSocket Transport — WebRTC Softphone Support
+; ═══════════════════════════════════════════════════════════════
+
+; ── WSS Transport (port 8089) ─────────────────────────────────
+[transport-wss]
+type = transport
+protocol = wss
+bind = 0.0.0.0:8089
+cert_file = /etc/asterisk/keys/asterisk.crt
+priv_key_file = /etc/asterisk/keys/asterisk.key
+
+; ── WebRTC Endpoint Template (inherited by all WebRTC extensions)
+[webtrc-template](!)
+type = endpoint
+transport = transport-wss
+context = from-internal
+disallow = all
+allow = ulaw,alaw,opus,gsm,g722
+webrtc = yes
+dtls_auto_generate_cert = yes
+use_avpf = yes
+media_encryption = dtls
+icesupport = yes
+direct_media = no
+dtmf_mode = rfc4733
+force_rport = yes
+rewrite_contact = yes
+rtp_symmetric = yes
+PJSIPEOF
+
+# Ensure pjsip.conf includes our WebSocket config
+if [ -f /etc/asterisk/pjsip.conf ]; then
+  if ! grep -q 'pjsip_wss.conf' /etc/asterisk/pjsip.conf 2>/dev/null; then
+    echo '#include pjsip_wss.conf' >> /etc/asterisk/pjsip.conf
+  fi
+else
+  echo '#include pjsip_wss.conf' > /etc/asterisk/pjsip.conf
+fi
+
+# ─── STUN for ICE (NAT traversal) ─────────────────────────────
+cat > /etc/asterisk/rtp_custom.conf <<EOF
+[general]
+stunaddr = stun.l.google.com:19302
+icesupport = yes
+EOF
+
+# Ensure rtp.conf includes the custom config
+if [ -f /etc/asterisk/rtp.conf ]; then
+  if ! grep -q 'rtp_custom.conf' /etc/asterisk/rtp.conf 2>/dev/null; then
+    echo '#include rtp_custom.conf' >> /etc/asterisk/rtp.conf
+  fi
+fi
+
+# Load the PJSIP WebSocket transport module
+asterisk -rx 'module load res_pjsip_transport_websocket.so' 2>/dev/null || true
+asterisk -rx 'pjsip reload' 2>/dev/null || true
+asterisk -rx 'pjsip show transports' 2>/dev/null || true
+
+log "PJSIP WebSocket transport configured on wss://${HOSTNAME}:8089"
+
 # ─── Dialplan extensions ──────────────────────────────────────
 cat >> /etc/asterisk/extensions_custom.conf <<'EOF'
 
@@ -1217,7 +1294,8 @@ RestartSec=5
 StandardOutput=journal
 StandardError=journal
 SyslogIdentifier=innotel-pbx
-[Install];WantedBy=multi-user.target
+[Install]
+WantedBy=multi-user.target
 EOF
 
 systemctl daemon-reload
