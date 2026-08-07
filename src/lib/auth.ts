@@ -1,20 +1,45 @@
 import crypto from "crypto";
 import { cookies } from "next/headers";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
 import db from "./db";
 import type { User } from "./types";
 
 let _secret: string | null = null;
 
+const SECRET_DIR = join(process.cwd(), "data");
+const SECRET_FILE = join(SECRET_DIR, ".session-secret");
+
 function getSecret(): string {
   if (_secret) return _secret;
-  const secret = process.env.SESSION_SECRET;
-  if (secret) {
-    _secret = secret;
+
+  // 1. Check env var (highest priority)
+  const envSecret = process.env.SESSION_SECRET;
+  if (envSecret) {
+    _secret = envSecret;
     return _secret;
   }
+
+  // 2. Check persisted file (survives module reloads in dev mode)
+  try {
+    if (existsSync(SECRET_FILE)) {
+      _secret = readFileSync(SECRET_FILE, "utf8").trim();
+      if (_secret) return _secret;
+    }
+  } catch {
+    // file doesn't exist or can't be read
+  }
+
+  // 3. Generate new secret and persist it
   _secret = crypto.randomBytes(32).toString("base64url");
+  try {
+    if (!existsSync(SECRET_DIR)) mkdirSync(SECRET_DIR, { recursive: true });
+    writeFileSync(SECRET_FILE, _secret, { mode: 0o600 });
+  } catch {
+    // can't write to disk, but we still have the in-memory secret
+  }
   console.warn(
-    "⚠ SESSION_SECRET not set — auto-generated ephemeral key (sessions reset on restart)",
+    `⚠ SESSION_SECRET not set — generated persistent key at ${SECRET_FILE}`,
   );
   return _secret;
 }
