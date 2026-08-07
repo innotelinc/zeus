@@ -7,8 +7,20 @@
 # Prerequisites:
 #   1. Build the Asterisk/FreePBX base image:
 #      docker build -f Dockerfile.full -t innotel/freepbx .
-#   2. Start the stack:
+#   2. Configure your env vars:
+#      cp .env.docker.example .env   # then fill in real values
+#   3. Start the stack:
 #      docker compose -f docker-compose.full.yml up -d
+#
+# Ports exposed:
+#   80        FreePBX web UI
+#   3000      PBX Customer Portal (Next.js)
+#   5060/udp  SIP signalling
+#   5038      Asterisk AMI
+#   8080      AvantFax web UI
+#   8088      Asterisk HTTP (ARI)
+#   8089      PJSIP WebSocket (WSS) for WebRTC
+#   10000:20000/udp  RTP media
 # ═══════════════════════════════════════════════════════════════
 
 services:
@@ -51,6 +63,24 @@ services:
       DB_HOST: mariadb
       DB_PASS: ${DB_PASS:-DD@l1lama}
       HOSTNAME: ${HOSTNAME:-voice.innotel.us}
+      # VoIP.ms SIP trunk auto-configuration
+      VOIPMS_SIP_USER: ${VOIPMS_SIP_USER:-}
+      VOIPMS_SIP_PASS: ${VOIPMS_SIP_PASS:-}
+      VOIPMS_SIP_SERVER: ${VOIPMS_SIP_SERVER:-newyork1.voip.ms}
+      VOIPMS_MAIN_ACCOUNT: ${VOIPMS_MAIN_ACCOUNT:-}
+      # AMI credentials
+      FREEPBX_AMI_USER: ${FREEPBX_AMI_USER:-pbxportal}
+      FREEPBX_AMI_SECRET: ${FREEPBX_AMI_SECRET:-}
+      # OAuth2 API client
+      FREEPBX_CLIENT_ID: ${FREEPBX_CLIENT_ID:-pbxportal-api}
+      FREEPBX_CLIENT_SECRET: ${FREEPBX_CLIENT_SECRET:-}
+      # SMTP for voicemail-to-email
+      SMTP_HOST: ${SMTP_HOST:-}
+      SMTP_PORT: ${SMTP_PORT:-587}
+      SMTP_USER: ${SMTP_USER:-}
+      SMTP_PASS: ${SMTP_PASS:-}
+      SMTP_FROM: ${SMTP_FROM:-pbx@innotel.us}
+      SMTP_SECURE: ${SMTP_SECURE:-false}
     volumes:
       - asterisk-config:/etc/asterisk
       - asterisk-sounds:/var/lib/asterisk/sounds
@@ -104,22 +134,88 @@ services:
     environment:
       NODE_ENV: production
       PORT: "3000"
+
+      # ── Session ──
+      SESSION_SECRET: ${SESSION_SECRET:-}
+
+      # ── VoIP.ms ──
+      VOIPMS_API_USERNAME: ${VOIPMS_API_USERNAME:-}
+      VOIPMS_API_PASSWORD: ${VOIPMS_API_PASSWORD:-}
+      VOIPMS_WEBHOOK_SECRET: ${VOIPMS_WEBHOOK_SECRET:-}
+      VOIPMS_SIP_USER: ${VOIPMS_SIP_USER:-}
+      VOIPMS_SIP_PASS: ${VOIPMS_SIP_PASS:-}
+      VOIPMS_SIP_SERVER: ${VOIPMS_SIP_SERVER:-newyork1.voip.ms}
+      VOIPMS_MAIN_ACCOUNT: ${VOIPMS_MAIN_ACCOUNT:-}
+
+      # ── FreePBX (internal Docker network) ──
       FREEPBX_URL: http://freepbx
+      FREEPBX_CLIENT_ID: ${FREEPBX_CLIENT_ID:-pbxportal-api}
+      FREEPBX_CLIENT_SECRET: ${FREEPBX_CLIENT_SECRET:-}
+
+      # ── Asterisk AMI ──
       ASTERISK_AMI_HOST: freepbx
+      ASTERISK_AMI_PORT: "5038"
+      ASTERISK_AMI_USERNAME: ${FREEPBX_AMI_USER:-pbxportal}
+      ASTERISK_AMI_SECRET: ${FREEPBX_AMI_SECRET:-}
+
+      # ── WebRTC / TURN ──
+      NEXT_PUBLIC_FREEPBX_WSS_URL: wss://${HOSTNAME:-voice.innotel.us}:8089/ws
+      NEXT_PUBLIC_TURN_SERVER: ${TURN_SERVER:-}
+      NEXT_PUBLIC_TURN_USERNAME: ${TURN_USERNAME:-}
+      NEXT_PUBLIC_TURN_CREDENTIAL: ${TURN_CREDENTIAL:-}
+
+      # ── AvantFax ──
       AVANTFAX_URL: http://avantfax:8080/avantfax
       NEXT_PUBLIC_AVANTFAX_URL: http://${HOSTNAME:-voice.innotel.us}:8080/avantfax
-      NEXT_PUBLIC_FREEPBX_WSS_URL: wss://${HOSTNAME:-voice.innotel.us}:8089/ws
+
+      # ── Atlas integration ──
+      ATLAS_API_URL: ${ATLAS_API_URL:-http://atlas-server:3000}
+      ATLAS_API_KEY: ${ATLAS_API_KEY:-}
+
+      # ── Stripe billing ──
+      STRIPE_SECRET_KEY: ${STRIPE_SECRET_KEY:-}
+      STRIPE_WEBHOOK_SECRET: ${STRIPE_WEBHOOK_SECRET:-}
+      STRIPE_CONSUMER_PRICE_ID: ${STRIPE_CONSUMER_PRICE_ID:-}
+      STRIPE_BUSINESS_PRICE_ID: ${STRIPE_BUSINESS_PRICE_ID:-}
+      NEXT_PUBLIC_STRIPE_PUBLISHABLE_KEY: ${NEXT_PUBLIC_STRIPE_PUBLISHABLE_KEY:-}
+
+      # ── Email (SMTP for voicemail/invoice/fax notifications) ──
+      ADMIN_EMAIL: ${ADMIN_EMAIL:-admin@innotel.us}
+      SMTP_HOST: ${SMTP_HOST:-}
+      SMTP_PORT: ${SMTP_PORT:-587}
+      SMTP_USER: ${SMTP_USER:-}
+      SMTP_PASS: ${SMTP_PASS:-}
+      SMTP_FROM: ${SMTP_FROM:-pbx@innotel.us}
+      SMTP_SECURE: ${SMTP_SECURE:-false}
+
+      # ── Public URL ──
       NEXT_PUBLIC_URL: https://${HOSTNAME:-voice.innotel.us}:3000
     volumes:
       - portal-data:/app/data
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:3000/api/ami/status"]
+      test: ["CMD", "curl", "-f", "http://localhost:3000/api/health"]
       interval: 30s
-      timeout: 5s
+      timeout: 10s
       retries: 3
-      start_period: 15s
+      start_period: 20s
     networks:
       - pbx-net
+
+  # ─── Optional: Coturn TURN server for WebRTC NAT traversal ──
+  # Uncomment and set TURN_SERVER=turn:pbx-coturn:3478 in .env
+  # coturn:
+  #   image: coturn/coturn:latest
+  #   container_name: pbx-coturn
+  #   restart: unless-stopped
+  #   ports:
+  #     - "3478:3478"
+  #     - "3478:3478/udp"
+  #     - "5349:5349"
+  #     - "5349:5349/udp"
+  #   volumes:
+  #     - ./turnserver.conf:/etc/coturn/turnserver.conf:ro
+  #   networks:
+  #     - pbx-net
 
 volumes:
   mariadb-data:
