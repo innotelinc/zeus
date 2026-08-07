@@ -1,0 +1,16 @@
+services:
+  pbx:
+    build: .
+    container_name: pbx-portal
+    restart: unless-stopped
+    ports:
+      - "3001:3001"
+    volumes:
+      - pbx-data:/app/data
+    env_file:
+      - .env
+    environment:
+      - NODE_ENV=production
+
+volumes:
+  pbx-data:
