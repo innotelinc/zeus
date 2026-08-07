@@ -16,13 +16,19 @@ db.exec(schema);
 
 // ── Seed demo user ──
 const userId = randomUUID();
-const passwordHash = "$2a$10$VqCTt.CuhS0zFXP0bPn1LuyCJOHPfBrV2YhEhuqJw3MN1fLs9Dfaa"; // "demo1234"
+const passwordHash = "$2b$10$q3VjaEcI.bQhZ9vk2EX0Ou6EK1EkP0K1e61bHHh/3/cq4q5TT6zJy"; // "demo1234"
 
-const existing = db.prepare("SELECT id FROM users WHERE email = ?").get("demo@innotel.us");
+const existing = db.prepare("SELECT id, password_hash FROM users WHERE email = ?").get("demo@innotel.us");
 if (existing) {
-  console.log("⚠ Demo user already exists, skipping seed.");
-  db.close();
-  process.exit(0);
+  const brokenHash = "$2a$10$VqCTt.CuhS0zFXP0bPn1LuyCJOHPfBrV2YhEhuqJw3MN1fLs9Dfaa";
+  if (existing.password_hash === brokenHash) {
+    db.prepare("UPDATE users SET password_hash = ? WHERE email = ?").run(passwordHash, "demo@innotel.us");
+    console.log("🔧 Repaired broken demo password hash. Login with demo1234 now works.");
+  } else {
+    console.log("⚠ Demo user already exists, skipping seed.");
+    db.close();
+    process.exit(0);
+  }
 }
 
 db.prepare(
