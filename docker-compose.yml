@@ -1,6 +1,15 @@
+# ═══════════════════════════════════════════════════════════════
+# Innotel PBX Portal — Docker Compose
+# ═══════════════════════════════════════════════════════════════
+# Deploys the PBX portal standalone (no Asterisk/FreePBX).
+# Requires a running VoIP infrastructure on the network.
+# ═══════════════════════════════════════════════════════════════
+
 services:
   pbx:
-    build: .
+    build:
+      context: .
+      dockerfile: Dockerfile
     container_name: pbx-portal
     restart: unless-stopped
     ports:
@@ -11,6 +20,36 @@ services:
       - .env
     environment:
       - NODE_ENV=production
+      - PORT=3000
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:3000/api/ami/status"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
+    networks:
+      - pbx-net
+
+  # ─── Optional: Coturn TURN server for WebRTC softphone ─────
+  # Uncomment if you need a TURN server for NAT traversal.
+  # coturn:
+  #   image: coturn/coturn:latest
+  #   container_name: pbx-coturn
+  #   restart: unless-stopped
+  #   ports:
+  #     - "3478:3478"
+  #     - "3478:3478/udp"
+  #     - "5349:5349"
+  #     - "5349:5349/udp"
+  #   volumes:
+  #     - ./turnserver.conf:/etc/coturn/turnserver.conf:ro
+  #   networks:
+  #     - pbx-net
 
 volumes:
   pbx-data:
+    name: pbx-portal-data
+
+networks:
+  pbx-net:
+    name: pbx-net
