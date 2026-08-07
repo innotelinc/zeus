@@ -1,0 +1,144 @@
+# ═══════════════════════════════════════════════════════════════
+# Innotel PBX — Full Stack Docker Compose
+# ═══════════════════════════════════════════════════════════════
+# Deploys the complete VoIP infrastructure:
+#   Asterisk 22.9 + FreePBX 17 + AvantFax + PBX Portal
+#
+# Prerequisites:
+#   1. Build the Asterisk/FreePBX base image:
+#      docker build -f Dockerfile.full -t innotel/freepbx .
+#   2. Start the stack:
+#      docker compose -f docker-compose.full.yml up -d
+# ═══════════════════════════════════════════════════════════════
+
+services:
+  # ── MariaDB (shared database) ──────────────────────────────
+  mariadb:
+    image: mariadb:10.11
+    container_name: pbx-mariadb
+    restart: unless-stopped
+    environment:
+      MARIADB_ROOT_PASSWORD: ${DB_PASS:-DD@l1lama}
+      MARIADB_DATABASE: asterisk
+    volumes:
+      - mariadb-data:/var/lib/mysql
+      - ./scripts/schema.sql:/docker-entrypoint-initdb.d/01-schema.sql:ro
+    healthcheck:
+      test: ["CMD", "healthcheck.sh", "--connect", "--innodb_initialized"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - pbx-net
+
+  # ── Asterisk + FreePBX 17 ──────────────────────────────────
+  freepbx:
+    image: innotel/freepbx:latest
+    container_name: pbx-freepbx
+    restart: unless-stopped
+    depends_on:
+      mariadb:
+        condition: service_healthy
+    ports:
+      - "80:80"           # FreePBX web UI
+      - "5060:5060/udp"   # SIP
+      - "5061:5061/tcp"   # SIP TLS
+      - "8088:8088"       # Asterisk HTTP (ARI)
+      - "8089:8089"       # PJSIP WebSocket (WSS)
+      - "5038:5038"       # Asterisk AMI
+      - "10000:20000/udp" # RTP
+    environment:
+      DB_HOST: mariadb
+      DB_PASS: ${DB_PASS:-DD@l1lama}
+      HOSTNAME: ${HOSTNAME:-voice.innotel.us}
+    volumes:
+      - asterisk-config:/etc/asterisk
+      - asterisk-sounds:/var/lib/asterisk/sounds
+      - asterisk-spool:/var/spool/asterisk
+      - freepbx-www:/var/www/html
+    healthcheck:
+      test: ["CMD", "asterisk", "-rx", "core show version"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
+    networks:
+      - pbx-net
+
+  # ── AvantFax (fax web UI) ──────────────────────────────────
+  avantfax:
+    image: innotel/avantfax:latest
+    container_name: pbx-avantfax
+    restart: unless-stopped
+    depends_on:
+      mariadb:
+        condition: service_healthy
+    ports:
+      - "8080:8080"
+    environment:
+      DB_HOST: mariadb
+      DB_PASS: ${DB_PASS:-DD@l1lama}
+      FAX_EMAIL: ${FAX_EMAIL:-fax@innotel.us}
+      FAX_NUMBER: ${FAX_NUMBER:-7745057136}
+      SMTP_HOST: ${SMTP_HOST:-mail.innotel.us}
+    volumes:
+      - avantfax-faxes:/var/www/html/fax/faxes
+      - hylafax-spool:/var/spool/hylafax
+    networks:
+      - pbx-net
+
+  # ── PBX Customer Portal (Next.js) ──────────────────────────
+  portal:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: pbx-portal
+    restart: unless-stopped
+    depends_on:
+      freepbx:
+        condition: service_healthy
+    ports:
+      - "3000:3000"
+    env_file:
+      - .env
+    environment:
+      NODE_ENV: production
+      PORT: "3000"
+      FREEPBX_URL: http://freepbx
+      ASTERISK_AMI_HOST: freepbx
+      AVANTFAX_URL: http://avantfax:8080/avantfax
+      NEXT_PUBLIC_AVANTFAX_URL: http://${HOSTNAME:-voice.innotel.us}:8080/avantfax
+      NEXT_PUBLIC_FREEPBX_WSS_URL: wss://${HOSTNAME:-voice.innotel.us}:8089/ws
+      NEXT_PUBLIC_URL: https://${HOSTNAME:-voice.innotel.us}:3000
+    volumes:
+      - portal-data:/app/data
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:3000/api/ami/status"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
+    networks:
+      - pbx-net
+
+volumes:
+  mariadb-data:
+    name: pbx-mariadb-data
+  asterisk-config:
+    name: pbx-asterisk-config
+  asterisk-sounds:
+    name: pbx-asterisk-sounds
+  asterisk-spool:
+    name: pbx-asterisk-spool
+  freepbx-www:
+    name: pbx-freepbx-www
+  avantfax-faxes:
+    name: pbx-avantfax-faxes
+  hylafax-spool:
+    name: pbx-hylafax-spool
+  portal-data:
+    name: pbx-portal-data
+
+networks:
+  pbx-net:
+    name: pbx-net

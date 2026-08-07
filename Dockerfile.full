@@ -1,0 +1,186 @@
+# ═══════════════════════════════════════════════════════════════
+# Innotel PBX — Asterisk + FreePBX Full Stack Image
+# ═══════════════════════════════════════════════════════════════
+# Build:  docker build -f Dockerfile.full -t innotel/freepbx .
+# Run:    docker run -d --name freepbx -p 80:80 -p 5060:5060/udp \
+#           -p 8089:8089 -p 5038:5038 innotel/freepbx
+#
+# This image contains:
+#   - Asterisk 22.9.0 LTS (compiled from source)
+#   - FreePBX 17 (Sangoma official installer)
+#   - PJSIP with WebSocket (port 8089)
+#   - Asterisk AMI (port 5038)
+#   - Apache 2 + PHP 8.2
+#   - MariaDB client
+#
+# WARNING: Build takes 45-90 minutes. Use a build server with
+# at least 8 GB RAM and 20 GB disk.
+# ═══════════════════════════════════════════════════════════════
+
+FROM debian:12-slim
+
+ENV DEBIAN_FRONTEND=noninteractive
+ENV ASTERISK_VER=22.9.0
+
+WORKDIR /usr/src
+
+# ─── Base system ─────────────────────────────────────────────
+RUN apt update && apt -y upgrade && \
+    apt -y install --no-install-recommends \
+      zip curl wget gnupg2 net-tools lsb-release ca-certificates \
+      apache2 mariadb-client \
+      bison flex libxml2-dev sqlite3 libsqlite3-dev pkg-config \
+      automake libtool autoconf unixodbc-dev uuid uuid-dev \
+      libasound2-dev libogg-dev libvorbis-dev libicu-dev \
+      libcurl4-openssl-dev libical-dev libneon27-gnutls-dev libsrtp2-dev \
+      sudo subversion libtool-bin unixodbc cmake dirmngr \
+      libglib2.0-dev ffmpeg default-libmysqlclient-dev \
+      build-essential flite flac libspandsp-dev debhelper odbc-mariadb libtiff-dev \
+      python3 python3-venv python3-dev python3-pip \
+      git libnewt-dev libssl-dev libncurses5-dev libjansson-dev \
+      libedit-dev openssh-client && \
+    apt clean && rm -rf /var/lib/apt/lists/*
+
+# ─── PHP 8.2 + Apache modules ────────────────────────────────
+RUN apt update && apt -y install --no-install-recommends \
+      libapache2-mod-php8.2 php8.2 php8.2-cgi php8.2-common php8.2-curl \
+      php8.2-mbstring php8.2-gd php8.2-mysql php8.2-bcmath php8.2-zip \
+      php8.2-xml php8.2-imap php8.2-snmp php8.2-gmp \
+      php8.2-cli php8.2-intl php8.2-fpm php8.2-ldap && \
+    apt clean && rm -rf /var/lib/apt/lists/*
+
+# ─── Compile dependencies ────────────────────────────────────
+RUN cd /usr/src && \
+    git clone https://github.com/innotelinc/spandsp.git && \
+    cd spandsp && ./autogen.sh && ./configure && make && make install && ldconfig && \
+    cd /usr/src && rm -rf spandsp
+
+# ─── Asterisk 22.9.0 ─────────────────────────────────────────
+RUN wget "https://downloads.asterisk.org/pub/telephony/asterisk/releases/asterisk-${ASTERISK_VER}.tar.gz" && \
+    tar zxf "asterisk-${ASTERISK_VER}.tar.gz" && \
+    cd "asterisk-${ASTERISK_VER}" && \
+    contrib/scripts/get_mp3_source.sh && \
+    contrib/scripts/install_prereq install && \
+    ./configure \
+      --libdir=/usr/lib64 \
+      --with-crypto --with-ssl --with-srtp --with-sqlite3 \
+      --with-jansson-bundled --with-pjproject-bundled && \
+    make menuselect.makeopts && \
+    for MOD in \
+      res_ari res_ari_channels res_ari_bridges res_ari_endpoints \
+      res_ari_events res_ari_recordings res_ari_sounds \
+      res_http_websocket chan_websocket codec_opus format_mp3 \
+      CORE-SOUNDS-EN-WAV CORE-SOUNDS-EN-ULAW CORE-SOUNDS-EN-ALAW \
+      CORE-SOUNDS-EN-GSM CORE-SOUNDS-EN-G722 \
+      CORE-SOUNDS-EN-SLN16 MOH-OPSOUND-WAV MOH-OPSOUND-ULAW \
+      MOH-OPSOUND-ALAW MOH-OPSOUND-GSM MOH-OPSOUND-G722; do \
+      menuselect/menuselect --enable "$MOD" menuselect.makeopts 2>/dev/null || true; \
+    done && \
+    make -j"$(nproc)" && make install && make samples && make config && \
+    ldconfig && \
+    cd /usr/src && rm -rf "asterisk-${ASTERISK_VER}" "asterisk-${ASTERISK_VER}.tar.gz"
+
+# ─── Asterisk user & permissions ─────────────────────────────
+RUN groupadd asterisk && useradd -r -d /var/lib/asterisk -g asterisk asterisk && \
+    usermod -aG audio,dialout asterisk && \
+    chown -R asterisk:asterisk /etc/asterisk && \
+    chown -R asterisk:asterisk /var/lib/asterisk /var/log/asterisk /var/spool/asterisk && \
+    sed -i 's|#AST_USER|AST_USER|' /etc/default/asterisk && \
+    sed -i 's|#AST_GROUP|AST_GROUP|' /etc/default/asterisk && \
+    echo "/usr/lib64" > /etc/ld.so.conf.d/asterisk.conf && ldconfig
+
+# ─── Apache config ───────────────────────────────────────────
+RUN sed -i 's/^\(User\|Group\).*/\1 asterisk/' /etc/apache2/apache2.conf && \
+    sed -i 's/AllowOverride None/AllowOverride All/' /etc/apache2/apache2.conf && \
+    a2enmod proxy_fcgi setenvif rewrite && \
+    a2enconf php8.2-fpm && \
+    rm -f /var/www/html/index.html
+
+# ─── FreePBX 17 ──────────────────────────────────────────────
+RUN cd /tmp && \
+    wget -O sng_freepbx_debian_install.sh \
+      https://github.com/FreePBX/sng_freepbx_debian_install/raw/master/sng_freepbx_debian_install.sh && \
+    chmod +x sng_freepbx_debian_install.sh && \
+    bash sng_freepbx_debian_install.sh --noasterisk --opensourceonly && \
+    rm /tmp/sng_freepbx_debian_install.sh
+
+# ─── Node.js (for FreePBX UCP) ───────────────────────────────
+RUN curl -fsSL https://deb.nodesource.com/setup_20.x | bash - && \
+    apt -y install nodejs && \
+    apt clean && rm -rf /var/lib/apt/lists/* && \
+    fwconsole ma downloadinstall ucp 2>/dev/null || true && \
+    fwconsole reload
+
+# ─── PJSIP WebSocket (port 8089) ─────────────────────────────
+RUN mkdir -p /etc/asterisk/keys && \
+    openssl req -x509 -newkey rsa:2048 -nodes \
+      -keyout /etc/asterisk/keys/asterisk.key \
+      -out /etc/asterisk/keys/asterisk.crt \
+      -days 3650 -subj "/CN=voice.innotel.us" && \
+    chown -R asterisk:asterisk /etc/asterisk/keys && \
+    chmod 640 /etc/asterisk/keys/asterisk.key
+
+RUN cat > /etc/asterisk/pjsip_wss.conf <<'PJSIPEOF'
+[transport-wss]
+type = transport
+protocol = wss
+bind = 0.0.0.0:8089
+cert_file = /etc/asterisk/keys/asterisk.crt
+priv_key_file = /etc/asterisk/keys/asterisk.key
+
+[webtrc-template](!)
+type = endpoint
+transport = transport-wss
+context = from-internal
+disallow = all
+allow = ulaw,alaw,opus,gsm,g722
+webrtc = yes
+dtls_auto_generate_cert = yes
+use_avpf = yes
+media_encryption = dtls
+icesupport = yes
+direct_media = no
+dtmf_mode = rfc4733
+force_rport = yes
+rewrite_contact = yes
+rtp_symmetric = yes
+PJSIPEOF
+
+RUN echo '#include pjsip_wss.conf' >> /etc/asterisk/pjsip.conf && \
+    cat > /etc/asterisk/rtp_custom.conf <<'EOF'
+[general]
+stunaddr = stun.l.google.com:19302
+icesupport = yes
+EOF
+RUN echo '#include rtp_custom.conf' >> /etc/asterisk/rtp.conf
+
+# ─── AMI (Manager Interface) ─────────────────────────────────
+RUN cat > /etc/asterisk/manager_custom.conf <<'EOF'
+[pbxportal]
+secret = PBXPORTAL_AMI_SECRET
+deny = 0.0.0.0/0.0.0.0
+permit = 0.0.0.0/0.0.0.0
+read = system,call,log,verbose,command,agent,user,config,dtmf,reporting,cdr,dialplan,originate
+write = system,call,log,verbose,command,agent,user,config,dtmf,reporting,cdr,dialplan,originate
+eventfilter=!Event: RTCP*
+eventfilter=!Event: VarSet
+eventfilter=!Event: Newexten
+EOF
+RUN sed -i 's/^enabled=.*/enabled=yes/' /etc/asterisk/manager.conf 2>/dev/null || true
+
+# ─── Permissions ─────────────────────────────────────────────
+RUN chown -R asterisk:asterisk /etc/asterisk && \
+    chown -R asterisk:asterisk /var/lib/php/sessions && \
+    chown -R asterisk:asterisk /var/spool/asterisk && \
+    chown -R asterisk:asterisk /var/run/asterisk /run/asterisk && \
+    chown -R asterisk:asterisk /var/www/html && \
+    chmod -R 777 /var/www/html /var/lib/asterisk && \
+    mkdir -p /var/run/asterisk && chown asterisk:asterisk /var/run/asterisk
+
+# ─── Entrypoint ──────────────────────────────────────────────
+COPY docker-entrypoint-full.sh /usr/local/bin/entrypoint.sh
+RUN chmod +x /usr/local/bin/entrypoint.sh
+
+EXPOSE 80 5060/udp 5061 8088 8089 5038 10000-20000/udp
+
+ENTRYPOINT ["/usr/local/bin/entrypoint.sh"]
