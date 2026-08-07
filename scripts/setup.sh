@@ -803,6 +803,75 @@ else
   warn "Skipping VoIP.ms trunk — set VOIPMS_USER, VOIPMS_PASS, and VOIPMS_MAIN_ACCOUNT env vars"
 fi
 
+# ─── FreePBX OAuth2 API Client auto-configuration ───────────
+info "Configuring FreePBX OAuth2 API for PBX Portal"
+
+# Install the API and REST API modules
+fwconsole ma downloadinstall api 2>/dev/null || true
+fwconsole ma downloadinstall restapi 2>/dev/null || true
+fwconsole ma enable api 2>/dev/null || true
+fwconsole ma enable restapi 2>/dev/null || true
+fwconsole reload 2>/dev/null || true
+
+# Generate or reuse API client credentials
+# FreePBX API module stores OAuth2 clients in the database.
+# First check if our pbxportal client already exists.
+EXISTING_CLIENT=$(mysql -u root -p"${DB_PASS}" -N -e \
+  "SELECT client_id FROM asterisk.api_applications WHERE name='pbxportal' LIMIT 1" 2>/dev/null || true)
+
+if [ -n "$EXISTING_CLIENT" ] && [ "$FREEPBX_CLIENT_ID" = "pbxportal-api" ]; then
+  FREEPBX_CLIENT_ID="$EXISTING_CLIENT"
+  # Try to fetch existing secret
+  EXISTING_SECRET=$(mysql -u root -p"${DB_PASS}" -N -e \
+    "SELECT client_secret FROM asterisk.api_applications WHERE client_id='${EXISTING_CLIENT}' LIMIT 1" 2>/dev/null || true)
+  if [ -n "$EXISTING_SECRET" ]; then
+    FREEPBX_CLIENT_SECRET="$EXISTING_SECRET"
+  fi
+  log "Reusing existing pbxportal API client: ${FREEPBX_CLIENT_ID}"
+else
+  # Create a new OAuth2 client_credentials application
+  # Generate cryptographically random client_id and client_secret
+  NEW_CLIENT_ID="pbxportal-$(openssl rand -hex 8)"
+  NEW_CLIENT_SECRET="$(openssl rand -hex 32)"
+
+  # Ensure the api_applications table exists
+  mysql -u root -p"${DB_PASS}" asterisk <<'EOSQL'
+CREATE TABLE IF NOT EXISTS api_applications (
+  id INT AUTO_INCREMENT PRIMARY KEY,
+  name VARCHAR(100) NOT NULL,
+  client_id VARCHAR(100) NOT NULL UNIQUE,
+  client_secret VARCHAR(255) NOT NULL,
+  grant_types VARCHAR(255) DEFAULT 'client_credentials',
+  scopes VARCHAR(255) DEFAULT '*',
+  redirect_uri VARCHAR(255) DEFAULT '',
+  created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+);
+EOSQL
+
+  mysql -u root -p"${DB_PASS}" asterisk -e \
+    "INSERT INTO api_applications (name, client_id, client_secret, grant_types, scopes) VALUES ('pbxportal', '${NEW_CLIENT_ID}', '${NEW_CLIENT_SECRET}', 'client_credentials', '*')" 2>/dev/null || true
+
+  FREEPBX_CLIENT_ID="${NEW_CLIENT_ID}"
+  FREEPBX_CLIENT_SECRET="${NEW_CLIENT_SECRET}"
+  log "Created FreePBX OAuth2 API client: ${FREEPBX_CLIENT_ID}"
+fi
+
+# Ensure FreePBX API is accessible and reload
+fwconsole reload 2>/dev/null || true
+
+# Verify the token endpoint is reachable (self-test)
+if command -v curl &>/dev/null; then
+  TOKEN_TEST=$(curl -s -o /dev/null -w "%{http_code}" \
+    -X POST "https://${HOSTNAME}/admin/api/api/oauth2/token" \
+    -H "Content-Type: application/json" \
+    -d "{\"grant_type\":\"client_credentials\",\"client_id\":\"${FREEPBX_CLIENT_ID}\",\"client_secret\":\"${FREEPBX_CLIENT_SECRET}\"}" 2>/dev/null || echo "000")
+  if [ "$TOKEN_TEST" = "200" ]; then
+    log "FreePBX OAuth2 token endpoint verified (HTTP 200)"
+  else
+    warn "FreePBX OAuth2 token endpoint returned HTTP ${TOKEN_TEST} — check API module configuration"
+  fi
+fi
+
 # ═══════════════════════════════════════════════════════════════
 # PHASE 10 — FAX STACK (IAXModem + HylaFAX + AvantFAX)
 # ═══════════════════════════════════════════════════════════════
@@ -1439,7 +1508,8 @@ echo "║  SIP Trunk    : ${VOIPMS_SIP_SERVER} (VoIP.ms)          ║"
 echo "╠══════════════════════════════════════════════════════════╣"
 echo "║  AMI User     : ${FREEPBX_AMI_USER}"
 echo "║  AMI Secret   : ${FREEPBX_AMI_SECRET}"
-echo "║  API Client   : ${FREEPBX_CLIENT_ID} / ${FREEPBX_CLIENT_SECRET}"
+echo "║  API Client   : ${FREEPBX_CLIENT_ID}"
+echo "║  OAuth2 URL   : https://${HOSTNAME}/admin/api/api/oauth2/token"
 echo "║  Atlas URL    : ${ATLAS_URL}"
 echo "╠══════════════════════════════════════════════════════════╣"
 echo "║  Portal logs  : journalctl -u innotel-pbx -f            ║"
