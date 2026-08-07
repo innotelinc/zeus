@@ -5,7 +5,7 @@
 # Run:    docker run -p 3000:3000 -v pbx-data:/app/data --env-file .env innotel/pbx-portal
 # ═══════════════════════════════════════════════════════════════
 
-FROM node:20-alpine AS base
+FROM node:22-alpine AS base
 WORKDIR /app
 
 # ─── Stage 1: Install dependencies ───────────────────────────
@@ -29,7 +29,7 @@ RUN npm run build
 RUN cd .next/standalone && npm prune --omit=dev
 
 # ─── Stage 3: Production runner ──────────────────────────────
-FROM node:20-alpine AS runner
+FROM node:22-alpine AS runner
 RUN apk add --no-cache sqlite-dev curl
 
 WORKDIR /app
