@@ -1,152 +1,352 @@
-#!/usr/bin/env bash
+#!/bin/bash
+# ============================================================
+#  Innotel VoIP / Fax Full Stack Installer
+#  Target:   Debian 12 "Bookworm" (minimal VM / LXC)
+#  Stack:    Asterisk 22.9.0 (LTS) + FreePBX 17 + AvantFax 3.4.1
+#            IAXModem 1.3.5 + HylaFAX 7.0.11
+#            PHP 8.2 (FreePBX 17 default) + PHP 7.4 (AvantFax legacy)
+#            VOSK Speech-to-Text + Dograh ARI WebSocket
+#            AI CDR Summarisation (Ollama / llama3.1:8b)
+#            PBX Customer Portal (Next.js, port 3000)
+#  VM Spec:  200 GB HD | 16 GB RAM | 16 GB Swap
+#  Date:     August 2026
+#  NOTE:     Run as root on Debian 12 minimal. Review before executing.
+# ============================================================
+
 set -euo pipefail
 
-# ─────────────────────────────────────────────────────────────
-# Innotel PBX Portal — Full Stack Setup Script
-# ─────────────────────────────────────────────────────────────
-# This script sets up the complete Innotel VoIP stack:
-#   1. FreePBX 17 + Asterisk (Debian 12)
-#   2. AvantFax + HylaFAX+ (via Docker)
-#   3. PBX Customer Portal (this app, port 3000)
-#   4. VoIP.ms trunk configuration
-#   5. AMI / WebSocket / WebRTC configuration
-#   6. Systemd services for everything
-#
-# Atlas runs on another server. This server runs on port 3000.
-# ─────────────────────────────────────────────────────────────
+# ─── VARIABLES ────────────────────────────────────────────────
+HOSTNAME="${HOSTNAME:-voice.innotel.us}"
+PUB_IP="${PUB_IP:-}"
+DB_PASS="${DB_PASS:-DD@l1lama}"
+ADMIN_EMAIL="${ADMIN_EMAIL:-admin@innotel.us}"
+FAX_EMAIL="${FAX_EMAIL:-fax@innotel.us}"
+SMTP_HOST="${SMTP_HOST:-mail.innotel.us}"
+SMTP_SSL_HOST="${SMTP_SSL_HOST:-ssl://mx.innotel.us}"
+SMTP_PORT="${SMTP_PORT:-465}"
+ASTERISK_VER="${ASTERISK_VER:-22.9.0}"
+FAX_NUMBER="${FAX_NUMBER:-7745057136}"
+FAX_AREACODE="${FAX_AREACODE:-774}"
+FAX_COUNTRY="${FAX_COUNTRY:-1}"
+DOGRAH_WS_URI="${DOGRAH_WS_URI:-ws://aivoice.innotel.us/api/v1/telephony/ws/ari}"
+DOGRAH_ARI_PASS="${DOGRAH_ARI_PASS:-DD@l1lama-dograh}"
+ARI_HTTP_PORT="${ARI_HTTP_PORT:-8088}"
 
-GREEN='\033[0;32m'
-YELLOW='\033[1;33m'
-RED='\033[0;31m'
-CYAN='\033[0;36m'
-NC='\033[0m'
+# PBX Portal variables
+VOIPMS_USER="${VOIPMS_USER:-}"
+VOIPMS_PASS="${VOIPMS_PASS:-}"
+ATLAS_URL="${ATLAS_URL:-http://atlas-server:3000}"
+ATLAS_API_KEY="${ATLAS_API_KEY:-$(openssl rand -hex 32)}"
+SESSION_SECRET="${SESSION_SECRET:-$(openssl rand -hex 32)}"
+STRIPE_SECRET_KEY="${STRIPE_SECRET_KEY:-}"
+STRIPE_WEBHOOK_SECRET="${STRIPE_WEBHOOK_SECRET:-}"
+STRIPE_PUBLISHABLE_KEY="${STRIPE_PUBLISHABLE_KEY:-}"
+TURN_SERVER="${TURN_SERVER:-}"
+TURN_USERNAME="${TURN_USERNAME:-}"
+TURN_CREDENTIAL="${TURN_CREDENTIAL:-}"
+FREEPBX_AMI_USER="${FREEPBX_AMI_USER:-pbxportal}"
+FREEPBX_AMI_SECRET="${FREEPBX_AMI_SECRET:-$(openssl rand -hex 16)}"
+FREEPBX_CLIENT_ID="${FREEPBX_CLIENT_ID:-pbxportal-api}"
+FREEPBX_CLIENT_SECRET="${FREEPBX_CLIENT_SECRET:-$(openssl rand -hex 24)}"
+APP_DIR="${APP_DIR:-/opt/innotel-pbx}"
 
+GREEN='\033[0;32m'; YELLOW='\033[1;33m'; RED='\033[0;31m'; CYAN='\033[0;36m'; NC='\033[0m'
 log()  { echo -e "${GREEN}[✓]${NC} $*"; }
 warn() { echo -e "${YELLOW}[!]${NC} $*"; }
 err()  { echo -e "${RED}[✗]${NC} $*"; }
 info() { echo -e "${CYAN}[i]${NC} $*"; }
 
-# ─── Configuration (edit these or pass as env vars) ───
+# ═══════════════════════════════════════════════════════════════
+# PHASE 1 — BASE SYSTEM
+# ═══════════════════════════════════════════════════════════════
 
-FREEPBX_HOST="${FREEPBX_HOST:-voice.innotel.us}"
-FREEPBX_AMI_USER="${FREEPBX_AMI_USER:-pbxportal}"
-FREEPBX_AMI_SECRET="${FREEPBX_AMI_SECRET:-$(openssl rand -hex 16)}"
-FREEPBX_CLIENT_ID="${FREEPBX_CLIENT_ID:-pbxportal-api}"
-FREEPBX_CLIENT_SECRET="${FREEPBX_CLIENT_SECRET:-$(openssl rand -hex 24)}"
-FREEPBX_WSS_PORT="${FREEPBX_WSS_PORT:-8089}"
+echo ">>> [1/13] System update & base packages"
+cd /usr/src
+apt update && apt -y install zip curl wget gnupg2 net-tools software-properties-common lsb-release
+apt -y upgrade
 
-VOIPMS_USER="${VOIPMS_USER:-}"
-VOIPMS_PASS="${VOIPMS_PASS:-}"
+# Proxmox LXC: prevent host-file clobbering
+touch /etc/.pve-ignore.hosts 2>/dev/null || true
+touch /etc/.pve-ignore.resolv.conf 2>/dev/null || true
 
-ATLAS_URL="${ATLAS_URL:-http://atlas-server:3000}"
-ATLAS_API_KEY="${ATLAS_API_KEY:-$(openssl rand -hex 32)}"
+# ─── Hostname ─────────────────────────────────────────────────
+hostnamectl set-hostname "${HOSTNAME}" --static
 
-SESSION_SECRET="${SESSION_SECRET:-$(openssl rand -hex 32)}"
-STRIPE_SECRET_KEY="${STRIPE_SECRET_KEY:-}"
-STRIPE_WEBHOOK_SECRET="${STRIPE_WEBHOOK_SECRET:-}"
-STRIPE_PUBLISHABLE_KEY="${STRIPE_PUBLISHABLE_KEY:-}"
-
-TURN_SERVER="${TURN_SERVER:-}"
-TURN_USERNAME="${TURN_USERNAME:-}"
-TURN_CREDENTIAL="${TURN_CREDENTIAL:-}"
-
-APP_DIR="/opt/innotel-pbx"
-DATA_DIR="/var/lib/innotel-pbx"
-
-# ─────────────────────────────────────────────────────────────
-# 1. Host checks
-# ─────────────────────────────────────────────────────────────
-
-info "=== Innotel PBX Full Stack Setup ==="
-echo ""
-
-if [[ $EUID -ne 0 ]]; then
-   err "This script must be run as root"
-   exit 1
+if [ -n "$PUB_IP" ]; then
+cat > /etc/hosts <<EOF
+127.0.0.1       localhost
+${PUB_IP}       ${HOSTNAME} voice
+::1             localhost ip6-localhost ip6-loopback
+fe00::0         ip6-localnet
+ff00::0         ip6-mcastprefix
+ff02::1         ip6-allnodes
+ff02::2         ip6-allrouters
+# --- BEGIN PVE ---
+${PUB_IP}       ${HOSTNAME} voice
+# --- END PVE ---
+EOF
 fi
 
-OS_ID=$(grep -oP '^ID=\K.+' /etc/os-release 2>/dev/null | tr -d '"' || echo "unknown")
-OS_VERSION=$(grep -oP '^VERSION_ID=\K.+' /etc/os-release 2>/dev/null | tr -d '"' || echo "0")
+# ─── Webmin ───────────────────────────────────────────────────
+info "Installing Webmin"
+curl -fsSL https://download.webmin.com/jcameron-key.asc | gpg --dearmor -o /usr/share/keyrings/webmin.gpg
+echo "deb [signed-by=/usr/share/keyrings/webmin.gpg] https://download.webmin.com/download/newkey/repository sarge contrib" \
+  > /etc/apt/sources.list.d/webmin.list
+apt update && apt -y install webmin
 
-info "Detected OS: ${OS_ID} ${OS_VERSION}"
-
-# ─────────────────────────────────────────────────────────────
-# 2. Install FreePBX 17 + Asterisk (Debian 12)
-# ─────────────────────────────────────────────────────────────
-
-install_freepbx() {
-    if systemctl is-active --quiet freepbx 2>/dev/null; then
-        log "FreePBX is already running — skipping install"
-        return 0
-    fi
-
-    if [[ "$OS_ID" != "debian" || "${OS_VERSION%%.*}" -lt 12 ]]; then
-        err "FreePBX 17 requires Debian 12. Detected: ${OS_ID} ${OS_VERSION}"
-        err "Please install Debian 12 first, then re-run this script."
-        exit 1
-    fi
-
-    info "Installing FreePBX 17 + Asterisk... (this may take 20-30 minutes)"
-
-    cd /tmp
-    wget -q https://github.com/FreePBX/sng_freepbx_debian_install/raw/master/sng_freepbx_debian_install.sh \
-        -O /tmp/sng_freepbx_debian_install.sh
-    chmod +x /tmp/sng_freepbx_debian_install.sh
-
-    # The official script is interactive; run it but accept defaults
-    yes "" | bash /tmp/sng_freepbx_debian_install.sh 2>&1 | tee /var/log/freepbx-install.log || {
-        err "FreePBX install failed. Check /var/log/freepbx-install.log"
-        exit 1
-    }
-
-    log "FreePBX 17 installed successfully"
-}
-
-# ─────────────────────────────────────────────────────────────
-# 3. Configure Asterisk for WebRTC (PJSIP WebSocket)
-# ─────────────────────────────────────────────────────────────
-
-configure_webrtc() {
-    info "Configuring Asterisk HTTP server for WebRTC WebSocket..."
-
-    HTTP_CONF="/etc/asterisk/http.conf"
-
-    if [[ -f "$HTTP_CONF" ]]; then
-        # Enable HTTP server
-        sed -i 's/^enabled=.*/enabled=yes/' "$HTTP_CONF"
-        sed -i 's/^bindaddr=.*/bindaddr=0.0.0.0/' "$HTTP_CONF"
-
-        # Ensure WebSocket ports are set
-        if ! grep -q "^tlsenable=" "$HTTP_CONF"; then
-            cat >> "$HTTP_CONF" <<'EOF'
-
-; WebRTC / WebSocket support
-tlsenable=yes
-tlsbindaddr=0.0.0.0:8089
-tlscertfile=/etc/asterisk/keys/asterisk.pem
-tlsprivatekey=/etc/asterisk/keys/asterisk.key
+# ─── Code-Server (VS Code in browser) ─────────────────────────
+info "Installing Code-Server"
+curl -fsSL https://code-server.dev/install.sh | sh
+mkdir -p ~/.config/code-server
+cat > ~/.config/code-server/config.yaml <<EOF
+bind-addr: 0.0.0.0:8081
+auth: password
+password: ${DB_PASS}
+cert: false
 EOF
-        fi
+systemctl enable --now code-server@root
 
-        log "HTTP/WebSocket configured on port ${FREEPBX_WSS_PORT}"
-    else
-        warn "http.conf not found — WebRTC WebSocket may need manual setup"
-    fi
+# ═══════════════════════════════════════════════════════════════
+# PHASE 2 — REPOSITORIES & SENDMAIL
+# ═══════════════════════════════════════════════════════════════
 
-    # Reload Asterisk
-    fwconsole reload 2>/dev/null || asterisk -rx "module reload" 2>/dev/null || true
-}
+echo ">>> [2/13] PHP repositories & sendmail"
 
-# ─────────────────────────────────────────────────────────────
-# 4. Configure AMI (Asterisk Manager Interface)
-# ─────────────────────────────────────────────────────────────
+# PHP 8.2 is native on Debian 12. PHP 7.4 needs sury.org.
+curl -fsSL https://packages.sury.org/php/apt.gpg | gpg --dearmor -o /usr/share/keyrings/sury-php.gpg
+echo "deb [signed-by=/usr/share/keyrings/sury-php.gpg] https://packages.sury.org/php/ $(lsb_release -sc) main" \
+  > /etc/apt/sources.list.d/php.list
+apt update && apt -y upgrade
 
-configure_ami() {
-    info "Configuring AMI manager user: ${FREEPBX_AMI_USER}"
+# ─── Sendmail ─────────────────────────────────────────────────
+apt -y install mailutils libsasl2-modules sasl2-bin sendmail
 
-    AMI_CONF="/etc/asterisk/manager_custom.conf"
+cat > /etc/mail/authinfo <<EOF
+AuthInfo:${SMTP_HOST} "U:admin" "I:${ADMIN_EMAIL}" "P:oFLsqu6g0u"
+EOF
 
-    cat > "$AMI_CONF" <<EOF
+cat > /etc/mail/genericstable <<EOF
+root    voice@innotel.us
+EOF
+
+cat > /etc/mail/generics-domains <<EOF
+localhost
+${HOSTNAME}
+EOF
+
+cat >> /etc/mail/sendmail.mc <<'SENDMAILEOF'
+FEATURE(`authinfo', `hash -o /etc/mail/authinfo.db')dnl
+FEATURE(`genericstable', `hash -o /etc/mail/genericstable.db')dnl
+GENERICS_DOMAIN(`localhost.localdomain')dnl
+GENERICS_DOMAIN_FILE(`/etc/mail/generics-domains')dnl
+MAILER_DEFINITIONS
+MAILER(`local')dnl
+MAILER(`smtp')dnl
+define(`SMART_HOST', `mail.innotel.us')dnl
+define(`RELAY_MAILER_ARGS', `TCP $h 465')dnl
+define(`ESMTP_MAILER_ARGS', `TCP $h 465')dnl
+include(`/etc/mail/sasl/sasl.m4')dnl
+SENDMAILEOF
+
+sendmailconfig -f || true
+
+# ═══════════════════════════════════════════════════════════════
+# PHASE 3 — CORE BUILD DEPENDENCIES
+# ═══════════════════════════════════════════════════════════════
+
+echo ">>> [3/13] Core build dependencies"
+apt -y install \
+  apache2 python3-certbot-apache openssh-server mariadb-client mariadb-server \
+  bison flex mpg123 libxml2-dev sqlite3 libsqlite3-dev pkg-config automake libtool autoconf \
+  unixodbc-dev uuid uuid-dev libasound2-dev libogg-dev libvorbis-dev libicu-dev \
+  libcurl4-openssl-dev libical-dev libneon27-gnutls-dev libsrtp2-dev sudo subversion libtool-bin \
+  unixodbc dirmngr cmake \
+  libglib2.0-dev bind9 sox incron ffmpeg default-libmysqlclient-dev \
+  build-essential flite flac libspandsp-dev debhelper odbc-mariadb libtiff-dev \
+  python3 python3-venv python3-dev libaugeas0 libaugeas-dev python3-pip easy-rsa cron \
+  git maven libleptonica-dev liblept5 exactimage html2ps imagemagick \
+  libtiff-tools libtiff5-dev ghostscript mgetty-voice netpbm \
+  libnewt-dev libssl-dev libncurses5-dev libjansson-dev apt-utils ipset dos2unix \
+  fail2ban
+
+# ─── PHP 8.2 (FreePBX 17 default — native on Debian 12) ─────
+apt -y install \
+  libapache2-mod-php8.2 php8.2 php-pear php8.2-cgi php8.2-common php8.2-curl \
+  php8.2-mbstring php8.2-gd php8.2-mysql php8.2-bcmath php8.2-zip php8.2-xml \
+  php8.2-imap php8.2-snmp php8.2-gmp php8.2-redis php8.2-memcached redis \
+  php8.2-cli php8.2-intl php8.2-fpm php8.2-ldap
+
+# ─── PHP 7.4 (AvantFax legacy — from sury.org) ──────────────
+apt -y install \
+  libapache2-mod-php7.4 php7.4 php7.4-cgi php7.4-ldap php7.4-common php7.4-curl \
+  php7.4-mbstring php7.4-gd php7.4-mysql php7.4-bcmath php7.4-zip php7.4-xml \
+  php7.4-imap php7.4-snmp php7.4-fpm
+
+update-alternatives --set php /usr/bin/php8.2
+
+for VER in 8.2 7.4; do
+  for SAPI in apache2 cli fpm; do
+    INI="/etc/php/${VER}/${SAPI}/php.ini"
+    [ -f "$INI" ] || continue
+    sed -i 's/\(^upload_max_filesize = \).*/\1512M/' "$INI"
+    sed -i 's/\(^memory_limit = \).*/\1512M/'        "$INI"
+    sed -i 's/\(^post_max_size = \).*/\1256M/'        "$INI"
+  done
+done
+
+# ═══════════════════════════════════════════════════════════════
+# PHASE 4 — APACHE & ASTERISK USER
+# ═══════════════════════════════════════════════════════════════
+
+echo ">>> [4/13] Apache + Asterisk user"
+groupadd asterisk   || true
+useradd -r -d /var/lib/asterisk -g asterisk asterisk 2>/dev/null || true
+usermod -aG audio,dialout asterisk
+
+cp /etc/apache2/apache2.conf /etc/apache2/apache2.conf_orig
+sed -i 's/^\(User\|Group\).*/\1 asterisk/'  /etc/apache2/apache2.conf
+sed -i 's/AllowOverride None/AllowOverride All/' /etc/apache2/apache2.conf
+
+cat >> /etc/apache2/apache2.conf <<'EOF'
+
+<Directory "/var/www/html">
+    allow from all
+    Options FollowSymLinks
+    AllowOverride All
+    Require all granted
+</Directory>
+EOF
+
+a2enmod proxy_fcgi setenvif rewrite
+a2enconf php8.2-fpm
+rm -f /var/www/html/index.html
+systemctl enable apache2 mariadb
+systemctl start  apache2 mariadb
+
+# ═══════════════════════════════════════════════════════════════
+# PHASE 5 — COMPILE ASTERISK DEPENDENCIES
+# ═══════════════════════════════════════════════════════════════
+
+echo ">>> [5/13] Compile dependencies"
+cd /usr/src
+
+# DAHDI (Proxmox-aware)
+if [ -f install-dahdi-on-proxmox.sh ]; then
+  chmod +x install-dahdi-on-proxmox.sh && ./install-dahdi-on-proxmox.sh || true
+fi
+
+# libpri
+if [ -f libpri-1.6.1.tar.gz ]; then
+  tar zxf libpri-1.6.1.tar.gz && cd libpri-1.6.1 && make && make install && cd /usr/src
+fi
+
+# spandsp
+if [ ! -d spandsp ]; then
+  git clone https://github.com/innotelinc/spandsp.git
+fi
+cd spandsp && ./autogen.sh && ./configure && make && make install && ldconfig && cd /usr/src
+
+# mpg123
+if [ -f mpg123-1.33.4.tar.bz2 ]; then
+  tar jxf mpg123-1.33.4.tar.bz2 && cd mpg123-1.33.4
+  ./configure --libdir=/usr/lib64 && make && make install
+  ln -sf /usr/local/bin/mpg123 /usr/bin/mpg123
+  cd /usr/src
+fi
+
+# lame
+if [ -f lame-3.100.tar.gz ]; then
+  tar zxf lame-3.100.tar.gz && cd lame-3.100
+  ./configure --libdir=/usr/lib64 && make && make install
+  ln -sf /usr/local/bin/lame /usr/bin/lame
+  cd /usr/src
+fi
+
+# libsrtp
+if [ -f libsrtp-2.7.0.tar.gz ]; then
+  tar zxf libsrtp-2.7.0.tar.gz && cd libsrtp-2.7.0
+  ./configure --libdir=/usr/lib64 --enable-openssl && make && make install
+  echo "/usr/local/include" > /etc/ld.so.conf.d/srtp.conf
+  ldconfig && cd /usr/src
+fi
+
+# sqlite3 (latest)
+if [ -f sqlite-autoconf-3510200.tar.gz ]; then
+  tar zxf sqlite-autoconf-3510200.tar.gz && cd sqlite-autoconf-3510200
+  ./configure --libdir=/usr/lib64 && make && make install
+  ldconfig && cd /usr/src
+fi
+
+pip3 install iksemel setuptools 2>/dev/null || true
+
+# ═══════════════════════════════════════════════════════════════
+# PHASE 6 — ASTERISK 22.9.0
+# ═══════════════════════════════════════════════════════════════
+
+echo ">>> [6/13] Asterisk ${ASTERISK_VER}"
+cd /usr/src
+if [ ! -f "asterisk-${ASTERISK_VER}.tar.gz" ]; then
+  wget "https://downloads.asterisk.org/pub/telephony/asterisk/releases/asterisk-${ASTERISK_VER}.tar.gz"
+fi
+tar zxf "asterisk-${ASTERISK_VER}.tar.gz"
+cd "asterisk-${ASTERISK_VER}"
+
+contrib/scripts/get_mp3_source.sh
+contrib/scripts/install_prereq install
+
+./configure \
+  --libdir=/usr/lib64 \
+  --with-crypto --with-ssl --with-mysqlclient \
+  --with-srtp --with-sqlite3 \
+  --with-jansson-bundled --with-pjproject-bundled
+
+make menuselect.makeopts
+MSEL="menuselect/menuselect"
+for MOD in \
+  res_config_mysql format_mp3 app_saycounted app_macro smsq stereorize \
+  streamplayer check_expr check_expr2 \
+  codec_opus codec_silk codec_siren7 codec_siren14 \
+  res_ari res_ari_channels res_ari_bridges res_ari_endpoints \
+  res_ari_events res_ari_recordings res_ari_sounds \
+  res_http_websocket chan_websocket \
+  res_speech res_speech_vosk \
+  CORE-SOUNDS-EN-WAV CORE-SOUNDS-EN-ULAW CORE-SOUNDS-EN-ALAW \
+  CORE-SOUNDS-EN-GSM CORE-SOUNDS-EN-G729 CORE-SOUNDS-EN-G722 \
+  CORE-SOUNDS-EN-SLN16 CORE-SOUNDS-EN-SIREN7 CORE-SOUNDS-EN-SIREN14 \
+  MOH-OPSOUND-WAV MOH-OPSOUND-ULAW MOH-OPSOUND-ALAW MOH-OPSOUND-GSM \
+  MOH-OPSOUND-G729 MOH-OPSOUND-G722 MOH-OPSOUND-SLN16 \
+  MOH-OPSOUND-SIREN7 MOH-OPSOUND-SIREN14 \
+  EXTRA-SOUNDS-EN-WAV EXTRA-SOUNDS-EN-ULAW EXTRA-SOUNDS-EN-ALAW \
+  EXTRA-SOUNDS-EN-GSM EXTRA-SOUNDS-EN-G729 EXTRA-SOUNDS-EN-G722 \
+  EXTRA-SOUNDS-EN-SLN16 EXTRA-SOUNDS-EN-SIREN7 EXTRA-SOUNDS-EN-SIREN14; do
+  $MSEL --enable "$MOD" menuselect.makeopts 2>/dev/null || true
+done
+
+make && make install && make samples && make config
+ldconfig
+
+chown -R asterisk:asterisk /etc/asterisk
+chown -R asterisk:asterisk /var/{lib,log,spool}/asterisk
+chown -R asterisk:asterisk /usr/lib64/asterisk
+
+sed -i 's|#AST_USER|AST_USER|'   /etc/default/asterisk
+sed -i 's|#AST_GROUP|AST_GROUP|' /etc/default/asterisk
+sed -i 's|;runuser|runuser|'     /etc/asterisk/asterisk.conf
+sed -i 's|;rungroup|rungroup|'   /etc/asterisk/asterisk.conf
+echo "/usr/lib64" >> /etc/ld.so.conf.d/x86_64-linux-gnu.conf
+ldconfig
+
+systemctl enable asterisk
+systemctl start  asterisk
+
+# ═══════════════════════════════════════════════════════════════
+# PHASE 7 — AMI, ARI, VOSK, WEBSOCKET CONFIG
+# ═══════════════════════════════════════════════════════════════
+
+echo ">>> [7/13] AMI + ARI (Dograh) + VOSK + WebSocket config"
+
+# ─── AMI (Asterisk Manager Interface) ────────────────────────
+cat > /etc/asterisk/manager_custom.conf <<EOF
 ; Auto-generated by Innotel PBX setup
 [${FREEPBX_AMI_USER}]
 secret = ${FREEPBX_AMI_SECRET}
@@ -159,267 +359,852 @@ eventfilter=!Event: VarSet
 eventfilter=!Event: Newexten
 EOF
 
-    # Also enable AMI in general
-    if [[ -f "/etc/asterisk/manager.conf" ]]; then
-        sed -i 's/^enabled=.*/enabled=yes/' /etc/asterisk/manager.conf
-        sed -i 's/^bindaddr=.*/bindaddr=0.0.0.0/' /etc/asterisk/manager.conf
-    fi
+# Enable AMI globally
+sed -i 's/^enabled=.*/enabled=yes/' /etc/asterisk/manager.conf 2>/dev/null || true
+sed -i 's/^bindaddr=.*/bindaddr=0.0.0.0/' /etc/asterisk/manager.conf 2>/dev/null || true
 
-    chown asterisk:asterisk "$AMI_CONF" 2>/dev/null || true
-    chmod 640 "$AMI_CONF" 2>/dev/null || true
-
-    fwconsole reload 2>/dev/null || asterisk -rx "module reload manager" 2>/dev/null || true
-    log "AMI configured: ${FREEPBX_AMI_USER} / ${FREEPBX_AMI_SECRET}"
-}
-
-# ─────────────────────────────────────────────────────────────
-# 5. Create FreePBX API OAuth2 client
-# ─────────────────────────────────────────────────────────────
-
-configure_freepbx_api() {
-    info "Configuring FreePBX API OAuth2 client..."
-
-    # FreePBX API OAuth is configured via the GUI, but we auto-generate creds
-    # and store them for the portal. The admin must finalize in the GUI.
-    log "API credentials generated:"
-    log "  Client ID:     ${FREEPBX_CLIENT_ID}"
-    log "  Client Secret: ${FREEPBX_CLIENT_SECRET}"
-    warn "Complete the OAuth2 setup in FreePBX GUI → Connectivity → API → OAuth2"
-}
-
-# ─────────────────────────────────────────────────────────────
-# 6. Install AvantFax + HylaFAX+ (via Docker)
-# ─────────────────────────────────────────────────────────────
-
-install_avantfax() {
-    info "Setting up AvantFax + HylaFAX+ via Docker..."
-
-    # Check if Docker is installed
-    if ! command -v docker &>/dev/null; then
-        info "Installing Docker..."
-        curl -fsSL https://get.docker.com | bash
-    fi
-
-    # Create AvantFax data directory
-    mkdir -p /opt/avantfax/{spool,etc,www}
-
-    # Write docker-compose for AvantFax
-    cat > /opt/avantfax/docker-compose.yml <<'DOCKEREOF'
-version: "3.8"
-services:
-  hylafax:
-    image: influxdb/hylafax:latest
-    container_name: innotel-hylafax
-    restart: unless-stopped
-    ports:
-      - "4559:4559"
-    volumes:
-      - ./spool:/var/spool/hylafax
-      - ./etc:/etc/hylafax
-    environment:
-      - HOSTNAME=${HOSTNAME:-fax.innotel.us}
-    devices:
-      - /dev/ttyS0:/dev/modem
-
-  avantfax:
-    image: avantfax/avantfax:latest
-    container_name: innotel-avantfax
-    restart: unless-stopped
-    ports:
-      - "8080:80"
-    volumes:
-      - ./www:/var/www/html/avantfax
-      - ./spool:/var/spool/hylafax
-    environment:
-      - DB_HOST=mysql
-      - DB_NAME=avantfax
-      - DB_USER=avantfax
-      - DB_PASS=avantfax
-
-  mysql:
-    image: mysql:8.0
-    container_name: innotel-avantfax-db
-    restart: unless-stopped
-    environment:
-      - MYSQL_ROOT_PASSWORD=rootpassword
-      - MYSQL_DATABASE=avantfax
-      - MYSQL_USER=avantfax
-      - MYSQL_PASSWORD=avantfax
-    volumes:
-      - ./mysql:/var/lib/mysql
-DOCKEREOF
-
-    cd /opt/avantfax
-    docker compose up -d 2>&1 || {
-        warn "AvantFax Docker setup had issues — continuing. Check /opt/avantfax/"
-    }
-
-    log "AvantFax running at http://${FREEPBX_HOST}:8080/avantfax"
-}
-
-# ─────────────────────────────────────────────────────────────
-# 7. Configure VoIP.ms trunk (via FreePBX API)
-# ─────────────────────────────────────────────────────────────
-
-configure_voipms_trunk() {
-    info "Configuring VoIP.ms trunk..."
-
-    if [[ -z "$VOIPMS_USER" ]]; then
-        warn "VOIPMS_USER not set — skipping VoIP.ms trunk setup"
-        warn "Configure the trunk manually in FreePBX → Connectivity → Trunks → SIP"
-        return 0
-    fi
-
-    # Create a PJSIP trunk configuration file
-    TRUNK_CONF="/etc/asterisk/pjsip_custom_post.conf"
-
-    cat >> "$TRUNK_CONF" <<EOF
-
-; VoIP.ms trunk (auto-generated by Innotel PBX setup)
-[voipms](!)
-type = registration
-outbound_auth = voipms_auth
-server_uri = sip:${VOIPMS_USER}:${VOIPMS_PASS}@sip.voip.ms
-client_uri = sip:${VOIPMS_USER}@sip.voip.ms
-retry_interval = 30
-max_retries = 10
-forbidden_retry_interval = 300
-
-[voipms_auth](auth_type=userpass)
-type = auth
-username = ${VOIPMS_USER}
-password = ${VOIPMS_PASS}
-
-[voipms_endpoint](voipms)
-type = endpoint
-context = from-trunk
-disallow = all
-allow = ulaw
-allow = alaw
+# ─── ARI ─────────────────────────────────────────────────────
+cat > /etc/asterisk/ari_general_custom.conf <<EOF
+[general]
+enabled = yes
+pretty = yes
+allowed_origins = *
 EOF
 
-    fwconsole reload 2>/dev/null || asterisk -rx "pjsip reload" 2>/dev/null || true
-    log "VoIP.ms trunk configured"
+cat > /etc/asterisk/ari_additional_custom.conf <<EOF
+[dograh]
+type = user
+read_only = no
+password = ${DOGRAH_ARI_PASS}
+EOF
+
+# ─── HTTP server (ARI + WebSocket share this) ────────────────
+cat > /etc/asterisk/http_custom.conf <<EOF
+[general]
+enabled = yes
+bindaddr = 0.0.0.0
+bindport = ${ARI_HTTP_PORT}
+EOF
+
+# ─── WebSocket client to Dograh ───────────────────────────────
+cat > /etc/asterisk/websocket_client.conf <<EOF
+[dograh]
+type = websocket_client
+uri = ${DOGRAH_WS_URI}
+protocols = audio
+EOF
+
+# ─── Dialplan extensions ──────────────────────────────────────
+cat >> /etc/asterisk/extensions_custom.conf <<'EOF'
+
+; ── Dograh ARI Stasis routing ──────────────────────────────────
+[from-external]
+exten => _X.,1,NoOp(Dograh: incoming call to ${EXTEN})
+ same => n,Stasis(dograh)
+ same => n,Hangup()
+
+; ── VOSK speech-recognition test extension ────────────────────
+[internal]
+exten = 1,1,Answer
+ same = n,Wait(1)
+ same = n,SpeechCreate
+ same = n,SpeechBackground(hello)
+ same = n,Verbose(0,Result was ${SPEECH_TEXT(0)})
+EOF
+
+# ─── VOSK Asterisk module ─────────────────────────────────────
+cd /usr/src
+if [ ! -d vosk-asterisk ]; then
+  git clone https://github.com/innotelinc/vosk-asterisk.git
+fi
+cd vosk-asterisk
+./bootstrap
+./configure \
+  --with-asterisk=/usr/src/asterisk-${ASTERISK_VER} \
+  --prefix=/usr --libdir=/usr/lib64
+make && make install
+
+chmod 755 /usr/lib64/asterisk/modules/res_speech_vosk.so
+chown asterisk:asterisk /usr/lib64/asterisk/modules/res_speech_vosk.so
+
+asterisk -rx 'module reload res_ari'         2>/dev/null || true
+asterisk -rx 'module load res_speech.so'      2>/dev/null || true
+asterisk -rx 'module load res_http_websocket.so' 2>/dev/null || true
+asterisk -rx 'module load chan_websocket.so'  2>/dev/null || true
+asterisk -rx 'module load res_speech_vosk.so' 2>/dev/null || true
+asterisk -rx 'dialplan reload'                2>/dev/null || true
+
+# ─── Custom logger ────────────────────────────────────────────
+cat > /etc/asterisk/logger_logfiles_custom.conf <<EOF
+messages => notice,warning,error,security
+EOF
+asterisk -rx 'logger reload' 2>/dev/null || true
+
+# ═══════════════════════════════════════════════════════════════
+# PHASE 8 — DATABASE SETUP
+# ═══════════════════════════════════════════════════════════════
+
+echo ">>> [8/13] MariaDB databases & ODBC"
+mysql_secure_installation <<EOF
+
+y
+${DB_PASS}
+${DB_PASS}
+y
+y
+y
+y
+EOF
+
+mysqladmin -p"${DB_PASS}" create asterisk         2>/dev/null || true
+mysqladmin -p"${DB_PASS}" create asteriskcdrdb    2>/dev/null || true
+mysqladmin -p"${DB_PASS}" create asteriskvoicemail 2>/dev/null || true
+
+mysql -p"${DB_PASS}" <<SQL
+GRANT ALL PRIVILEGES ON asterisk.*          TO asterisk@localhost IDENTIFIED BY '${DB_PASS}';
+GRANT ALL PRIVILEGES ON asteriskcdrdb.*     TO asterisk@localhost IDENTIFIED BY '${DB_PASS}';
+GRANT ALL PRIVILEGES ON asteriskvoicemail.* TO asterisk@localhost IDENTIFIED BY '${DB_PASS}';
+CREATE TABLE IF NOT EXISTS asteriskcdrdb.ai_call_summaries (
+  id         INT AUTO_INCREMENT PRIMARY KEY,
+  uniqueid   VARCHAR(32),
+  caller     VARCHAR(64),
+  callee     VARCHAR(64),
+  summary    TEXT,
+  intent     VARCHAR(128),
+  sentiment  VARCHAR(32),
+  created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+FLUSH PRIVILEGES;
+SQL
+
+# ─── MariaDB ODBC connector ───────────────────────────────────
+cd /usr/src
+if [ -f mariadb-connector-odbc-3.1.21-ubuntu-jammy-amd64.tar.gz ]; then
+  tar zxf mariadb-connector-odbc-3.1.21-ubuntu-jammy-amd64.tar.gz
+  cd mariadb-connector-odbc-3.1.21-ubuntu-jammy-amd64
+  install lib/mariadb/libmaodbc.so /usr/lib64/
+  install -d /usr/lib64/mariadb/plugin/
+  for PLUGIN in caching_sha2_password client_ed25519 dialog mysql_clear_password sha256_password; do
+    install lib/mariadb/plugin/${PLUGIN}.so /usr/lib64/mariadb/plugin/ 2>/dev/null || true
+  done
+  cd /usr/src
+  cat > /usr/src/odbc_template.ini <<EOF
+[MySQL]
+Description = ODBC for MySQL (MariaDB)
+Driver = /usr/lib64/libmaodbc.so
+FileUsage = 1
+EOF
+  odbcinst -i -d -n MariaDB -f /usr/src/odbc_template.ini 2>/dev/null || true
+fi
+
+cat > /etc/odbc.ini <<EOF
+[MySQL-asteriskcdrdb]
+Description=MySQL connection to 'asteriskcdrdb' database
+driver=MySQL
+server=localhost
+database=asteriskcdrdb
+username=root
+password=${DB_PASS}
+Port=3306
+Socket=/run/mysqld/mysqld.sock
+option=3
+Charset=utf8
+EOF
+
+cat > /etc/asterisk/cdr_adaptive_odbc.conf <<EOF
+[asteriskcdrdb]
+connection=asteriskcdrdb
+loguniqueid=1
+table=cdr
+alias start => calldate
+EOF
+
+cat > /etc/asterisk/res_odbc_additional.conf <<EOF
+[asteriskcdrdb]
+enabled=>yes
+dsn=>MySQL-asteriskcdrdb
+pre-connect=>yes
+max_connections=>5
+username=>asterisk
+password=>${DB_PASS}
+database=>asteriskcdrdb
+EOF
+
+cat > /etc/asterisk/res_odbc_custom.conf <<EOF
+[asteriskvoicemail]
+enabled=>yes
+dsn=>MySQL-asteriskvoicemail
+pre-connect=>yes
+max_connections=>5
+username=>asterisk
+password=>${DB_PASS}
+database=>asteriskvoicemail
+EOF
+
+mkdir -p /etc/radiusclient-ng
+touch /etc/radiusclient-ng/radiusclient.conf
+
+# MariaDB: disable strict mode (AvantFax compat)
+cat > /etc/mysql/conf.d/mysql.cnf <<EOF
+[mysqld]
+sql_mode=NO_ENGINE_SUBSTITUTION
+EOF
+
+systemctl restart mariadb
+
+# ═══════════════════════════════════════════════════════════════
+# PHASE 9 — FREEPBX 17
+# ═══════════════════════════════════════════════════════════════
+
+echo ">>> [9/13] FreePBX 17"
+
+# Use the official FreePBX Debian installer (native on Debian 12)
+cd /tmp
+wget -O sng_freepbx_debian_install.sh \
+  https://github.com/FreePBX/sng_freepbx_debian_install/raw/master/sng_freepbx_debian_install.sh
+chmod +x sng_freepbx_debian_install.sh
+
+# --noasterisk = keep our compiled Asterisk 22.9.0
+bash sng_freepbx_debian_install.sh --noasterisk --opensourceonly
+
+# ─── Node.js (FreePBX UCP) ────────────────────────────────────
+curl -fsSL https://deb.nodesource.com/setup_20.x | bash -
+apt -y install nodejs
+
+# ─── FreePBX modules ──────────────────────────────────────────
+fwconsole ma downloadinstall pm2      2>/dev/null || true
+fwconsole ma downloadinstall ucp      2>/dev/null || true
+fwconsole ma installall               2>/dev/null || true
+fwconsole reload
+fwconsole restart
+
+# ─── Systemd unit ─────────────────────────────────────────────
+cat > /etc/systemd/system/freepbx.service <<EOF
+[Unit]
+Description=FreePBX VoIP Server
+After=mariadb.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/sbin/fwconsole start -q
+ExecStop=/usr/sbin/fwconsole stop -q
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+systemctl daemon-reload
+systemctl enable freepbx
+mkdir -p /var/www/html/admin/modules/_cache
+
+# ─── Permissions ──────────────────────────────────────────────
+chown -R asterisk:asterisk /var/lib/php/sessions
+chown -R asterisk:asterisk /var/spool/asterisk
+chown -R asterisk:asterisk /var/run/asterisk /run/asterisk
+chown -R asterisk:asterisk /etc/asterisk
+chown -R asterisk:asterisk /var/{lib,log,spool}/asterisk
+chown -R asterisk:asterisk /usr/lib64/asterisk
+chown -R asterisk:asterisk /var/www/html
+chmod -R 777 /var/www/html /var/lib/asterisk
+chmod 777 /etc/amportal.conf /etc/freepbx.conf 2>/dev/null || true
+chown -R asterisk:asterisk /run/php/ 2>/dev/null || true
+
+# ─── Logrotate ────────────────────────────────────────────────
+cat > /etc/logrotate.d/asterisk <<'EOF'
+/var/log/asterisk/queue_log /var/spool/mail/asterisk
+/var/log/asterisk/freepbx_debug.log /var/log/asterisk/messages
+/var/log/asterisk/event_log /var/log/asterisk/full
+/var/log/asterisk/dtmf /var/log/asterisk/fail2ban {
+        weekly
+        missingok
+        rotate 5
+        notifempty
+        sharedscripts
+        create 0640 asterisk asterisk
+        postrotate
+        /usr/sbin/asterisk -rx 'logger reload' > /dev/null 2> /dev/null || true
+        endscript
 }
+EOF
 
-# ─────────────────────────────────────────────────────────────
-# 8. Install PBX Customer Portal (this app)
-# ─────────────────────────────────────────────────────────────
+# ═══════════════════════════════════════════════════════════════
+# PHASE 10 — FAX STACK (IAXModem + HylaFAX + AvantFAX)
+# ═══════════════════════════════════════════════════════════════
 
-install_portal() {
-    info "Installing PBX Customer Portal..."
+echo ">>> [10/13] Fax stack"
+cd /usr/src
 
-    # Install Node.js if needed
-    if ! command -v node &>/dev/null; then
-        info "Installing Node.js 20..."
-        curl -fsSL https://deb.nodesource.com/setup_20.x | bash -
-        apt-get install -y nodejs
-    fi
+# ─── Leptonica & Tesseract OCR ───────────────────────────────
+if [ -f leptonica-1.85.0.tar.gz ]; then
+  tar zxf leptonica-1.85.0.tar.gz && cd leptonica-1.85.0
+  ./autogen.sh && ./configure --libdir=/usr/lib64 && make && make install && cd /usr/src
+fi
+if [ -f tesseract-5.5.2.tar.gz ]; then
+  tar zxf tesseract-5.5.2.tar.gz && cd tesseract-5.5.2
+  ./autogen.sh && ./configure --libdir=/usr/lib64 && make && make install && cd /usr/src
+fi
+[ -f eng.traineddata ] && mv eng.traineddata /usr/local/share/tessdata/
 
-    # Create app directory
-    mkdir -p "$APP_DIR"
-    mkdir -p "$DATA_DIR"
+# ─── IAXModem 1.3.5 ──────────────────────────────────────────
+if [ -f iaxmodem-1.3.5.tar.gz ]; then
+  tar zxf iaxmodem-1.3.5.tar.gz && cd iaxmodem-1.3.5
+  ./configure --libdir=/usr/lib64 && make
+  mkdir -p /etc/iaxmodem /var/log/iaxmodem
+  cp iaxmodem /usr/local/sbin/
+  cd /usr/src
+fi
 
-    # Copy the portal from this repo location
-    SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-    REPO_DIR="$(dirname "$SCRIPT_DIR")"
+for N in 1 2 3 4; do
+cat > "/etc/iaxmodem/ttyIAX${N}" <<EOF
+device          /dev/ttyIAX${N}
+owner           uucp:uucp
+mode            660
+port            $((4569 + N))
+refresh         60
+server          127.0.0.1
+peername        ${FAX_NUMBER}
+secret          329fax
+codec           ulaw
+cidname         Fax Server
+cidnumber       ${FAX_NUMBER}
+nojitterbuffer
+EOF
+done
 
-    if [[ -f "$REPO_DIR/package.json" ]]; then
-        info "Copying portal from $REPO_DIR to $APP_DIR..."
-        rsync -a --exclude='node_modules' --exclude='.git' --exclude='data' --exclude='.next' \
-            "$REPO_DIR/" "$APP_DIR/"
-    elif [[ -d "/usr/src/projects/pbx" ]]; then
-        info "Copying portal from /usr/src/projects/pbx..."
-        rsync -a --exclude='node_modules' --exclude='.git' --exclude='data' --exclude='.next' \
-            /usr/src/projects/pbx/ "$APP_DIR/"
-    else
-        warn "PBX portal source not found — clone from GitHub"
-        git clone https://github.com/innotelinc/pbx-portal.git "$APP_DIR"
-    fi
+# ─── HylaFAX 7.0.11 ──────────────────────────────────────────
+if [ -f hylafax-7.0.11.tar.gz ]; then
+  apt -y install ghostscript mgetty-voice netpbm libtiff-tools libtiff5-dev
+  [ -f ghostscript-fonts-std-8.11.tar.gz ] && \
+    tar zxf ghostscript-fonts-std-8.11.tar.gz -C /usr/share/ghostscript --no-same-owner
+  tar zxf hylafax-7.0.11.tar.gz && cd hylafax-7.0.11
+  ./configure && make && make install
+  ln -sf /usr/bin/gs /usr/local/bin/gs
+  faxsetup <<< "$(printf 'y\n%.0s' {1..20})" || true
+  cd /usr/src
+fi
 
-    cd "$APP_DIR"
-    npm ci --production 2>&1 | tail -5
+# ImageMagick policy
+POLICY=/etc/ImageMagick-6/policy.xml
+if [ -f "$POLICY" ]; then
+  for PAT in PS PS2 PS3 EPS PDF XPS; do
+    sed -i "s|<policy domain=\"coder\" rights=\"none\" pattern=\"${PAT}\"|<policy domain=\"coder\" rights=\"read|write\" pattern=\"${PAT}\"|g" "$POLICY" || true
+  done
+fi
 
-    # Generate .env file
-    generate_env
+for N in 1 2 3 4; do
+cat > "/var/spool/hylafax/etc/config.ttyIAX${N}" <<EOF
+CountryCode:            ${FAX_COUNTRY}
+AreaCode:               ${FAX_AREACODE}
+FAXNumber:              ${FAX_AREACODE}.505.7136
+LongDistancePrefix:     1
+InternationalPrefix:    011
+DialStringRules:        "etc/dialrules"
+ServerTracing:          1
+SessionTracing:         1
+RecvFileMode:           0600
+LogFileMode:            0600
+DeviceMode:             0600
+RingsBeforeAnswer:      1
+SpeakerVolume:          off
+GettyArgs:              "-h %l dx_%s"
+LocalIdentifier:        "1${FAX_NUMBER}"
+TagLineFont:            etc/lutRS18.pcf
+TagLineFormat:          "From %%l|%c|Page %%P of %%T"
+MaxRecvPages:           200
+JobReqNoCarrier:        180
+JobReqNoAnswer:         180
+FaxRcvdCmd:             bin/faxrcvd.php
+DynamicConfig:          bin/dynconf.php
+NotifyCmd:              bin/notify.php
+ModemType:              Class1
+ModemResetCmds:         "ATH1\nAT+VCID=1"
+ModemReadyCmds:         ATH0
+Class1AdaptRecvCmd:     AT+FAR=1
+Class1TMConnectDelay:   400
+Class1RMQueryCmd:       "!24,48,72,96"
+Class1TMQueryCmd:       "!24,48,72,96"
+CallIDPattern:          "NMBR="
+CallIDPattern:          "NAME="
+CallIDPattern:          "ANID="
+CallIDPattern:          "NDID="
+EOF
+chown uucp:uucp "/var/spool/hylafax/etc/config.ttyIAX${N}"
+done
 
-    # Build
-    npm run build 2>&1 | tail -10
+cat >> /usr/local/lib/fax/hyla.conf <<EOF
+JobFmt: "%-5j %1a %15o %-15.15e %5P %5D %5i %7z %.25s"
+RcvFmt: "%7o %-10t %-25s %-20f %5p %1z %-40e"
+PageSize:       na-let
+VRes:   196
+EOF
 
-    log "PBX Portal installed at ${APP_DIR}"
-}
+faxdeluser localhost  2>/dev/null || true
+faxdeluser 127.0.0.1 2>/dev/null || true
+faxadduser -a admin "${DB_PASS}"
+echo "127.0.0.1" >> /var/spool/hylafax/etc/hosts.hfaxd
 
-# ─────────────────────────────────────────────────────────────
-# 9. Generate .env configuration
-# ─────────────────────────────────────────────────────────────
+for N in 1 2 3 4; do
+cat > "/etc/systemd/system/faxgetty${N}.service" <<FXEOF
+[Unit]
+Description=HylaFAX faxgetty for ttyIAX${N}
+[Service]
+User=root
+Group=root
+Restart=always
+RestartSec=30
+ExecStart=/usr/local/sbin/faxgetty ttyIAX${N}
+[Install]
+WantedBy=multi-user.target
+FXEOF
+cat > "/etc/systemd/system/iaxmodem${N}.service" <<IXEOF
+[Unit]
+Description=IAXModem for ttyIAX${N}
+[Service]
+Type=simple
+Restart=always
+RestartSec=30
+ExecStart=/usr/local/sbin/iaxmodem ttyIAX${N}
+[Install]
+WantedBy=multi-user.target
+IXEOF
+done
 
-generate_env() {
-    info "Generating .env configuration..."
+cat > /etc/systemd/system/hfaxd.service <<'HFXDEOF'
+[Unit]
+Description=Hylafax hfaxd
+[Service]
+Type=forking
+ExecStart=/usr/local/sbin/hfaxd -i hylafax
+[Install]
+WantedBy=multi-user.target
+HFXDEOF
 
-    cat > "${APP_DIR}/.env" <<EOF
+cat > /etc/systemd/system/faxq.service <<'FQXEOF'
+[Unit]
+Description=faxq
+[Service]
+Type=forking
+ExecStart=/usr/local/sbin/faxq
+[Install]
+WantedBy=multi-user.target
+FQXEOF
+
+systemctl daemon-reload
+for SVC in hfaxd faxq faxgetty1 faxgetty2 faxgetty3 faxgetty4 \
+           iaxmodem1 iaxmodem2 iaxmodem3 iaxmodem4; do
+  systemctl enable "${SVC}.service" 2>/dev/null || true
+  systemctl start  "${SVC}.service" 2>/dev/null || true
+done
+
+# ─── AvantFAX 3.4.1 ──────────────────────────────────────────
+cd /usr/src
+if [ -f avantfax-3.4.1.tgz ]; then
+  tar zxf avantfax-3.4.1.tgz && cd avantfax-3.4.1
+  chown -R asterisk:asterisk .
+  ln -sf /usr/src/avantfax-3.4.1/avantfax /var/www/html/fax
+
+  chmod -R 770 /var/www/html/fax/tmp /var/www/html/fax/faxes
+  chmod -R 775 /var/www/html/fax/includes
+  chown -R asterisk:uucp    /var/www/html/fax/tmp /var/www/html/fax/faxes
+  chown -R asterisk:asterisk /var/www/html/fax
+
+  mv /usr/local/bin/faxcover /usr/local/bin/faxcover.old 2>/dev/null || true
+  ln -sf /var/www/html/fax/includes/faxcover.php /usr/local/bin/faxcover
+  ln -sf /var/www/html/fax/includes/faxrcvd.php  /var/spool/hylafax/bin/faxrcvd.php
+  ln -sf /var/www/html/fax/includes/dynconf.php   /var/spool/hylafax/bin/dynconf.php
+  ln -sf /var/www/html/fax/includes/notify.php    /var/spool/hylafax/bin/notify.php
+  ln -sf /usr/local/bin/faxstat /usr/bin/faxstat  2>/dev/null || true
+
+  pear channel-update pear.php.net 2>/dev/null || true
+  pear install --alldeps Mail Net_SMTP Mail_mime \
+    MDB2_driver_mysql-beta pear/Auth_SASL2-beta \
+    pear/MDB2-beta pear/MDB2_Driver_mysqli-beta 2>/dev/null || true
+
+  mysql -p"${DB_PASS}" < create_user.sql     2>/dev/null || true
+  mysql -p"${DB_PASS}" avantfax < create_tables.sql 2>/dev/null || true
+  cd /usr/src
+fi
+
+# ─── AvantFAX local_config.php ───────────────────────────────
+cat > /var/www/html/fax/includes/local_config.php <<PHP
+<?php
+        define('AFDB_USER',     'avantfax');
+        define('AFDB_PASS',     'd58fe49');
+        define('AFDB_NAME',     'avantfax');
+        define('AFDB_HOST',     'localhost');
+        \$BINARYDIR = '/usr/bin';
+        \$HYLAFAX_PREFIX = '/usr/local';
+        \$HYLASPOOL = '/var/spool/hylafax';
+        \$HYLATIFF2PS = false;
+        \$CALLIDn_CIDNumber = 1;
+        \$CALLIDn_CIDName = 2;
+        \$CALLIDn_DIDNum = 3;
+        \$FAXMAILUSER = 'root';
+        \$WWWUSER = 'asterisk';
+        define('ADMIN_EMAIL', '${FAX_EMAIL}');
+        \$NOTIFY_INCLUDE_PDF = true;
+        \$FAXRCVD_INCLUDE_THUMBNAIL = true;
+        \$FAXRCVD_INCLUDE_PDF = true;
+        \$ENABLE_DID_ROUTING = false;
+        \$AUTOCONFDID = true;
+        \$dft_config_lang = 'en';
+        \$FROM_COMPANY = ""; \$FROM_LOCATION = ""; \$FROM_FAXNUMBER = ""; \$FROM_VOICENUMBER = "";
+        \$DEFAULT_TSI_ID = ""; \$ENABLE_DL_TIFF = true;
+        \$AVANTFAX_SERVERNAME = 'fax.innotel.us';
+        \$SHOWSERVER_DETAILS = true; \$SHOW_ALL_CONTACTS = true;
+        \$TIFF_TO_G4 = false; \$AVANTFAX_DEBUG = false;
+        define('RESTRICTED_USER_MODE', false);
+        \$NUM_PAGES_FOLLOW = 0;
+        define('WHITEPAGES', "http://www.whitepages.com/search/ReversePhone?full_phone=");
+        define('MAX_USERNAME_SIZE', 15); define('MAX_PASSWD_SIZE', 15);
+        define('MIN_PASSWD_SIZE', 8); define('MAX_EMAIL_SIZE', 99);
+        define('INBOX_LIST_MODEM', false);
+        \$FOCUS_ON_NEW_FAX = true; \$FOCUS_ON_NEW_FAX_POPUP = true;
+        \$SENDFAX_REQUEUE_EMAIL = true; \$SENDFAX_USE_COVERPAGE = true;
+        \$ARCHIVEFAX2EMAIL = true; \$ARCHIVE_WIDE = true;
+        \$DEFAULT_FAXES_PER_PAGE_INBOX = 25; \$DEFAULT_FAXES_PER_PAGE_ARCHIVE = 30;
+        define('ENABLE_OCR_SUPPORT', true);
+        define('OCR_BINARY', "/usr/local/bin/tesseract");
+        define('OCR_COMMAND', OCR_BINARY." %s %s -l %s");
+        define('OCR_LANGUAGE', "eng");
+        define('ENABLE_BARDECODE_SUPPORT', true);
+        define('BARDECODE_BINARY', "/var/spool/hylafax/bin/bardecode");
+        define('BARDECODE_COMMAND', BARDECODE_BINARY." -t any -f %s");
+        \$FAXRCVD_PRINT_PDF = false;
+        define('EMAIL_ENCODING_TEXT', "Base64Encoding");
+        define('EMAIL_ENCODING_HTML', "Base64Encoding");
+        define('EMAIL_ENCODING_CHARSET', "UTF-8");
+        define('USE_SMTPSERVER', true);
+        define('SMTP_SERVER', '${SMTP_SSL_HOST}');
+        define('SMTP_PORT', ${SMTP_PORT});
+        define('SMTP_AUTH', true);
+        define('SMTP_USERNAME', '${ADMIN_EMAIL}');
+        define('SMTP_PASSWORD', '${DB_PASS}');
+        define('SMTP_LOCALHOST', 'mx.innotel.us');
+        \$NOTIFY_ON_SUCCESS = true;
+        \$SYSTEM_EMAIL_SIG_HTML = '<a href="https://fax.innotel.us/">Innotel Fax Services</a>';
+        \$SYSTEM_EMAIL_SIG_TEXT = 'fax.innotel.us';
+        \$COVERPAGE_FILE = 'cover.ps'; \$HTML2PS = '/usr/bin/html2ps';
+        \$PAPERSIZE = 'letter'; \$DPI = 92; \$DPIS = 200;
+        define('PREV_TN', 80); define('PREV_SP', 750);
+        \$MAX_SESSION_LIFETIME = 8*60*60;
+        \$ALTERNATE_AUTH_ENABLE = false; \$ALTERNATE_AUTH_FALLBACK = true;
+        \$ALTERNATE_AUTH_CLASS = "PAMAuth";
+PHP
+
+# ─── AvantFAX cron ───────────────────────────────────────────
+cat > /etc/cron.d/avantfax <<'EOF'
+0 * * * * root /var/www/html/fax/includes/phb.php
+0 0 * * * root /var/www/html/fax/includes/avantfaxcron.php -t 2
+EOF
+
+# ═══════════════════════════════════════════════════════════════
+# PHASE 11 — SPEECH, VOSK SERVER & AI CDR
+# ═══════════════════════════════════════════════════════════════
+
+echo ">>> [11/13] VOSK server + AI CDR pipeline"
+cd /usr/src
+
+# ─── Google TTS / speech-recog AGI ───────────────────────────
+if [ ! -d asterisk-speech-recog ]; then
+  git clone https://github.com/innotelinc/asterisk-speech-recog.git
+fi
+if [ ! -d asterisk-googletts ]; then
+  git clone https://github.com/innotelinc/asterisk-googletts.git
+fi
+cp asterisk-googletts/googletts.agi       /var/lib/asterisk/agi-bin/
+cp asterisk-speech-recog/speech-recog.agi /var/lib/asterisk/agi-bin/
+chown -R asterisk:asterisk /var/lib/asterisk/agi-bin/
+chmod 775 /var/lib/asterisk/agi-bin/
+mkdir -p /var/lib/asterisk/sounds/en/custom/
+chown asterisk:asterisk /var/lib/asterisk/sounds/en/custom
+
+pip3 install vosk websocket-client pymysql 2>/dev/null || true
+
+apt -y install \
+  wget bzip2 xz-utils g++ make cmake git \
+  python3 python3-dev python3-websockets python3-setuptools \
+  python3-pip python3-wheel python3-cffi zlib1g-dev \
+  automake autoconf libtool pkg-config ca-certificates
+
+# ─── Kaldi + VOSK API ────────────────────────────────────────
+KALDI_MKL=0
+
+if [ ! -d /opt/kaldi ]; then
+  git clone -b vosk --single-branch https://github.com/innotelinc/kaldi.git /opt/kaldi
+fi
+cd /opt/kaldi/tools
+sed -i 's:status=0:exit 0:g' extras/check_dependencies.sh
+sed -i 's:--enable-ngram-fsts:--enable-ngram-fsts --disable-bin:g' Makefile
+make -j"$(nproc)" openfst cub
+extras/install_openblas_clapack.sh
+
+cd /opt/kaldi/src
+./configure --mathlib=OPENBLAS_CLAPACK --shared
+make -j clean depend; make -j2
+sed -i 's:-msse -msse2:-msse -msse2:g' kaldi.mk
+sed -i 's: -O1 : -O3 :g' kaldi.mk
+make -j"$(nproc)" online2 lm rnnlm
+
+if [ ! -d /opt/vosk-api ]; then
+  git clone https://github.com/innotelinc/vosk-api.git /opt/vosk-api
+fi
+cd /opt/vosk-api/src
+KALDI_MKL=0 KALDI_ROOT=/opt/kaldi make -j"$(nproc)"
+cd /opt/vosk-api/python && python3 ./setup.py install
+
+if [ ! -d /opt/vosk-server ]; then
+  git clone https://github.com/innotelinc/vosk-server.git /opt/vosk-server
+fi
+rm -f /opt/vosk-api/src/*.o
+
+# ─── VOSK model ──────────────────────────────────────────────
+mkdir -p /opt/vosk-model-en
+cd /opt/vosk-model-en
+if [ ! -d model ]; then
+  wget https://alphacephei.com/vosk/models/vosk-model-en-us-0.22-lgraph.zip
+  unzip vosk-model-en-us-0.22-lgraph.zip
+  mv vosk-model-en-us-0.22-lgraph model
+  rm vosk-model-en-us-0.22-lgraph.zip
+fi
+
+sed -i 's/async def recognize(websocket, path):/async def recognize(websocket):/' \
+  /opt/vosk-server/websocket/asr_server.py 2>/dev/null || true
+
+cat > /etc/systemd/system/vosk.service <<EOF
+[Unit]
+Description=Vosk WebSocket ASR service
+After=multi-user.target
+[Service]
+Type=simple
+Restart=always
+ExecStart=/usr/bin/python3 /opt/vosk-server/websocket/asr_server.py /opt/vosk-model-en/model
+[Install]
+WantedBy=multi-user.target
+EOF
+
+systemctl daemon-reload
+systemctl enable vosk.service
+systemctl start  vosk.service
+
+# ─── VOSK sendmail shim ───────────────────────────────────────
+if [ -f /usr/src/vosk-ffmpeg.py ] && [ -f /usr/src/sendmailmp3-vosk ]; then
+  mv /usr/src/vosk-ffmpeg.py /usr/src/sendmailmp3-vosk /usr/local/sbin/
+  chmod 755 /usr/local/sbin/sendmailmp3-vosk /usr/local/sbin/vosk-ffmpeg.py
+  chown asterisk:asterisk /usr/local/sbin/sendmailmp3-vosk /usr/local/sbin/vosk-ffmpeg.py
+fi
+
+# ─── AI CDR (Ollama + llama3.1) ──────────────────────────────
+curl -fsSL https://ollama.com/install.sh | sh
+ollama pull llama3.1:8b &
+
+mkdir -p /opt/ai-cdr
+cat > /opt/ai-cdr/summarize.py <<'PYEOF'
+#!/usr/bin/env python3
+"""AI CDR Summariser — Innotel"""
+import sys, json, subprocess, pymysql
+from vosk import Model, KaldiRecognizer
+import wave
+
+wav_path = sys.argv[1]
+uniqueid, caller, callee = sys.argv[2], sys.argv[3], sys.argv[4]
+
+wf  = wave.open(wav_path, "rb")
+rec = KaldiRecognizer(Model("/opt/vosk-model-en/model"), wf.getframerate())
+parts = []
+while True:
+    data = wf.readframes(4000)
+    if not data: break
+    if rec.AcceptWaveform(data): parts.append(json.loads(rec.Result())["text"])
+parts.append(json.loads(rec.FinalResult())["text"])
+transcript = " ".join(parts).strip()
+
+prompt = f'Summarize this phone call in 1-2 sentences. Extract intent and sentiment. Return ONLY JSON: {{"summary":"","intent":"","sentiment":""}}\n\nTranscript:\n{transcript}'
+out = subprocess.run(["ollama","run","llama3.1:8b"], input=prompt.encode(), stdout=subprocess.PIPE).stdout.decode()
+raw = out[out.find("{"):out.rfind("}")+1]
+try: js = json.loads(raw)
+except: js = {"summary":transcript[:200],"intent":"unknown","sentiment":"neutral"}
+
+db = pymysql.connect(host="localhost",user="asterisk",password="DD@l1lama",db="asteriskcdrdb")
+c = db.cursor()
+c.execute("INSERT INTO ai_call_summaries (uniqueid,caller,callee,summary,intent,sentiment) VALUES (%s,%s,%s,%s,%s,%s)", (uniqueid,caller,callee,js["summary"],js["intent"],js["sentiment"]))
+c.execute("UPDATE cdr SET userfield=%s WHERE uniqueid=%s", (js["summary"],uniqueid))
+db.commit(); db.close()
+print(f"[AI-CDR] {uniqueid}: {js['summary']}")
+PYEOF
+
+chown -R asterisk:asterisk /opt/ai-cdr
+
+# ─── FreePBX hangup hook ─────────────────────────────────────
+cat >> /etc/asterisk/extensions_custom.conf <<'EOF'
+
+; ── AI CDR hangup hook ────────────────────────────────────────
+[macro-hangupcall-custom]
+exten => s,1,NoOp(AI CDR hangup handler)
+ same => n,Set(RECFILE=${IF($["${MIXMONITOR_FILENAME}"!=""]?${MIXMONITOR_FILENAME}:${CDR(recordingfile)})})
+ same => n,ExecIf($["${RECFILE}"!=""]?System(/usr/bin/python3 /opt/ai-cdr/summarize.py "${RECFILE}" "${CDR(uniqueid)}" "${CALLERID(num)}" "${CONNECTEDLINE(num)}"))
+ same => n,MacroExit()
+EOF
+
+fwconsole reload 2>/dev/null || true
+asterisk -rx "dialplan reload" 2>/dev/null || true
+
+# ═══════════════════════════════════════════════════════════════
+# PHASE 12 — SECURITY, CODECS, CERTBOT
+# ═══════════════════════════════════════════════════════════════
+
+echo ">>> [12/13] Security, codecs, certbot"
+
+# ─── Fail2Ban ─────────────────────────────────────────────────
+cat > /etc/fail2ban/jail.d/asterisk.conf <<EOF
+[asterisk]
+enabled = true
+bantime  = 86400
+findtime = 600
+maxretry = 5
+EOF
+systemctl enable fail2ban && systemctl restart fail2ban
+
+# ─── AsterBan ─────────────────────────────────────────────────
+cd /usr/src
+if [ ! -d /usr/local/go ]; then
+  apt -y install golang-go 2>/dev/null || true
+fi
+if [ -f go1.22.5.linux-amd64.tar.gz ]; then
+  tar -C /usr/local -xvf go1.22.5.linux-amd64.tar.gz
+  export PATH=$PATH:/usr/local/go/bin
+fi
+
+if [ ! -d fail2ban-for-asterisk ]; then
+  git clone https://github.com/vvampirius/fail2ban-for-asterisk.git
+fi
+cd fail2ban-for-asterisk && go build -o /usr/sbin/asterban 2>/dev/null || true
+
+if [ -f /usr/sbin/asterban ]; then
+  cat > /etc/systemd/system/asterban.service <<'ABEOF'
+[Unit]
+Description=Asterisk Ban Service (ipset)
+After=multi-user.target
+[Service]
+Type=simple
+Restart=always
+ExecStart=/usr/sbin/asterban 127.0.0.1:8080 -ipset-name asterisk_ban
+[Install]
+WantedBy=multi-user.target
+ABEOF
+  systemctl daemon-reload && systemctl enable asterban && systemctl start asterban
+fi
+cd /usr/src
+
+# ─── G.729 codec ─────────────────────────────────────────────
+if [ ! -f /usr/lib64/asterisk/modules/codec_g729.so ]; then
+  if [ ! -d bcg729 ]; then git clone https://github.com/innotelinc/bcg729.git; fi
+  cd bcg729 && cmake . && make && make install && cd /usr/src
+  if [ ! -d asterisk-g72x ]; then git clone https://github.com/innotelinc/asterisk-g72x.git; fi
+  cd asterisk-g72x
+  ./autogen.sh
+  ./configure --libdir=/usr/lib64 --with-bcg729 --with-asterisk-includes=/usr/src/asterisk-${ASTERISK_VER}/include/
+  make && make install
+  chmod +x /usr/lib64/asterisk/modules/codec_g729.so
+  chown asterisk:asterisk /usr/lib64/asterisk/modules/codec_g729.so
+  cd /usr/src
+fi
+
+asterisk -rx 'module load codec_g729.so' 2>/dev/null || true
+
+for SO in codec_g723 codec_g729; do
+  SRC="/usr/src/${SO}-ast220-gcc4-glibc-x86_64-pentium4.so"
+  DST="/usr/lib64/asterisk/modules/${SO}.so"
+  if [ -f "$SRC" ] && [ ! -f "$DST" ]; then
+    mv "$SRC" "$DST" && chmod +x "$DST" && chown asterisk:asterisk "$DST"
+  fi
+done
+
+# ─── Certbot ──────────────────────────────────────────────────
+# certbot --apache --email ${ADMIN_EMAIL} --agree-tos --no-eff-email -d ${HOSTNAME}
+# certbot --apache --email ${ADMIN_EMAIL} --agree-tos --no-eff-email -d fax.innotel.us
+
+# ─── IONCube (if needed) ─────────────────────────────────────
+if [ -f /usr/src/ioncube_loaders_lin_x86-64.zip ]; then
+  cd /usr/src && unzip -o ioncube_loaders_lin_x86-64.zip
+  cp ioncube/ioncube_loader_lin_7.4.so /usr/lib/php/20190902/ 2>/dev/null || true
+  [ -f 00-ioncube.ini ] && cp 00-ioncube.ini /etc/php/7.4/apache2/conf.d/ 2>/dev/null || true
+fi
+
+# ─── Sudoers ──────────────────────────────────────────────────
+echo "asterisk ALL = NOPASSWD: /sbin/reboot, /sbin/halt, /usr/local/sbin/faxdeluser, /usr/local/sbin/faxadduser -u * -p * *" >> /etc/sudoers
+
+echo "/usr/lib64" > /etc/ld.so.conf.d/asterisk.conf
+ldconfig
+
+# ═══════════════════════════════════════════════════════════════
+# PHASE 13 — PBX CUSTOMER PORTAL
+# ═══════════════════════════════════════════════════════════════
+
+echo ">>> [13/13] PBX Customer Portal"
+
+# Ensure Node.js 20
+if ! command -v node &>/dev/null || [ "$(node -v | cut -d. -f1 | tr -d v)" -lt 18 ]; then
+  curl -fsSL https://deb.nodesource.com/setup_20.x | bash -
+  apt -y install nodejs
+fi
+
+mkdir -p "$APP_DIR"
+
+# Try to copy from local source, else clone
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_DIR="$(dirname "$SCRIPT_DIR")"
+if [ -f "$REPO_DIR/package.json" ]; then
+  info "Copying portal from $REPO_DIR..."
+  rsync -a --exclude='node_modules' --exclude='.git' --exclude='data' --exclude='.next' "$REPO_DIR/" "$APP_DIR/"
+else
+  info "Cloning portal from GitHub..."
+  git clone https://github.com/innotelinc/pbx-portal.git "$APP_DIR"
+fi
+
+cd "$APP_DIR"
+npm ci --production 2>&1 | tail -5
+
+# ─── Generate .env ───────────────────────────────────────────
+cat > "${APP_DIR}/.env" <<EOF
 # ── Generated by Innotel PBX setup ──
-# Server: ${FREEPBX_HOST}
-# Date:    $(date -u +"%Y-%m-%dT%H:%M:%SZ")
+# Server: ${HOSTNAME}  |  Date: $(date -u +"%Y-%m-%dT%H:%M:%SZ")
 
-# Session
 SESSION_SECRET=${SESSION_SECRET}
-
-# VoIP.ms
 VOIPMS_API_USERNAME=${VOIPMS_USER}
 VOIPMS_API_PASSWORD=${VOIPMS_PASS}
-
-# FreePBX
-FREEPBX_URL=https://${FREEPBX_HOST}
+FREEPBX_URL=https://${HOSTNAME}
 FREEPBX_CLIENT_ID=${FREEPBX_CLIENT_ID}
 FREEPBX_CLIENT_SECRET=${FREEPBX_CLIENT_SECRET}
-
-# WebRTC Softphone
-NEXT_PUBLIC_FREEPBX_WSS_URL=wss://${FREEPBX_HOST}:${FREEPBX_WSS_PORT}/ws
+NEXT_PUBLIC_FREEPBX_WSS_URL=wss://${HOSTNAME}:8089/ws
 NEXT_PUBLIC_TURN_SERVER=${TURN_SERVER}
 NEXT_PUBLIC_TURN_USERNAME=${TURN_USERNAME}
 NEXT_PUBLIC_TURN_CREDENTIAL=${TURN_CREDENTIAL}
-
-# Asterisk AMI
 ASTERISK_AMI_HOST=127.0.0.1
 ASTERISK_AMI_PORT=5038
 ASTERISK_AMI_USERNAME=${FREEPBX_AMI_USER}
 ASTERISK_AMI_SECRET=${FREEPBX_AMI_SECRET}
-
-# AvantFax
-AVANTFAX_URL=http://${FREEPBX_HOST}:8080/avantfax
-NEXT_PUBLIC_AVANTFAX_URL=http://${FREEPBX_HOST}:8080/avantfax
-
-# Atlas (runs on another server)
+AVANTFAX_URL=http://${HOSTNAME}:8080/avantfax
+NEXT_PUBLIC_AVANTFAX_URL=http://${HOSTNAME}:8080/avantfax
 ATLAS_API_URL=${ATLAS_URL}
 ATLAS_API_KEY=${ATLAS_API_KEY}
-
-# Stripe
 STRIPE_SECRET_KEY=${STRIPE_SECRET_KEY}
 STRIPE_WEBHOOK_SECRET=${STRIPE_WEBHOOK_SECRET}
 NEXT_PUBLIC_STRIPE_PUBLISHABLE_KEY=${STRIPE_PUBLISHABLE_KEY}
-
-# Public
-NEXT_PUBLIC_URL=https://${FREEPBX_HOST}:3000
+NEXT_PUBLIC_URL=https://${HOSTNAME}:3000
 NODE_ENV=production
 EOF
 
-    log ".env generated at ${APP_DIR}/.env"
-}
+# ─── Build & seed ────────────────────────────────────────────
+npm run build 2>&1 | tail -10
+npm run seed 2>&1 || true
 
-# ─────────────────────────────────────────────────────────────
-# 10. Systemd service
-# ─────────────────────────────────────────────────────────────
-
-create_services() {
-    info "Creating systemd services..."
-
-    # PBX Portal service
-    cat > /etc/systemd/system/innotel-pbx.service <<EOF
+# ─── Systemd service ─────────────────────────────────────────
+cat > /etc/systemd/system/innotel-pbx.service <<EOF
 [Unit]
 Description=Innotel PBX Customer Portal
 After=network.target mariadb.service freepbx.service
-Wants=network.target
-
 [Service]
 Type=simple
 User=root
@@ -432,126 +1217,54 @@ RestartSec=5
 StandardOutput=journal
 StandardError=journal
 SyslogIdentifier=innotel-pbx
-
-[Install]
-WantedBy=multi-user.target
+[Install];WantedBy=multi-user.target
 EOF
 
-    systemctl daemon-reload
-    systemctl enable innotel-pbx 2>/dev/null || true
+systemctl daemon-reload
+systemctl enable innotel-pbx
+systemctl start  innotel-pbx
 
-    log "Systemd service created: innotel-pbx"
-}
+# ─── Firewall ────────────────────────────────────────────────
+if command -v ufw &>/dev/null; then
+  ufw allow 3000/tcp comment "PBX Portal"
+  ufw allow 8089/tcp comment "Asterisk WSS"
+  ufw allow 8080/tcp comment "AvantFax"
+  ufw allow 5060/udp comment "SIP"
+  ufw allow 10000:20000/udp comment "RTP"
+  ufw --force enable 2>/dev/null || true
+elif command -v iptables &>/dev/null; then
+  for PORT in 3000 8089 8080; do iptables -I INPUT -p tcp --dport $PORT -j ACCEPT; done
+  iptables -I INPUT -p udp --dport 5060 -j ACCEPT
+  iptables -I INPUT -p udp --dport 10000:20000 -j ACCEPT
+fi
 
-# ─────────────────────────────────────────────────────────────
-# 11. Firewall configuration
-# ─────────────────────────────────────────────────────────────
+log "PBX Portal installed at ${APP_DIR}"
 
-configure_firewall() {
-    info "Configuring firewall..."
+# ═══════════════════════════════════════════════════════════════
+# FINAL RESTART & SUMMARY
+# ═══════════════════════════════════════════════════════════════
 
-    # Try ufw first, then iptables
-    if command -v ufw &>/dev/null; then
-        ufw allow 3000/tcp comment "PBX Portal"
-        ufw allow 8089/tcp comment "Asterisk WebSocket (WSS)"
-        ufw allow 8080/tcp comment "AvantFax"
-        ufw allow 5060/udp comment "SIP"
-        ufw allow 10000:20000/udp comment "RTP"
-        ufw --force enable 2>/dev/null || true
-        log "ufw rules added"
-    elif command -v iptables &>/dev/null; then
-        iptables -I INPUT -p tcp --dport 3000 -j ACCEPT
-        iptables -I INPUT -p tcp --dport 8089 -j ACCEPT
-        iptables -I INPUT -p tcp --dport 8080 -j ACCEPT
-        iptables -I INPUT -p udp --dport 5060 -j ACCEPT
-        iptables -I INPUT -p udp --dport 10000:20000 -j ACCEPT
-        iptables-save > /etc/iptables/rules.v4 2>/dev/null || true
-        log "iptables rules added"
-    else
-        warn "No firewall detected — open ports manually: 3000, 8089, 8080, 5060, 10000-20000"
-    fi
-}
+systemctl restart apache2 mariadb asterisk 2>/dev/null || true
+fwconsole restart 2>/dev/null || true
 
-# ─────────────────────────────────────────────────────────────
-# 12. Start everything
-# ─────────────────────────────────────────────────────────────
-
-start_all() {
-    info "Starting all services..."
-
-    # Start FreePBX if not running
-    fwconsole start 2>/dev/null || systemctl start freepbx 2>/dev/null || true
-
-    # Start AvantFax
-    cd /opt/avantfax && docker compose up -d 2>/dev/null || true
-
-    # Start portal
-    systemctl start innotel-pbx 2>/dev/null || true
-
-    # Wait and verify
-    sleep 5
-    echo ""
-    log "=== Services Status ==="
-    systemctl is-active freepbx 2>/dev/null && log "FreePBX:    running" || warn "FreePBX:    check status"
-    docker ps --filter "name=innotel-avantfax" --format "table {{.Names}}\t{{.Status}}" 2>/dev/null
-    systemctl is-active innotel-pbx 2>/dev/null && log "PBX Portal: running" || warn "PBX Portal: check 'systemctl status innotel-pbx'"
-}
-
-# ─────────────────────────────────────────────────────────────
-# 13. Print summary
-# ─────────────────────────────────────────────────────────────
-
-print_summary() {
-    echo ""
-    echo "=============================================="
-    echo "  Innotel PBX — Setup Complete"
-    echo "=============================================="
-    echo ""
-    echo "  PBX Portal:    https://${FREEPBX_HOST}:3000"
-    echo "  FreePBX:       https://${FREEPBX_HOST}"
-    echo "  AvantFax:      http://${FREEPBX_HOST}:8080/avantfax"
-    echo "  WebSocket:     wss://${FREEPBX_HOST}:${FREEPBX_WSS_PORT}/ws"
-    echo "  AMI:           ${FREEPBX_HOST}:5038"
-    echo ""
-    echo "  Atlas server:  ${ATLAS_URL}"
-    echo ""
-    echo "  AMI Username:  ${FREEPBX_AMI_USER}"
-    echo "  AMI Secret:    ${FREEPBX_AMI_SECRET}"
-    echo "  API Client ID: ${FREEPBX_CLIENT_ID}"
-    echo "  API Secret:    ${FREEPBX_CLIENT_SECRET}"
-    echo ""
-    echo "  Demo login:    demo@innotel.us / demo1234"
-    echo "                 (run 'cd ${APP_DIR} && npm run seed')"
-    echo ""
-    echo "  Config saved:  ${APP_DIR}/.env"
-    echo "  Logs:          journalctl -u innotel-pbx -f"
-    echo ""
-    echo "  Post-install steps:"
-    echo "  1. Configure FreePBX OAuth2 in GUI → Connectivity → API"
-    echo "  2. Set up TLS cert for port 3000 (via nginx reverse proxy or Let's Encrypt)"
-    echo "  3. Seed demo data: cd ${APP_DIR} && npm run seed"
-    echo "  4. Configure VoIP.ms trunk if not auto-configured"
-    echo ""
-    echo "=============================================="
-}
-
-# ─────────────────────────────────────────────────────────────
-# Main — run all steps
-# ─────────────────────────────────────────────────────────────
-
-main() {
-    echo ""
-    install_freepbx
-    configure_webrtc
-    configure_ami
-    configure_freepbx_api
-    install_avantfax
-    configure_voipms_trunk
-    install_portal
-    create_services
-    configure_firewall
-    start_all
-    print_summary
-}
-
-main "$@"
+echo ""
+echo "╔══════════════════════════════════════════════════════════╗"
+echo "║  INNOTEL FULL STACK — INSTALLATION COMPLETE              ║"
+echo "╠══════════════════════════════════════════════════════════╣"
+echo "║  PBX Portal   : https://${HOSTNAME}:3000                 "
+echo "║  Demo login   : demo@innotel.us / demo1234              ║"
+echo "║  FreePBX Admin: http://${HOSTNAME}/admin                 "
+echo "║  AvantFAX     : http://${HOSTNAME}/fax                   "
+echo "║  Webmin       : https://${HOSTNAME}:10000               ║"
+echo "║  Code-Server  : http://${HOSTNAME}:8081                 ║"
+echo "║  ARI          : http://${HOSTNAME}:${ARI_HTTP_PORT}/ari  "
+echo "║  WebSocket    : wss://${HOSTNAME}:8089/ws               ║"
+echo "╠══════════════════════════════════════════════════════════╣"
+echo "║  AMI User     : ${FREEPBX_AMI_USER}"
+echo "║  AMI Secret   : ${FREEPBX_AMI_SECRET}"
+echo "║  API Client   : ${FREEPBX_CLIENT_ID} / ${FREEPBX_CLIENT_SECRET}"
+echo "║  Atlas URL    : ${ATLAS_URL}"
+echo "╠══════════════════════════════════════════════════════════╣"
+echo "║  Portal logs  : journalctl -u innotel-pbx -f            ║"
+echo "║  Portal config: ${APP_DIR}/.env                          "
+echo "╚══════════════════════════════════════════════════════════╝"
