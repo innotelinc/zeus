@@ -2,6 +2,7 @@
 
 import { useState } from "react";
 import { api, fmtDate } from "@/lib/client-api";
+import { useToast } from "@/components/ToastProvider";
 import type { FaxAccount, Fax, PhoneNumber } from "@/lib/types";
 import {
   FaxIcon,
@@ -19,10 +20,10 @@ interface Props {
 }
 
 export default function FaxSection({ faxAccount, faxes: initialFaxes, numbers }: Props) {
+  const { toast } = useToast();
   const [faxes, setFaxes] = useState<Fax[]>(initialFaxes);
   const [account, setAccount] = useState<FaxAccount | null>(faxAccount);
   const [loading, setLoading] = useState(false);
-  const [error, setError] = useState<string | null>(null);
 
   const [sendMode, setSendMode] = useState(false);
   const [toNumber, setToNumber] = useState("");
@@ -34,14 +35,14 @@ export default function FaxSection({ faxAccount, faxes: initialFaxes, numbers }:
 
   async function setupFaxAccount() {
     setLoading(true);
-    setError(null);
     try {
       const res = await api<{ account: FaxAccount }>("/api/fax/account", {
         method: "POST",
       });
       setAccount(res.account);
+      toast.success("Fax service activated.");
     } catch (e) {
-      setError(e instanceof Error ? e.message : "Failed to setup fax account");
+      toast.error(e instanceof Error ? e.message : "Failed to setup fax account");
     } finally {
       setLoading(false);
     }
@@ -49,11 +50,10 @@ export default function FaxSection({ faxAccount, faxes: initialFaxes, numbers }:
 
   async function sendFax() {
     if (!toNumber.trim()) {
-      setError("Please enter a destination fax number");
+      toast.error("Please enter a destination fax number");
       return;
     }
     setSending(true);
-    setError(null);
     try {
       const res = await api<{ fax: Fax }>("/api/fax/send", {
         method: "POST",
@@ -67,8 +67,9 @@ export default function FaxSection({ faxAccount, faxes: initialFaxes, numbers }:
       setSendMode(false);
       setToNumber("");
       setSubject("");
+      toast.success("Fax queued for sending.");
     } catch (e) {
-      setError(e instanceof Error ? e.message : "Failed to send fax");
+      toast.error(e instanceof Error ? e.message : "Failed to send fax");
     } finally {
       setSending(false);
     }
@@ -84,12 +85,6 @@ export default function FaxSection({ faxAccount, faxes: initialFaxes, numbers }:
           Send and receive faxes digitally. Powered by AvantFax.
         </p>
       </div>
-
-      {error && (
-        <div className="rounded-xl border border-rose-500/30 bg-rose-500/10 px-4 py-3 text-sm text-rose-300">
-          {error}
-        </div>
-      )}
 
       {!account ? (
         <div className="card-surface flex flex-col items-center rounded-3xl p-10 text-center">

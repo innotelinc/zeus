@@ -18,6 +18,7 @@ import {
 import type { User, FreePBXExtension } from "@/lib/types";
 import { planLabel } from "@/lib/client-api";
 import SoftphoneSection from "@/components/dashboard/SoftphoneSection";
+import { ToastProvider } from "@/components/ToastProvider";
 
 interface Props {
   user: User;
@@ -65,6 +66,7 @@ export function DashboardShell({ user, extensions, children }: Props) {
       : pathname.startsWith(href);
 
   return (
+    <ToastProvider>
     <div className="min-h-screen bg-ink-950">
       {/* Top bar */}
       <header className="sticky top-0 z-40 border-b border-white/[0.06] bg-ink-950/85 backdrop-blur-xl">
@@ -180,5 +182,6 @@ export function DashboardShell({ user, extensions, children }: Props) {
       {/* Softphone panel */}
       <SoftphoneSection extensions={extensions} />
     </div>
+    </ToastProvider>
   );
 }

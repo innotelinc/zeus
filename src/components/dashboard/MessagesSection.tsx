@@ -3,6 +3,7 @@
 import { useState, useEffect, useRef, useCallback } from "react";
 import { api, fmtTime } from "@/lib/client-api";
 import type { SmsConversation, SmsMessage, PhoneNumber, Contact } from "@/lib/types";
+import { useToast } from "@/components/ToastProvider";
 import { SendIcon, PlusIcon, MessageIcon, PhoneIcon, UserIcon } from "@/components/icons";
 
 interface Props {
@@ -12,12 +13,12 @@ interface Props {
 }
 
 export default function MessagesSection({ conversations: initialConversations, numbers, prefillPhone }: Props) {
+  const { toast } = useToast();
   const [conversations, setConversations] = useState<SmsConversation[]>(initialConversations);
   const [activeConv, setActiveConv] = useState<SmsConversation | null>(null);
   const [messages, setMessages] = useState<SmsMessage[]>([]);
   const [newMsg, setNewMsg] = useState("");
   const [sending, setSending] = useState(false);
-  const [error, setError] = useState<string | null>(null);
 
   // New conversation
   const [newMode, setNewMode] = useState(false);
@@ -74,7 +75,6 @@ export default function MessagesSection({ conversations: initialConversations, n
   async function loadMessages(conv: SmsConversation) {
     setActiveConv(conv);
     setNewMode(false);
-    setError(null);
 
     // Mark as read
     if (conv.unread_count > 0) {
@@ -89,14 +89,13 @@ export default function MessagesSection({ conversations: initialConversations, n
       const res = await api<{ messages: SmsMessage[] }>(`/api/messages/${conv.id}`);
       setMessages(res.messages.reverse());
     } catch (e) {
-      setError(e instanceof Error ? e.message : "Failed to load messages");
+      toast.error(e instanceof Error ? e.message : "Failed to load messages");
     }
   }
 
   async function sendMessage() {
     if (!newMsg.trim() || !activeConv) return;
     setSending(true);
-    setError(null);
 
     try {
       const res = await api<{ message: SmsMessage }>("/api/messages/send", {
@@ -120,7 +119,7 @@ export default function MessagesSection({ conversations: initialConversations, n
         ),
       );
     } catch (e) {
-      setError(e instanceof Error ? e.message : "Failed to send");
+      toast.error(e instanceof Error ? e.message : "Failed to send");
     } finally {
       setSending(false);
     }
@@ -128,11 +127,10 @@ export default function MessagesSection({ conversations: initialConversations, n
 
   async function startNewConversation() {
     if (!newPhone.trim() || !newMsgBody.trim() || !selectedDidId) {
-      setError("Please fill in all fields");
+      toast.error("Please fill in all fields");
       return;
     }
     setSending(true);
-    setError(null);
 
     try {
       const res = await api<{ message: SmsMessage; conversation: SmsConversation }>(
@@ -153,7 +151,7 @@ export default function MessagesSection({ conversations: initialConversations, n
       setNewPhone("");
       setNewMsgBody("");
     } catch (e) {
-      setError(e instanceof Error ? e.message : "Failed to send");
+      toast.error(e instanceof Error ? e.message : "Failed to send");
     } finally {
       setSending(false);
     }
@@ -217,12 +215,6 @@ export default function MessagesSection({ conversations: initialConversations, n
 
       {/* Message area */}
       <div className="flex-1 flex flex-col min-w-0">
-        {error && (
-          <div className="mx-4 mt-4 rounded-xl border border-rose-500/30 bg-rose-500/10 px-4 py-2 text-sm text-rose-300">
-            {error}
-          </div>
-        )}
-
         {newMode ? (
           /* New conversation form */
           <div className="flex-1 flex flex-col items-center justify-center p-8">

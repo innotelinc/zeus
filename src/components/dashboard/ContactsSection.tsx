@@ -3,6 +3,7 @@
 import { useState } from "react";
 import { api } from "@/lib/client-api";
 import type { Contact } from "@/lib/types";
+import { useToast } from "@/components/ToastProvider";
 import {
   PlusIcon,
   UserIcon,
@@ -20,11 +21,11 @@ interface Props {
 type FormMode = "closed" | "add" | "edit";
 
 export default function ContactsSection({ contacts: initialContacts }: Props) {
+  const { toast } = useToast();
   const [contacts, setContacts] = useState<Contact[]>(initialContacts);
   const [mode, setMode] = useState<FormMode>("closed");
   const [editId, setEditId] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
-  const [error, setError] = useState<string | null>(null);
   const [confirmDelete, setConfirmDelete] = useState<string | null>(null);
 
   // Form fields
@@ -39,7 +40,6 @@ export default function ContactsSection({ contacts: initialContacts }: Props) {
     setEmail("");
     setNotes("");
     setEditId(null);
-    setError(null);
   }
 
   function openAdd() {
@@ -54,7 +54,6 @@ export default function ContactsSection({ contacts: initialContacts }: Props) {
     setNotes(contact.notes ?? "");
     setEditId(contact.id);
     setMode("edit");
-    setError(null);
   }
 
   function closeForm() {
@@ -64,11 +63,10 @@ export default function ContactsSection({ contacts: initialContacts }: Props) {
 
   async function saveContact() {
     if (!name.trim() || !phone.trim()) {
-      setError("Name and phone number are required");
+      toast.error("Name and phone number are required");
       return;
     }
     setLoading(true);
-    setError(null);
 
     try {
       if (mode === "add") {
@@ -81,6 +79,7 @@ export default function ContactsSection({ contacts: initialContacts }: Props) {
           next.sort((a, b) => a.name.localeCompare(b.name));
           return next;
         });
+        toast.success("Contact added.");
       } else if (mode === "edit" && editId) {
         const res = await api<{ contact: Contact }>(`/api/contacts/${editId}`, {
           method: "PATCH",
@@ -91,10 +90,11 @@ export default function ContactsSection({ contacts: initialContacts }: Props) {
             .map((c) => (c.id === editId ? res.contact : c))
             .sort((a, b) => a.name.localeCompare(b.name)),
         );
+        toast.success("Contact updated.");
       }
       closeForm();
     } catch (e) {
-      setError(e instanceof Error ? e.message : "Failed to save contact");
+      toast.error(e instanceof Error ? e.message : "Failed to save contact");
     } finally {
       setLoading(false);
     }
@@ -102,13 +102,13 @@ export default function ContactsSection({ contacts: initialContacts }: Props) {
 
   async function deleteContact(id: string) {
     setLoading(true);
-    setError(null);
     try {
       await api(`/api/contacts/${id}`, { method: "DELETE" });
       setContacts((prev) => prev.filter((c) => c.id !== id));
       setConfirmDelete(null);
+      toast.success("Contact deleted.");
     } catch (e) {
-      setError(e instanceof Error ? e.message : "Failed to delete contact");
+      toast.error(e instanceof Error ? e.message : "Failed to delete contact");
     } finally {
       setLoading(false);
     }
@@ -116,13 +116,6 @@ export default function ContactsSection({ contacts: initialContacts }: Props) {
 
   return (
     <div className="space-y-6">
-      {error && (
-        <div className="rounded-xl border border-rose-500/30 bg-rose-500/10 px-4 py-3 text-sm text-rose-300 flex items-center justify-between">
-          <span>{error}</span>
-          <button type="button" onClick={() => setError(null)} className="text-rose-400 hover:text-rose-200">✕</button>
-        </div>
-      )}
-
       {/* Delete confirmation */}
       {confirmDelete && (
         <div className="card-surface rounded-2xl p-6 text-center animate-slide-up">

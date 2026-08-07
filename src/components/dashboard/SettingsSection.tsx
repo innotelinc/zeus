@@ -3,6 +3,7 @@
 import { useState } from "react";
 import { api } from "@/lib/client-api";
 import { CheckCircleIcon } from "@/components/icons";
+import { useToast } from "@/components/ToastProvider";
 import type { User } from "@/lib/types";
 
 interface Props {
@@ -10,6 +11,8 @@ interface Props {
 }
 
 export default function SettingsClient({ user }: Props) {
+  const { toast } = useToast();
+
   const [name, setName] = useState(user.name);
   const [email, setEmail] = useState(user.email);
   const [phone, setPhone] = useState(user.phone ?? "");
@@ -21,22 +24,18 @@ export default function SettingsClient({ user }: Props) {
 
   const [saving, setSaving] = useState(false);
   const [pwdSaving, setPwdSaving] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  const [message, setMessage] = useState<string | null>(null);
 
   async function handleSaveProfile(e: React.FormEvent) {
     e.preventDefault();
     setSaving(true);
-    setError(null);
-    setMessage(null);
     try {
       await api("/api/settings/profile", {
         method: "PATCH",
         body: JSON.stringify({ name, email, phone: phone || null, country }),
       });
-      setMessage("Profile updated successfully.");
+      toast.success("Profile updated successfully.");
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Failed to save profile");
+      toast.error(err instanceof Error ? err.message : "Failed to save profile");
     } finally {
       setSaving(false);
     }
@@ -45,16 +44,14 @@ export default function SettingsClient({ user }: Props) {
   async function handleUpdatePassword(e: React.FormEvent) {
     e.preventDefault();
     if (newPassword !== confirmPassword) {
-      setError("New passwords do not match.");
+      toast.error("New passwords do not match.");
       return;
     }
     if (newPassword.length < 8) {
-      setError("Password must be at least 8 characters.");
+      toast.error("Password must be at least 8 characters.");
       return;
     }
     setPwdSaving(true);
-    setError(null);
-    setMessage(null);
     try {
       await api("/api/settings/password", {
         method: "POST",
@@ -63,9 +60,9 @@ export default function SettingsClient({ user }: Props) {
       setCurrentPassword("");
       setNewPassword("");
       setConfirmPassword("");
-      setMessage("Password updated successfully.");
+      toast.success("Password updated successfully.");
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Failed to update password");
+      toast.error(err instanceof Error ? err.message : "Failed to update password");
     } finally {
       setPwdSaving(false);
     }
@@ -77,17 +74,6 @@ export default function SettingsClient({ user }: Props) {
         <h1 className="text-2xl font-semibold tracking-tight text-white">Settings</h1>
         <p className="mt-1 text-sm text-white/45">Manage your account settings.</p>
       </div>
-
-      {error && (
-        <div className="rounded-xl border border-rose-500/30 bg-rose-500/10 px-4 py-3 text-sm text-rose-300">
-          {error}
-        </div>
-      )}
-      {message && (
-        <div className="rounded-xl border border-mint-500/30 bg-mint-500/10 px-4 py-3 text-sm text-mint-300">
-          {message}
-        </div>
-      )}
 
       {/* Profile */}
       <form onSubmit={handleSaveProfile} className="card-surface rounded-2xl p-6 space-y-4">

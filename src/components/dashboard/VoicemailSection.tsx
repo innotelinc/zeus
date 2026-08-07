@@ -3,6 +3,7 @@
 import { useState, useRef } from "react";
 import { api, fmtDate, fmtDuration } from "@/lib/client-api";
 import { VoicemailIcon, PlayIcon, MailIcon, PauseIcon } from "@/components/icons";
+import { useToast } from "@/components/ToastProvider";
 import type { Voicemail } from "@/lib/types";
 
 interface Props {
@@ -10,15 +11,13 @@ interface Props {
 }
 
 export default function VoicemailClient({ voicemails: initialVoicemails }: Props) {
+  const { toast } = useToast();
   const [voicemails, setVoicemails] = useState<Voicemail[]>(initialVoicemails);
   const [playingId, setPlayingId] = useState<string | null>(null);
   const [emailingId, setEmailingId] = useState<string | null>(null);
-  const [error, setError] = useState<string | null>(null);
-  const [message, setMessage] = useState<string | null>(null);
   const audioRef = useRef<HTMLAudioElement | null>(null);
 
   function togglePlay(vm: Voicemail) {
-    // Stop current audio if any
     if (audioRef.current) {
       audioRef.current.pause();
       audioRef.current = null;
@@ -36,7 +35,6 @@ export default function VoicemailClient({ voicemails: initialVoicemails }: Props
     audio.onended = () => {
       setPlayingId(null);
       audioRef.current = null;
-      // Persist listened state
       if (vm.listened === 0) {
         setVoicemails((prev) =>
           prev.map((v) => (v.id === vm.id ? { ...v, listened: 1 } : v)),
@@ -49,7 +47,7 @@ export default function VoicemailClient({ voicemails: initialVoicemails }: Props
     };
 
     audio.onerror = () => {
-      setError("Failed to play voicemail audio");
+      toast.error("Failed to play voicemail audio");
       setPlayingId(null);
       audioRef.current = null;
     };
@@ -60,18 +58,15 @@ export default function VoicemailClient({ voicemails: initialVoicemails }: Props
 
   async function handleEmail(vm: Voicemail) {
     setEmailingId(vm.id);
-    setError(null);
-    setMessage(null);
     try {
       await api("/api/voicemail/email", {
         method: "POST",
         body: JSON.stringify({ voicemail_id: vm.id }),
       });
-      setMessage(`Voicemail forwarded to your email.`);
-      setTimeout(() => setMessage(null), 3000);
+      toast.success("Voicemail forwarded to your email.");
       setEmailingId(null);
     } catch (e) {
-      setError(e instanceof Error ? e.message : "Failed to email voicemail");
+      toast.error(e instanceof Error ? e.message : "Failed to email voicemail");
       setEmailingId(null);
     }
   }
@@ -84,17 +79,6 @@ export default function VoicemailClient({ voicemails: initialVoicemails }: Props
           Listen to your voicemails with transcriptions.
         </p>
       </div>
-
-      {error && (
-        <div className="rounded-xl border border-rose-500/30 bg-rose-500/10 px-4 py-3 text-sm text-rose-300">
-          {error}
-        </div>
-      )}
-      {message && (
-        <div className="rounded-xl border border-mint-500/30 bg-mint-500/10 px-4 py-3 text-sm text-mint-300">
-          {message}
-        </div>
-      )}
 
       {voicemails.length === 0 ? (
         <div className="card-surface flex flex-col items-center rounded-3xl p-10 text-center">

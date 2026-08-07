@@ -4,6 +4,7 @@ import { useState } from "react";
 import { useRouter } from "next/navigation";
 import { api, fmtDate, planLabel, planPrice } from "@/lib/client-api";
 import { CreditCardIcon, CheckCircleIcon, ArrowRightIcon } from "@/components/icons";
+import { useToast } from "@/components/ToastProvider";
 import type { User, BillingInvoice } from "@/lib/types";
 
 interface Props {
@@ -13,15 +14,12 @@ interface Props {
 
 export default function BillingClient({ user, invoices: initialInvoices }: Props) {
   const router = useRouter();
+  const { toast } = useToast();
   const [invoices] = useState<BillingInvoice[]>(initialInvoices);
   const [loading, setLoading] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  const [message, setMessage] = useState<string | null>(null);
 
   async function handlePlanAction() {
     setLoading(true);
-    setError(null);
-    setMessage(null);
     try {
       const res = await api<{ url: string }>("/api/billing/checkout", {
         method: "POST",
@@ -31,7 +29,7 @@ export default function BillingClient({ user, invoices: initialInvoices }: Props
       });
       window.location.href = res.url;
     } catch (e) {
-      setError(e instanceof Error ? e.message : "Failed to start checkout");
+      toast.error(e instanceof Error ? e.message : "Failed to start checkout");
       setLoading(false);
     }
   }
@@ -41,13 +39,12 @@ export default function BillingClient({ user, invoices: initialInvoices }: Props
       return;
     }
     setLoading(true);
-    setError(null);
     try {
       await api("/api/billing/cancel", { method: "POST" });
-      setMessage("Plan cancelled. You will retain access until the end of your billing period.");
+      toast.success("Plan cancelled. You will retain access until the end of your billing period.");
       router.refresh();
     } catch (e) {
-      setError(e instanceof Error ? e.message : "Failed to cancel plan");
+      toast.error(e instanceof Error ? e.message : "Failed to cancel plan");
     } finally {
       setLoading(false);
     }
@@ -59,17 +56,6 @@ export default function BillingClient({ user, invoices: initialInvoices }: Props
         <h1 className="text-2xl font-semibold tracking-tight text-white">Billing</h1>
         <p className="mt-1 text-sm text-white/45">Manage your plan and view invoices.</p>
       </div>
-
-      {error && (
-        <div className="rounded-xl border border-rose-500/30 bg-rose-500/10 px-4 py-3 text-sm text-rose-300">
-          {error}
-        </div>
-      )}
-      {message && (
-        <div className="rounded-xl border border-mint-500/30 bg-mint-500/10 px-4 py-3 text-sm text-mint-300">
-          {message}
-        </div>
-      )}
 
       {/* Current plan */}
       <div className="card-surface rounded-2xl p-6">

@@ -4,6 +4,7 @@ import { useState, useEffect, useRef, useMemo } from "react";
 import { UserAgent, Registerer, Inviter, SessionState } from "sip.js";
 import type { FreePBXExtension } from "@/lib/types";
 import { PhoneIcon } from "@/components/icons";
+import { useToast } from "@/components/ToastProvider";
 
 interface Props {
   extensions: FreePBXExtension[];
@@ -23,12 +24,12 @@ interface ActiveCall {
 }
 
 export default function SoftphoneSection({ extensions }: Props) {
+  const { toast } = useToast();
   const [expanded, setExpanded] = useState(false);
   const [callState, setCallState] = useState<CallState>("disconnected");
   const [selectedExtId, setSelectedExtId] = useState("");
   const [dialNumber, setDialNumber] = useState("");
   const [incomingCaller, setIncomingCaller] = useState("");
-  const [error, setError] = useState<string | null>(null);
   const [callDuration, setCallDuration] = useState(0);
   const [volume, setVolume] = useState(1);
   const [showDtmf, setShowDtmf] = useState(false);
@@ -44,7 +45,6 @@ export default function SoftphoneSection({ extensions }: Props) {
 
   const selectedExt = extensions.find((e) => e.id === selectedExtId);
 
-  // WSS URL computation — stable for the session
   const wssUrl = useMemo(() => {
     if (typeof window === "undefined") return "wss://localhost:8089/ws";
     return (
@@ -53,12 +53,10 @@ export default function SoftphoneSection({ extensions }: Props) {
     );
   }, []);
 
-  // TURN server config
   const iceServers = useMemo(() => {
     const servers: RTCIceServer[] = [
       { urls: "stun:stun.l.google.com:19302" },
     ];
-    // Add TURN if configured
     const turnUrl = process.env.NEXT_PUBLIC_TURN_SERVER;
     const turnUser = process.env.NEXT_PUBLIC_TURN_USERNAME;
     const turnCred = process.env.NEXT_PUBLIC_TURN_CREDENTIAL;
@@ -72,7 +70,6 @@ export default function SoftphoneSection({ extensions }: Props) {
     return servers;
   }, []);
 
-  // Cleanup on unmount
   useEffect(() => {
     return () => {
       cleanupAll();
@@ -81,7 +78,6 @@ export default function SoftphoneSection({ extensions }: Props) {
   }, []);
 
   function cleanupAll() {
-    // Clear timers
     if (autoRejectTimerRef.current) {
       clearTimeout(autoRejectTimerRef.current);
       autoRejectTimerRef.current = null;
@@ -90,12 +86,9 @@ export default function SoftphoneSection({ extensions }: Props) {
       clearInterval(callTimerRef.current);
       callTimerRef.current = null;
     }
-    // Remove state listeners
     stateListenerRefs.current.forEach((s) => s.remove());
     stateListenerRefs.current = [];
-    // Clear pending invitation
     pendingInvitationRef.current = null;
-    // Unregister and stop
     registererRef.current?.unregister().catch(() => {});
     userAgentRef.current?.stop();
     userAgentRef.current = null;
@@ -103,11 +96,8 @@ export default function SoftphoneSection({ extensions }: Props) {
     activeCallRef.current = null;
   }
 
-  // ─── SIP Connection ───
-
   async function connectExtension() {
     if (!selectedExt) return;
-    setError(null);
     setCallState("registering");
 
     cleanupAll();
@@ -132,7 +122,6 @@ export default function SoftphoneSection({ extensions }: Props) {
         allowLegacyNotifications: true,
       });
 
-      // Transport error handling
       userAgent.delegate = {
         onInvite: (invitation) => {
           const remoteId = invitation.remoteIdentity.uri.user ?? "Unknown";
@@ -140,7 +129,6 @@ export default function SoftphoneSection({ extensions }: Props) {
           setCallState("ringing-in");
           pendingInvitationRef.current = invitation;
 
-          // Auto-reject after 60s
           autoRejectTimerRef.current = setTimeout(() => {
             if (pendingInvitationRef.current === invitation) {
               invitation.reject();
@@ -164,10 +152,9 @@ export default function SoftphoneSection({ extensions }: Props) {
         },
       };
 
-      // Transport error handling via transport state listener
       userAgent.transport.stateChange.addListener((state) => {
         if (state === "Disconnected") {
-          setError("Connection lost. Please reconnect.");
+          toast.error("Connection lost. Please reconnect.");
           setCallState("disconnected");
         }
       });
@@ -181,7 +168,7 @@ export default function SoftphoneSection({ extensions }: Props) {
       registererRef.current = registerer;
       setCallState("idle");
     } catch (e) {
-      setError(e instanceof Error ? e.message : "Failed to connect extension");
+      toast.error(e instanceof Error ? e.message : "Failed to connect extension");
       setCallState("disconnected");
     }
   }
@@ -192,10 +179,7 @@ export default function SoftphoneSection({ extensions }: Props) {
     setSelectedExtId("");
     setDialNumber("");
     setIncomingCaller("");
-    setError(null);
   }
-
-  // ─── Dialing ───
 
   function appendDigit(d: string) {
     if (callState !== "idle" && callState !== "dialing") return;
@@ -213,13 +197,10 @@ export default function SoftphoneSection({ extensions }: Props) {
     if (dialNumber.length <= 1 && callState === "dialing") setCallState("idle");
   }
 
-  // ─── Calls ───
-
   async function makeCall() {
     const userAgent = userAgentRef.current;
     if (!userAgent || !dialNumber.trim()) return;
 
-    setError(null);
     setCallState("ringing-out");
     const targetNumber = dialNumber.trim();
 
@@ -227,7 +208,7 @@ export default function SoftphoneSection({ extensions }: Props) {
       const domain = new URL(wssUrl).hostname;
       const uri = UserAgent.makeURI(`sip:${targetNumber}@${domain}`);
       if (!uri) {
-        setError("Invalid phone number");
+        toast.error("Invalid phone number");
         setCallState("idle");
         return;
       }
@@ -252,7 +233,7 @@ export default function SoftphoneSection({ extensions }: Props) {
 
       await inviter.invite();
     } catch (e) {
-      setError(e instanceof Error ? e.message : "Call failed");
+      toast.error(e instanceof Error ? e.message : "Call failed");
       setCallState("idle");
     }
   }
@@ -287,7 +268,7 @@ export default function SoftphoneSection({ extensions }: Props) {
       });
       pendingInvitationRef.current = null;
     } catch (e) {
-      setError(e instanceof Error ? e.message : "Failed to answer call");
+      toast.error(e instanceof Error ? e.message : "Failed to answer call");
       setCallState("idle");
       pendingInvitationRef.current = null;
     }
@@ -376,7 +357,6 @@ export default function SoftphoneSection({ extensions }: Props) {
     activeCallRef.current = null;
     setDialNumber("");
     setShowDtmf(false);
-    // Don't override "disconnected" or "registering"
     setCallState((prev) => {
       if (prev === "disconnected" || prev === "registering") return prev;
       return "idle";
@@ -553,19 +533,6 @@ export default function SoftphoneSection({ extensions }: Props) {
                       className="btn-ghost w-full py-1.5 text-xs"
                     >
                       Disconnect
-                    </button>
-                  </div>
-                )}
-
-                {error && (
-                  <div className="rounded-lg border border-rose-500/30 bg-rose-500/10 px-3 py-2 text-xs text-rose-300">
-                    {error}
-                    <button
-                      type="button"
-                      onClick={() => setError(null)}
-                      className="ml-2 text-rose-400 hover:text-rose-200"
-                    >
-                      ✕
                     </button>
                   </div>
                 )}

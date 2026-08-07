@@ -131,6 +131,24 @@ body {
   animation: slide-up 0.2s ease-out both;
 }
 
+@keyframes toast-in {
+  from { opacity: 0; transform: translateX(100%) scale(0.95); }
+  to { opacity: 1; transform: translateX(0) scale(1); }
+}
+
+.animate-toast-in {
+  animation: toast-in 0.35s cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+
+@keyframes toast-bar {
+  from { width: 100%; }
+  to { width: 0%; }
+}
+
+.animate-toast-bar {
+  animation: toast-bar 4s linear forwards;
+}
+
 /* ---------- Form primitives ---------- */
 
 .input-base {

@@ -3,6 +3,7 @@
 import { useState } from "react";
 import { api } from "@/lib/client-api";
 import type { PhoneNumber, FreePBXExtension } from "@/lib/types";
+import { useToast } from "@/components/ToastProvider";
 import {
   PlusIcon,
   RefreshIcon,
@@ -18,10 +19,10 @@ interface Props {
 }
 
 export default function PhoneSection({ numbers: initialNumbers, extensions: initialExtensions, plan }: Props) {
+  const { toast } = useToast();
   const [numbers, setNumbers] = useState<PhoneNumber[]>(initialNumbers);
   const [extensions, setExtensions] = useState<FreePBXExtension[]>(initialExtensions);
   const [loading, setLoading] = useState(false);
-  const [error, setError] = useState<string | null>(null);
 
   // DID search
   const [searchMode, setSearchMode] = useState(false);
@@ -38,7 +39,6 @@ export default function PhoneSection({ numbers: initialNumbers, extensions: init
 
   async function searchDIDs() {
     setSearching(true);
-    setError(null);
     try {
       const res = await api<{ dids: Array<Record<string, string>> }>(
         "/api/phone/numbers",
@@ -53,7 +53,7 @@ export default function PhoneSection({ numbers: initialNumbers, extensions: init
       );
       setSearchResults(res.dids ?? []);
     } catch (e) {
-      setError(e instanceof Error ? e.message : "Failed to search numbers");
+      toast.error(e instanceof Error ? e.message : "Failed to search numbers");
     } finally {
       setSearching(false);
     }
@@ -61,7 +61,6 @@ export default function PhoneSection({ numbers: initialNumbers, extensions: init
 
   async function orderDID(did: string) {
     setLoading(true);
-    setError(null);
     try {
       const res = await api<{ number: PhoneNumber }>(
         "/api/phone/numbers",
@@ -73,8 +72,9 @@ export default function PhoneSection({ numbers: initialNumbers, extensions: init
       setNumbers((prev) => [res.number, ...prev]);
       setSearchMode(false);
       setSearchResults([]);
+      toast.success(`Number ${did} ordered successfully.`);
     } catch (e) {
-      setError(e instanceof Error ? e.message : "Failed to order number");
+      toast.error(e instanceof Error ? e.message : "Failed to order number");
     } finally {
       setLoading(false);
     }
@@ -82,11 +82,10 @@ export default function PhoneSection({ numbers: initialNumbers, extensions: init
 
   async function provisionExtension() {
     if (!extId || !extName || !extEmail) {
-      setError("Please fill in all fields");
+      toast.error("Please fill in all fields");
       return;
     }
     setProvisioning(true);
-    setError(null);
     try {
       const res = await api<{ success: boolean; extensionId: string; secret: string }>(
         "/api/phone/extensions",
@@ -116,9 +115,10 @@ export default function PhoneSection({ numbers: initialNumbers, extensions: init
         setExtId("");
         setExtName("");
         setExtEmail("");
+        toast.success("Extension provisioned successfully.");
       }
     } catch (e) {
-      setError(e instanceof Error ? e.message : "Provisioning failed");
+      toast.error(e instanceof Error ? e.message : "Provisioning failed");
     } finally {
       setProvisioning(false);
     }
@@ -138,12 +138,6 @@ export default function PhoneSection({ numbers: initialNumbers, extensions: init
 
   return (
     <div className="space-y-6">
-      {error && (
-        <div className="rounded-xl border border-rose-500/30 bg-rose-500/10 px-4 py-3 text-sm text-rose-300">
-          {error}
-        </div>
-      )}
-
       {/* Numbers card */}
       <div className="card-surface rounded-2xl p-6">
         <div className="flex items-center justify-between mb-6">
