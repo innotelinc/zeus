@@ -29,6 +29,10 @@ services:
     image: mariadb:10.11
     container_name: pbx-mariadb
     restart: unless-stopped
+    # AppArmor's docker-default profile can't be checked in sandboxed/
+    # containerized Docker hosts (unreadable /sys/kernel/security/apparmor)
+    security_opt:
+      - apparmor=unconfined
     environment:
       MARIADB_ROOT_PASSWORD: ${DB_PASS:-DD@l1lama}
       MARIADB_DATABASE: asterisk
@@ -48,6 +52,8 @@ services:
     image: innotel/freepbx:latest
     container_name: pbx-freepbx
     restart: unless-stopped
+    security_opt:
+      - apparmor=unconfined
     depends_on:
       mariadb:
         condition: service_healthy
@@ -100,6 +106,8 @@ services:
     image: innotel/avantfax:latest
     container_name: pbx-avantfax
     restart: unless-stopped
+    security_opt:
+      - apparmor=unconfined
     depends_on:
       mariadb:
         condition: service_healthy
@@ -124,6 +132,8 @@ services:
       dockerfile: Dockerfile
     container_name: pbx-portal
     restart: unless-stopped
+    security_opt:
+      - apparmor=unconfined
     depends_on:
       freepbx:
         condition: service_healthy
