@@ -53,8 +53,35 @@ service redis-server start 2>/dev/null || true
 # Start cron (FreePBX schedules module/cleanup jobs via crontab)
 service cron start 2>/dev/null || true
 
-# Start PHP-FPM
+# ── AvantFax setup ─────────────────────────────────────────────
+AVANTFAX_DB_PASS="${AVANTFAX_DB_PASS:-$(openssl rand -hex 8)}"
+echo ">>> Setting up AvantFax database..."
+
+# Create avantfax DB user and database
+mysql -u root <<SQL 2>/dev/null
+CREATE DATABASE IF NOT EXISTS avantfax;
+CREATE USER IF NOT EXISTS 'avantfax'@'localhost' IDENTIFIED BY '${AVANTFAX_DB_PASS}';
+GRANT ALL PRIVILEGES ON avantfax.* TO 'avantfax'@'localhost';
+FLUSH PRIVILEGES;
+SQL
+
+# Import AvantFax schema if tables don't exist
+if [ -f /var/www/html/fax/includes/create_tables.sql ]; then
+  TABLE_COUNT=$(mysql -u root -N -e "SELECT COUNT(*) FROM information_schema.tables WHERE table_schema='avantfax'" 2>/dev/null || echo 0)
+  if [ "$TABLE_COUNT" = "0" ]; then
+    mysql -u root avantfax < /var/www/html/fax/includes/create_tables.sql 2>/dev/null || true
+    echo ">>> AvantFax tables created"
+  fi
+fi
+
+# Replace DB password placeholder in local_config.php
+if [ -f /var/www/html/fax/includes/local_config.php ]; then
+  sed -i "s/define('AFDB_PASS',.*/define('AFDB_PASS',     '${AVANTFAX_DB_PASS}');/" /var/www/html/fax/includes/local_config.php
+fi
+
+# ── Start PHP-FPM (both versions) ────────────────────────────
 service php8.2-fpm start
+service php7.4-fpm start 2>/dev/null || echo ">>> PHP 7.4 FPM not available (AvantFax won't work)"
 
 # Start Apache in background
 apache2ctl -D FOREGROUND &

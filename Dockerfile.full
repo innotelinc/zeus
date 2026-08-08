@@ -264,6 +264,94 @@ RUN sed -i \
       /etc/php/8.2/fpm/pool.d/www.conf && \
     grep -E '^(user|group|listen.owner|listen.group)' /etc/php/8.2/fpm/pool.d/www.conf
 
+# ─── AvantFax 3.4.1 (fax web UI) ────────────────────────────
+# PHP 7.4 is required for AvantFax (legacy). PHP 8.2 remains the
+# default; AvantFax is served from /fax via a dedicated PHP 7.4 FPM.
+RUN curl -fsSL https://packages.sury.org/php/apt.gpg | gpg --dearmor -o /usr/share/keyrings/sury-php.gpg && \
+    echo "deb [signed-by=/usr/share/keyrings/sury-php.gpg] https://packages.sury.org/php/ $(lsb_release -sc) main" > /etc/apt/sources.list.d/php.list && \
+    apt update && \
+    apt -y install --no-install-recommends \
+      php7.4 php7.4-cgi php7.4-common php7.4-curl php7.4-mbstring \
+      php7.4-gd php7.4-mysql php7.4-bcmath php7.4-zip php7.4-xml \
+      php7.4-imap php7.4-fpm php7.4-ldap \
+      libtiff-tools ghostscript imagemagick netpbm && \
+    apt clean && rm -rf /var/lib/apt/lists/* && \
+    # PHP 7.4 FPM pool as asterisk user
+    sed -i \
+      -e 's/^user = .*/user = asterisk/' \
+      -e 's/^group = .*/group = asterisk/' \
+      -e 's/^listen = .*/listen = 127.0.0.1:9074/' \
+      -e 's/^listen.owner = .*/listen.owner = asterisk/' \
+      -e 's/^listen.group = .*/listen.group = asterisk/' \
+      /etc/php/7.4/fpm/pool.d/www.conf
+
+# Download AvantFax 3.4.1 and install
+RUN cd /usr/src && \
+    wget -q https://downloads.sourceforge.net/project/avantfax/avantfax-3.4.1.tgz && \
+    tar zxf avantfax-3.4.1.tgz && rm avantfax-3.4.1.tgz && \
+    mv avantfax-3.4.1 /usr/src/avantfax && \
+    ln -sf /usr/src/avantfax/avantfax /var/www/html/fax && \
+    chown -R asterisk:asterisk /usr/src/avantfax /var/www/html/fax && \
+    chmod -R 775 /var/www/html/fax/includes && \
+    mkdir -p /var/www/html/fax/tmp /var/www/html/fax/faxes && \
+    chmod -R 770 /var/www/html/fax/tmp /var/www/html/fax/faxes
+
+# AvantFax Apache config — serve /fax with PHP 7.4
+RUN cat > /etc/apache2/conf-available/avantfax.conf <<'APACHEOF'
+Alias /fax /var/www/html/fax
+<Directory /var/www/html/fax>
+    AllowOverride All
+    Require all granted
+    <FilesMatch "\.php$">
+        SetHandler "proxy:fcgi://127.0.0.1:9074"
+    </FilesMatch>
+</Directory>
+APACHEOF
+RUN a2enconf avantfax
+
+# AvantFax local_config.php template (secrets injected by entrypoint)
+RUN cat > /var/www/html/fax/includes/local_config.php <<'PHPCFG'
+<?php
+define('AFDB_USER',     'avantfax');
+define('AFDB_PASS',     'AVANTFAX_DB_PASS');
+define('AFDB_NAME',     'avantfax');
+define('AFDB_HOST',     'localhost');
+$BINARYDIR = '/usr/bin';
+$HYLAFAX_PREFIX = '/usr/local';
+$HYLASPOOL = '/var/spool/hylafax';
+$HYLATIFF2PS = false;
+$CALLIDn_CIDNumber = 1;
+$CALLIDn_CIDName = 2;
+$CALLIDn_DIDNum = 3;
+$FAXMAILUSER = 'root';
+$WWWUSER = 'asterisk';
+define('ADMIN_EMAIL', 'fax@innotel.us');
+$NOTIFY_INCLUDE_PDF = true;
+$FAXRCVD_INCLUDE_PDF = true;
+$ENABLE_DID_ROUTING = false;
+$AVANTFAX_SERVERNAME = 'fax.innotel.us';
+$TIFF_TO_G4 = false;
+$AVANTFAX_DEBUG = false;
+define('RESTRICTED_USER_MODE', false);
+define('MAX_USERNAME_SIZE', 15);
+define('MAX_PASSWD_SIZE', 15);
+define('MIN_PASSWD_SIZE', 8);
+define('MAX_EMAIL_SIZE', 99);
+$SENDFAX_REQUEUE_EMAIL = true;
+$SENDFAX_USE_COVERPAGE = true;
+$ARCHIVEFAX2EMAIL = true;
+$ARCHIVE_WIDE = true;
+$DEFAULT_FAXES_PER_PAGE_INBOX = 25;
+$DEFAULT_FAXES_PER_PAGE_ARCHIVE = 30;
+define('ENABLE_OCR_SUPPORT', false);
+$FAXRCVD_PRINT_PDF = false;
+define('USE_SMTPSERVER', false);
+$MAX_SESSION_LIFETIME = 8*60*60;
+$PAPERSIZE = 'letter';
+$DPI = 92;
+$DPIS = 200;
+PHPCFG
+
 # ─── Entrypoint ──────────────────────────────────────────────
 COPY docker-entrypoint-full.sh /usr/local/bin/entrypoint.sh
 RUN chmod +x /usr/local/bin/entrypoint.sh

@@ -76,31 +76,11 @@ services:
       - pbx-net
 
   # ── AvantFax (fax web UI) ──────────────────────────────────
-  # DISABLED: no innotel/avantfax image is published yet, and the portal
-  # simulates fax sending when AvantFax is unreachable, so the stack runs
-  # fine without it. Uncomment once an AvantFax image exists:
-  # avantfax:
-  #   image: innotel/avantfax:latest
-  #   container_name: pbx-avantfax
-  #   restart: unless-stopped
-  #   security_opt:
-  #     - apparmor=unconfined
-  #   depends_on:
-  #     mariadb:
-  #       condition: service_healthy
-  #   ports:
-  #     - "8080:8080"
-  #   environment:
-  #     DB_HOST: mariadb
-  #     DB_PASS: ${DB_PASS:-eExoVkmrjqJcUv3A17Zc}
-  #     FAX_EMAIL: ${FAX_EMAIL:-fax@innotel.us}
-  #     FAX_NUMBER: ${FAX_NUMBER:-7745057136}
-  #     SMTP_HOST: ${SMTP_HOST:-mail.innotel.us}
-  #   volumes:
-  #     - avantfax-faxes:/var/www/html/fax/faxes
-  #     - hylafax-spool:/var/spool/hylafax
-  #   networks:
-  #     - pbx-net
+  # Shares the freepbx image — AvantFax runs inside the same container
+  # via PHP 7.4 FPM and Apache at /fax. This service is just an alias
+  # so the portal can resolve 'avantfax' as a hostname.
+  # The actual fax UI is at http://freepbx/fax (port 80).
+  # For external access, use the HOSTNAME:80/fax path.
 
   # ── PBX Customer Portal (Next.js) ──────────────────────────
   portal:
@@ -151,9 +131,9 @@ services:
       NEXT_PUBLIC_TURN_USERNAME: ${TURN_USERNAME:-}
       NEXT_PUBLIC_TURN_CREDENTIAL: ${TURN_CREDENTIAL:-}
 
-      # ── AvantFax ──
-      AVANTFAX_URL: http://avantfax:8080/avantfax
-      NEXT_PUBLIC_AVANTFAX_URL: http://${HOSTNAME:-voice.innotel.us}:8080/avantfax
+      # ── AvantFax (runs inside freepbx container at /fax) ──
+      AVANTFAX_URL: http://freepbx/fax
+      NEXT_PUBLIC_AVANTFAX_URL: http://${HOSTNAME:-voice.innotel.us}/fax
 
       # ── Atlas integration ──
       ATLAS_API_URL: ${ATLAS_API_URL:-http://atlas-server:3000}
