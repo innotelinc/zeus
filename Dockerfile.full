@@ -476,7 +476,7 @@ if ($fileContent) {
   $filePath = $tmpFile;
 }
 $file = escapeshellarg($filePath ?? '');
-$cmd = "HOME=/var/www /usr/local/bin/sendfax -n -d $dest $file 2>&1";
+$cmd = "HOME=/var/www /usr/local/bin/sendfax -n -P faxpass -d $dest $file 2>&1";
 exec($cmd, $out, $code);
 if ($tmpFile && file_exists($tmpFile)) { unlink($tmpFile); }
 $jobId = '';
