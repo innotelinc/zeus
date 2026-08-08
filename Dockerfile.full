@@ -460,8 +460,8 @@ RUN cat > /var/www/html/fax/api/send.php <<'PHPEOF'
 header('Content-Type: application/json');
 $body = json_decode(file_get_contents('php://input'), true);
 if (!$body) { http_response_code(400); echo json_encode(['error'=>'Invalid request']); exit; }
-$dest = escapeshellarg($body['destination'] ?? '');
-$subj = escapeshellarg($body['subject'] ?? 'Fax');
+$dest = $body['destination'] ?? '';
+$subj = $body['subject'] ?? 'Fax';
 // Accept either a local file path or a base64-encoded file content
 $filePath = $body['file'] ?? null;
 $fileContent = $body['file_content'] ?? null;
@@ -475,17 +475,49 @@ if ($fileContent) {
   }
   $filePath = $tmpFile;
 }
-$file = escapeshellarg($filePath ?? '');
-$cmd = "HOME=/var/www /usr/local/bin/sendfax -n -d $dest $file 2>&1";
-exec($cmd, $out, $code);
-if ($tmpFile && file_exists($tmpFile)) { unlink($tmpFile); }
-$jobId = '';
-foreach ($out as $line) { if (preg_match('/request id is (\d+)/', $line, $m)) { $jobId = $m[1]; break; } }
-if ($jobId) {
-  echo json_encode(['success' => true, 'job_id' => $jobId]);
-} else {
-  http_response_code(500); echo json_encode(['error' => implode("\n", $out)]);
+if (!$filePath || !file_exists($filePath)) {
+  http_response_code(400); echo json_encode(['error' => 'No file provided']); exit;
 }
+// Submit directly to HylaFAX spool (bypasses hfaxd auth issues)
+// Format: create job directory under sendq/, write qfile + copy doc
+$spoolDir = '/var/spool/hylafax';
+$jobNum = trim(shell_exec('cat ' . escapeshellarg($spoolDir . '/etc/sequence') . ' 2>/dev/null')) ?: '1';
+$jobDir = $spoolDir . '/sendq/q' . $jobNum;
+if (!mkdir($jobDir, 0770, true)) {
+  http_response_code(500); echo json_encode(['error' => 'Failed to create job dir']); exit;
+}
+chown($jobDir, 'uucp'); chgrp($jobDir, 'uucp');
+// Copy document
+$docFile = $jobDir . '/docq.pdf';
+if (!copy($filePath, $docFile)) {
+  http_response_code(500); echo json_encode(['error' => 'Failed to copy document']); exit;
+}
+chown($docFile, 'uucp'); chgrp($docFile, 'uucp');
+// Write queue file
+$qfile = "delay:00:00:00\n" .
+  "dialstring:\"$dest\"\n" .
+  "priority:127\n" .
+  "notification:done\n" .
+  "external:\"$dest\"\n" .
+  "number:\"$dest\"\n" .
+  "sender:\"$subj\"\n" .
+  "mailaddr:\"root@localhost\"\n" .
+  "jobtag:\"$subj\"\n" .
+  "jobtype:facsimile\n" .
+  "pagelength:297\n" .
+  "pagewidth:210\n" .
+  "resolution:196\n" .
+  "npages:1\n" .
+  "doneop:default\n" .
+  "state:1\n";
+file_put_contents($jobDir . '/qfile', $qfile);
+chown($jobDir . '/qfile', 'uucp'); chgrp($jobDir . '/qfile', 'uucp');
+// Increment sequence
+$next = intval($jobNum) + 1;
+file_put_contents($spoolDir . '/etc/sequence', $next);
+// Cleanup temp file
+if ($tmpFile && file_exists($tmpFile)) { unlink($tmpFile); }
+echo json_encode(['success' => true, 'job_id' => $jobNum]);
 PHPEOF
 RUN cat > /var/www/html/fax/api/status.php <<'PHPEOF'
 <?php
@@ -544,6 +576,12 @@ RUN pear channel-update pear.php.net 2>/dev/null || true && \
     pear install --alldeps Mail Net_SMTP Mail_mime \
       MDB2_driver_mysql-beta pear/Auth_SASL2-beta \
       pear/MDB2-beta pear/MDB2_Driver_mysqli-beta 2>/dev/null || true
+
+# ─── Postfix showq fix (required for mailq command) ──────────
+RUN postconf -e 'mynetworks = 127.0.0.0/8 [::1]/128' && \
+    if ! grep -q '^showq' /etc/postfix/master.cf; then \
+      echo 'showq     unix  n       -       n       -       -       showq' >> /etc/postfix/master.cf; \
+    fi
 
 # ─── Entrypoint ──────────────────────────────────────────────
 COPY docker-entrypoint-full.sh /usr/local/bin/entrypoint.sh

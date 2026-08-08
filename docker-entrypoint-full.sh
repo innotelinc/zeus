@@ -53,6 +53,10 @@ service redis-server start 2>/dev/null || true
 # Start cron (FreePBX schedules module/cleanup jobs via crontab)
 service cron start 2>/dev/null || true
 
+# Start Postfix (mailq, voicemail-to-email, fax notifications)
+service postfix start 2>/dev/null || true
+echo ">>> Postfix started"
+
 # ── AvantFax setup ─────────────────────────────────────────────
 # Ensure the fax symlink exists (may be hidden by persistent volume)
 if [ ! -L /var/www/html/fax ] && [ -d /usr/src/avantfax/avantfax ]; then
@@ -126,22 +130,7 @@ if [ -f /usr/local/sbin/faxadduser ]; then
   echo ">>> HylaFAX admin user created"
 fi
 
-# Configure hfaxd for localhost access
-# HylaFAX+ hosts.hfaxd format: regex<TAB>password
-# Empty password (-) means no password required for matching hosts
-printf '.*\t-\n' > /var/spool/hylafax/etc/hosts.hfaxd
-chmod 644 /var/spool/hylafax/etc/hosts.hfaxd
-echo ">>> hosts.hfaxd configured (no password for localhost)"
-
-# Create .hylarc for asterisk user (runs sendfax via PHP-FPM)
-mkdir -p /var/www/.hylafax
-echo "host: localhost" > /var/www/.hylarc
-echo "protocol: tcp" >> /var/www/.hylarc
-chown -R asterisk:asterisk /var/www/.hylafax /var/www/.hylarc
-export HOME=/var/www
-echo ">>> hylafax client config ready"
-
-# Start hfaxd (HylaFAX client daemon) — must run as uucp like other fax services
+# Start hfaxd (HylaFAX client daemon) — runs as uucp like other fax services
 # The systemd unit uses Type=forking with ExecStart=/usr/local/sbin/hfaxd -i hylafax
 if [ -f /usr/local/sbin/hfaxd ]; then
   [ -p /var/spool/hylafax/FIFO ] || /usr/sbin/mkfifo /var/spool/hylafax/FIFO 2>/dev/null || true
@@ -190,6 +179,12 @@ echo ">>> Fax modems started (ttyIAX1-4)"
 # ── Start PHP-FPM (both versions) ────────────────────────────
 service php8.2-fpm start
 service php7.4-fpm start 2>/dev/null || echo ">>> PHP 7.4 FPM not available (AvantFax won't work)"
+
+# ── Start UCP Node daemon (User Control Panel for WebRTC) ────
+if [ -f /var/www/html/admin/modules/ucp/node/node_modules/.package-lock.json ] 2>/dev/null || [ -d /var/www/html/admin/modules/ucp/node ]; then
+  fwconsole start ucp 2>/dev/null || echo ">>> WARNING: UCP daemon failed to start"
+  echo ">>> UCP Node started"
+fi
 
 # Start Apache in background
 apache2ctl -D FOREGROUND &
