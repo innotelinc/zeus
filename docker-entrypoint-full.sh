@@ -19,6 +19,9 @@ service mariadb start
 # Start Redis (FreePBX 17 cache/session)
 service redis-server start 2>/dev/null || true
 
+# Start cron (FreePBX schedules module/cleanup jobs via crontab)
+service cron start 2>/dev/null || true
+
 # Start PHP-FPM
 service php8.2-fpm start
 

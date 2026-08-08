@@ -122,13 +122,19 @@ RUN chmod +x /usr/local/bin/systemctl
 RUN apt update && apt -y install --no-install-recommends --ignore-missing \
       mariadb-server php-pear php8.2-bz2 php8.2-soap php8.2-sqlite3 \
       php8.2-redis redis-server postfix mailutils sox mpg123 lame \
-      ghostscript libtiff-tools imagemagick screen && \
+      ghostscript libtiff-tools imagemagick screen cron && \
     # FreePBX 17's installer requires Node.js 8+ (it runs `node --version`
     # during ./install and aborts with "NodeJS 8 or higher is not
     # installed" otherwise), so install Node here — BEFORE the installer
     # runs — instead of in the later UCP layer.
     curl -fsSL https://deb.nodesource.com/setup_20.x | bash - && \
     apt -y install --no-install-recommends nodejs && \
+    # FreePBX's Cron class writes a crontab entry during ./install and
+    # verifies it reads back. In a container this fails with "Cron line
+    # added didn't remain in crontab" because PAM denies the asterisk
+    # user access to crontab. Relax the PAM rules (safe: cron is only
+    # used by the asterisk user inside this container).
+    printf 'auth sufficient pam_permit.so\naccount sufficient pam_permit.so\nsession sufficient pam_permit.so\n' > /etc/pam.d/crontab && \
     apt clean && rm -rf /var/lib/apt/lists/* && \
     mkdir -p /var/run/asterisk /var/run/mysqld && \
     chown asterisk:asterisk /var/run/asterisk && \
