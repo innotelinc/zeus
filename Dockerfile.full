@@ -238,6 +238,7 @@ disallow = all
 allow = ulaw
 dtmfmode = rfc2833
 qualify = yes
+requirecalltoken = no
 
 [iaxmodem1](fax-modem-template)
 secret = 329fax
@@ -472,7 +473,7 @@ if ($fileContent) {
   $filePath = $tmpFile;
 }
 $file = escapeshellarg($filePath ?? '');
-$cmd = "sendfax -n -d $dest -S $subj $file 2>&1";
+$cmd = "/usr/local/bin/sendfax -n -d $dest $file 2>&1";
 exec($cmd, $out, $code);
 if ($tmpFile && file_exists($tmpFile)) { unlink($tmpFile); }
 $jobId = '';
