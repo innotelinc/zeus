@@ -156,8 +156,13 @@ RUN apt update && apt -y install --no-install-recommends --ignore-missing \
       sleep 5; \
     fi && \
     asterisk -rx 'core show version' && \
-    ./install -n && \
-    fwconsole ma installlocal && \
+    # NOTE: FreePBX's installer returns exit code 1 even on success
+    # (Symfony command ends with `return 1`), so we must not chain
+    # `&&` off it. The installer already runs `fwconsole ma installlocal`
+    # and `fwconsole reload` internally; these are kept for safety but
+    # must not fail the build.
+    ./install -n || true && \
+    fwconsole ma installlocal || true && \
     fwconsole reload && \
     cd /usr/src && rm -rf freepbx
 
