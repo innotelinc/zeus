@@ -243,6 +243,22 @@ RUN chown -R asterisk:asterisk /etc/asterisk && \
     chmod -R 777 /var/www/html /var/lib/asterisk && \
     mkdir -p /var/run/asterisk && chown asterisk:asterisk /var/run/asterisk
 
+# ─── PHP-FPM run as asterisk (matches Apache) ──────────────────
+# Apache runs as the 'asterisk' user (set above), but the default
+# php-fpm pool runs as 'www-data' with a www-data-owned socket, so
+# Apache gets "AH02454: FCGI: Permission denied" connecting to the
+# FPM socket and serves 503. FreePBX's standard setup runs the FPM
+# pool as the asterisk user — do the same here.
+# NOTE: this is a separate late layer so the slow FreePBX-install
+# layers above stay cached when this changes.
+RUN sed -i \
+      -e 's/^user = .*/user = asterisk/' \
+      -e 's/^group = .*/group = asterisk/' \
+      -e 's/^listen.owner = .*/listen.owner = asterisk/' \
+      -e 's/^listen.group = .*/listen.group = asterisk/' \
+      /etc/php/8.2/fpm/pool.d/www.conf && \
+    grep -E '^(user|group|listen.owner|listen.group)' /etc/php/8.2/fpm/pool.d/www.conf
+
 # ─── Entrypoint ──────────────────────────────────────────────
 COPY docker-entrypoint-full.sh /usr/local/bin/entrypoint.sh
 RUN chmod +x /usr/local/bin/entrypoint.sh

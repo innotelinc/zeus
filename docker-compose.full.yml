@@ -24,39 +24,15 @@
 # ═══════════════════════════════════════════════════════════════
 
 services:
-  # ── MariaDB (shared database) ──────────────────────────────
-  mariadb:
-    image: mariadb:10.11
-    container_name: pbx-mariadb
-    restart: unless-stopped
-    # AppArmor's docker-default profile can't be checked in sandboxed/
-    # containerized Docker hosts (unreadable /sys/kernel/security/apparmor)
-    security_opt:
-      - apparmor=unconfined
-    environment:
-      MARIADB_ROOT_PASSWORD: ${DB_PASS:-DD@l1lama}
-      MARIADB_DATABASE: asterisk
-    volumes:
-      - mariadb-data:/var/lib/mysql
-      - ./scripts/schema.sql:/docker-entrypoint-initdb.d/01-schema.sql:ro
-    healthcheck:
-      test: ["CMD", "healthcheck.sh", "--connect", "--innodb_initialized"]
-      interval: 10s
-      timeout: 5s
-      retries: 5
-    networks:
-      - pbx-net
-
   # ── Asterisk + FreePBX 17 ──────────────────────────────────
+  # The full-stack image bundles its own MariaDB (the entrypoint runs
+  # `service mariadb start`), so no external database service is needed.
   freepbx:
     image: innotel/freepbx:latest
     container_name: pbx-freepbx
     restart: unless-stopped
     security_opt:
       - apparmor=unconfined
-    depends_on:
-      mariadb:
-        condition: service_healthy
     ports:
       - "80:80"           # FreePBX web UI
       - "5060:5060/udp"   # SIP
@@ -66,8 +42,6 @@ services:
       - "5038:5038"       # Asterisk AMI
       - "10000:20000/udp" # RTP
     environment:
-      DB_HOST: mariadb
-      DB_PASS: ${DB_PASS:-DD@l1lama}
       HOSTNAME: ${HOSTNAME:-voice.innotel.us}
       # VoIP.ms SIP trunk auto-configuration
       VOIPMS_SIP_USER: ${VOIPMS_SIP_USER:-}
@@ -102,28 +76,31 @@ services:
       - pbx-net
 
   # ── AvantFax (fax web UI) ──────────────────────────────────
-  avantfax:
-    image: innotel/avantfax:latest
-    container_name: pbx-avantfax
-    restart: unless-stopped
-    security_opt:
-      - apparmor=unconfined
-    depends_on:
-      mariadb:
-        condition: service_healthy
-    ports:
-      - "8080:8080"
-    environment:
-      DB_HOST: mariadb
-      DB_PASS: ${DB_PASS:-DD@l1lama}
-      FAX_EMAIL: ${FAX_EMAIL:-fax@innotel.us}
-      FAX_NUMBER: ${FAX_NUMBER:-7745057136}
-      SMTP_HOST: ${SMTP_HOST:-mail.innotel.us}
-    volumes:
-      - avantfax-faxes:/var/www/html/fax/faxes
-      - hylafax-spool:/var/spool/hylafax
-    networks:
-      - pbx-net
+  # DISABLED: no innotel/avantfax image is published yet, and the portal
+  # simulates fax sending when AvantFax is unreachable, so the stack runs
+  # fine without it. Uncomment once an AvantFax image exists:
+  # avantfax:
+  #   image: innotel/avantfax:latest
+  #   container_name: pbx-avantfax
+  #   restart: unless-stopped
+  #   security_opt:
+  #     - apparmor=unconfined
+  #   depends_on:
+  #     mariadb:
+  #       condition: service_healthy
+  #   ports:
+  #     - "8080:8080"
+  #   environment:
+  #     DB_HOST: mariadb
+  #     DB_PASS: ${DB_PASS:-DD@l1lama}
+  #     FAX_EMAIL: ${FAX_EMAIL:-fax@innotel.us}
+  #     FAX_NUMBER: ${FAX_NUMBER:-7745057136}
+  #     SMTP_HOST: ${SMTP_HOST:-mail.innotel.us}
+  #   volumes:
+  #     - avantfax-faxes:/var/www/html/fax/faxes
+  #     - hylafax-spool:/var/spool/hylafax
+  #   networks:
+  #     - pbx-net
 
   # ── PBX Customer Portal (Next.js) ──────────────────────────
   portal:
@@ -135,8 +112,7 @@ services:
     security_opt:
       - apparmor=unconfined
     depends_on:
-      freepbx:
-        condition: service_healthy
+      - freepbx
     ports:
       - "3000:3000"
     env_file:
@@ -229,8 +205,6 @@ services:
   #     - pbx-net
 
 volumes:
-  mariadb-data:
-    name: pbx-mariadb-data
   asterisk-config:
     name: pbx-asterisk-config
   asterisk-sounds:
@@ -239,10 +213,6 @@ volumes:
     name: pbx-asterisk-spool
   freepbx-www:
     name: pbx-freepbx-www
-  avantfax-faxes:
-    name: pbx-avantfax-faxes
-  hylafax-spool:
-    name: pbx-hylafax-spool
   portal-data:
     name: pbx-portal-data
 
