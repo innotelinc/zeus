@@ -148,8 +148,12 @@ if [ -f /usr/local/sbin/hfaxd ]; then
   chown uucp:uucp /var/spool/hylafax/FIFO 2>/dev/null || true
   chown -R uucp:uucp /var/spool/hylafax 2>/dev/null || true
   chmod 644 /var/spool/hylafax/etc/hosts.hfaxd 2>/dev/null || true
-  # Run as uucp, just like faxq/iaxmodem/faxgetty
-  su -s /bin/sh uucp -c '/usr/local/sbin/hfaxd -i hylafax' > /dev/null 2>&1 &
+  # Start hfaxd — drop to uucp if possible, otherwise run as root
+  if su -s /bin/sh uucp -c 'true' 2>/dev/null; then
+    su -s /bin/sh uucp -c '/usr/local/sbin/hfaxd -i hylafax' > /dev/null 2>&1 &
+  else
+    /usr/local/sbin/hfaxd -i hylafax > /dev/null 2>&1 &
+  fi
   sleep 2
   if ps aux | grep -v grep | grep -q '[h]faxd'; then
     echo ">>> hfaxd is running (uucp)"
