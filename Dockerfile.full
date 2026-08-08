@@ -382,7 +382,7 @@ PHPCFG
 
 # ─── IAXModem 1.3.5 ──────────────────────────────────────────
 RUN cd /usr/src && \
-    wget -q https://downloads.sourceforge.net/project/iaxmodem/iaxmodem/iaxmodem-1.3.5.tar.gz && \
+    wget -q 'https://sourceforge.net/projects/iaxmodem/files/iaxmodem/iaxmodem-1.3.5.tar.gz/download' -O iaxmodem-1.3.5.tar.gz && \
     tar zxf iaxmodem-1.3.5.tar.gz && rm iaxmodem-1.3.5.tar.gz && \
     cd iaxmodem-1.3.5 && \
     ./configure --libdir=/usr/lib64 && make && \
@@ -393,25 +393,12 @@ RUN cd /usr/src && \
 # IAXModem config for 4 virtual modems
 RUN FAX_NUMBER="${FAX_NUMBER:-7745057136}" && \
     for N in 1 2 3 4; do \
-      cat > "/etc/iaxmodem/ttyIAX${N}" <<IAXCFG
-device          /dev/ttyIAX${N}
-owner           uucp:uucp
-mode            660
-port            $((4569 + N))
-refresh         60
-server          127.0.0.1
-peername        iaxmodem${N}
-secret          329fax
-codec           ulaw
-cidname         Fax Server
-cidnumber       ${FAX_NUMBER}
-nojitterbuffer
-IAXCFG
+      printf 'device          /dev/ttyIAX%d\nowner           uucp:uucp\nmode            660\nport            %d\nrefresh         60\nserver          127.0.0.1\npeername        iaxmodem%d\nsecret          329fax\ncodec           ulaw\ncidname         Fax Server\ncidnumber       %s\nnojitterbuffer\n' "$N" "$((4569 + N))" "$N" "$FAX_NUMBER" > "/etc/iaxmodem/ttyIAX${N}"; \
     done
 
 # ─── HylaFAX+ 7.0.11 ────────────────────────────────────────
 RUN cd /usr/src && \
-    wget -q https://downloads.sourceforge.net/project/hylafax/HylaFAX%2B/hylafax-7.0.11.tar.gz && \
+    wget -q 'https://sourceforge.net/projects/hylafax/files/hylafax/hylafax-7.0.11.tar.gz/download' -O hylafax-7.0.11.tar.gz && \
     tar zxf hylafax-7.0.11.tar.gz && rm hylafax-7.0.11.tar.gz && \
     cd hylafax-7.0.11 && \
     ./configure && make && make install && \
@@ -424,42 +411,7 @@ RUN FAX_NUMBER="${FAX_NUMBER:-7745057136}" && \
     FAX_COUNTRY="${FAX_COUNTRY:-1}" && \
     mkdir -p /var/spool/hylafax/etc && \
     for N in 1 2 3 4; do \
-      cat > "/var/spool/hylafax/etc/config.ttyIAX${N}" <<HCFG
-CountryCode:            ${FAX_COUNTRY}
-AreaCode:               ${FAX_AREACODE}
-FAXNumber:              ${FAX_NUMBER}
-LongDistancePrefix:     1
-InternationalPrefix:    011
-DialStringRules:        "etc/dialrules"
-ServerTracing:          1
-SessionTracing:         1
-RecvFileMode:           0600
-LogFileMode:            0600
-DeviceMode:             0600
-RingsBeforeAnswer:      1
-SpeakerVolume:          off
-GettyArgs:              "-h %l dx_%s"
-LocalIdentifier:        "1${FAX_NUMBER}"
-TagLineFont:            etc/lutRS18.pcf
-TagLineFormat:          "From %%l|%c|Page %%P of %%T"
-MaxRecvPages:           200
-JobReqNoCarrier:        180
-JobReqNoAnswer:         180
-FaxRcvdCmd:             bin/faxrcvd.php
-DynamicConfig:          bin/dynconf.php
-NotifyCmd:              bin/notify.php
-ModemType:              Class1
-ModemResetCmds:         "ATH1\\nAT+VCID=1"
-ModemReadyCmds:         ATH0
-Class1AdaptRecvCmd:     AT+FAR=1
-Class1TMConnectDelay:   400
-Class1RMQueryCmd:       "!24,48,72,96"
-Class1TMQueryCmd:       "!24,48,72,96"
-CallIDPattern:          "NMBR="
-CallIDPattern:          "NAME="
-CallIDPattern:          "ANID="
-CallIDPattern:          "NDID="
-HCFG
+      printf 'CountryCode:            %s\nAreaCode:               %s\nFAXNumber:              %s\nLongDistancePrefix:     1\nInternationalPrefix:    011\nDialStringRules:        "etc/dialrules"\nServerTracing:          1\nSessionTracing:         1\nRecvFileMode:           0600\nLogFileMode:            0600\nDeviceMode:             0600\nRingsBeforeAnswer:      1\nSpeakerVolume:          off\nGettyArgs:              "-h %%l dx_%%s"\nLocalIdentifier:        "1%s"\nTagLineFont:            etc/lutRS18.pcf\nTagLineFormat:          "From %%%%l|%%c|Page %%%%P of %%%%T"\nMaxRecvPages:           200\nJobReqNoCarrier:        180\nJobReqNoAnswer:         180\nFaxRcvdCmd:             bin/faxrcvd.php\nDynamicConfig:          bin/dynconf.php\nNotifyCmd:              bin/notify.php\nModemType:              Class1\nModemResetCmds:         "ATH1\\\\nAT+VCID=1"\nModemReadyCmds:         ATH0\nClass1AdaptRecvCmd:     AT+FAR=1\nClass1TMConnectDelay:   400\nClass1RMQueryCmd:       "!24,48,72,96"\nClass1TMQueryCmd:       "!24,48,72,96"\nCallIDPattern:          "NMBR="\nCallIDPattern:          "NAME="\nCallIDPattern:          "ANID="\nCallIDPattern:          "NDID="\n' "$FAX_COUNTRY" "$FAX_AREACODE" "$FAX_NUMBER" "$FAX_NUMBER" > "/var/spool/hylafax/etc/config.ttyIAX${N}"; \
     done
 
 # HylaFAX user + hosts config
