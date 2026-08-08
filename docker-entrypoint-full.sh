@@ -95,22 +95,44 @@ fi
 # ── Fax stack services (HylaFAX+ + IAXModem) ──────────────────
 echo ">>> Starting fax stack..."
 
+# Fix IAX calltoken (the image layer may be cached without requirecalltoken=no)
+if [ -f /etc/asterisk/iax_fax_custom.conf ]; then
+  sed -i '/^requirecalltoken/d' /etc/asterisk/iax_fax_custom.conf
+  sed -i '/^\[fax-modem-template\]/,/^\[/{/^qualify/s/$/\nrequirecalltoken = no/}' /etc/asterisk/iax_fax_custom.conf 2>/dev/null || true
+  echo ">>> IAX calltoken fix applied"
+fi
+
+# Initialize HylaFAX spool (first-run only — idempotent)
+if [ -f /usr/local/sbin/faxsetup ]; then
+  if [ ! -f /var/spool/hylafax/etc/setup.cache ]; then
+    yes '' | /usr/local/sbin/faxsetup -server 2>/dev/null || true
+    echo ">>> HylaFAX spool initialized"
+  fi
+fi
+
 # Create HylaFAX admin user if not exists
 if [ -f /usr/local/sbin/faxadduser ]; then
   faxdeluser localhost 2>/dev/null || true
   faxdeluser 127.0.0.1 2>/dev/null || true
   echo "${AVANTFAX_DB_PASS}" | faxadduser -a admin "${AVANTFAX_DB_PASS}" 2>/dev/null || true
+  echo ">>> HylaFAX admin user created"
 fi
 
-# Start hfaxd (HylaFAX client/server protocol daemon)
+# Start hfaxd (HylaFAX client/server protocol daemon on port 4559)
 if [ -f /usr/local/sbin/hfaxd ]; then
-  /usr/local/sbin/hfaxd -i hylafax &
-  echo ">>> hfaxd started"
+  /usr/local/sbin/hfaxd -i hylafax -o 4559 &
+  sleep 1
+  if kill -0 $! 2>/dev/null; then
+    echo ">>> hfaxd started (port 4559)"
+  else
+    echo ">>> WARNING: hfaxd failed to start"
+  fi
 fi
 
 # Start faxq (HylaFAX queue scheduler)
 if [ -f /usr/local/sbin/faxq ]; then
   /usr/local/sbin/faxq &
+  sleep 1
   echo ">>> faxq started"
 fi
 
