@@ -99,7 +99,7 @@ export async function sendFax(params: {
 }
 
 /**
- * Check the status of a fax job via faxstat CLI.
+ * Check the status of a fax job via spool reader API.
  */
 export async function getFaxStatus(jobId: string): Promise<FaxStatus> {
   const res = await fetch(
@@ -118,19 +118,20 @@ export async function getFaxStatus(jobId: string): Promise<FaxStatus> {
   }
 
   const data = await res.json();
-  const raw = (data.raw ?? "") as string;
-
-  // Parse faxstat output: "JID  Pri Sender         Number        Pages Dials     TTS Status"
-  const done = raw.includes("DONE") || raw.includes("Done");
-  const failed = raw.includes("FAIL") || raw.includes("Fail") || raw.includes("ERROR");
-  const pages = parseInt((raw.match(/(\d+)\s*page/) ?? ["", "0"])[1], 10) || 0;
+  // New format: {job_id, status, dialstring, priority, ...}
+  // Old format:  {job_id, raw: "..."} — kept for compatibility
+  const status = (data.status ?? data.raw ?? "") as string;
+  const npages = parseInt((data.npages ?? "0") as string, 10) || 0;
 
   return {
-    jobId,
-    status: done ? "completed" : failed ? "failed" : "pending",
-    pages,
+    jobId: data.job_id ?? jobId,
+    status: status === "completed" ? "completed"
+          : status === "failed" ? "failed"
+          : status === "pending" ? "pending"
+          : "unknown",
+    pages: npages,
     duration: 0,
-    result: raw.slice(0, 200),
+    result: data.dialstring ?? status.slice(0, 200),
     created_at: new Date().toISOString(),
   };
 }

@@ -532,11 +532,35 @@ PHPEOF
 RUN cat > /var/www/html/fax/api/status.php <<'PHPEOF'
 <?php
 header('Content-Type: application/json');
-$jobId = escapeshellarg($_GET['job_id'] ?? '');
-$cmd = "faxstat -d -l $jobId 2>&1";
-exec($cmd, $out);
-$lines = implode("\n", $out);
-echo json_encode(['job_id' => $_GET['job_id'] ?? '', 'raw' => $lines]);
+$jobId = $_GET['job_id'] ?? '';
+if (!$jobId) { echo json_encode(['error' => 'Missing job_id']); exit; }
+// Read job status directly from spool (bypasses hfaxd auth)
+$qfile = '/var/spool/hylafax/sendq/q' . preg_replace('/[^0-9]/', '', $jobId) . '/qfile';
+if (file_exists($qfile)) {
+  $info = [];
+  foreach (file($qfile) as $line) {
+    $parts = explode(':', trim($line), 2);
+    if (count($parts) == 2) $info[$parts[0]] = $parts[1];
+  }
+  $info['job_id'] = $jobId;
+  $info['status'] = 'pending';
+  echo json_encode($info);
+} else {
+  // Check doneq
+  $doneQfile = '/var/spool/hylafax/doneq/q' . preg_replace('/[^0-9]/', '', $jobId) . '/qfile';
+  if (file_exists($doneQfile)) {
+    $info = [];
+    foreach (file($doneQfile) as $line) {
+      $parts = explode(':', trim($line), 2);
+      if (count($parts) == 2) $info[$parts[0]] = $parts[1];
+    }
+    $info['job_id'] = $jobId;
+    $info['status'] = 'completed';
+    echo json_encode($info);
+  } else {
+    echo json_encode(['job_id' => $jobId, 'status' => 'unknown']);
+  }
+}
 PHPEOF
 RUN cat > /var/www/html/fax/api/debug.php <<'PHPEOF'
 <?php
