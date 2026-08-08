@@ -126,34 +126,20 @@ if [ -f /usr/local/sbin/faxadduser ]; then
   echo ">>> HylaFAX admin user created"
 fi
 
-# Start hfaxd (HylaFAX client daemon)
-# The setup script creates /etc/systemd/system/hfaxd.service, but systemd
-# isn't available in Docker. Start it directly via the init script pattern.
+# Start hfaxd (HylaFAX client daemon) — must run as uucp like other fax services
+# The systemd unit uses Type=forking with ExecStart=/usr/local/sbin/hfaxd -i hylafax
 if [ -f /usr/local/sbin/hfaxd ]; then
   [ -p /var/spool/hylafax/FIFO ] || /usr/sbin/mkfifo /var/spool/hylafax/FIFO 2>/dev/null || true
   chown uucp:uucp /var/spool/hylafax/FIFO 2>/dev/null || true
-  # Try the init.d-style startup (some FreePBX setups create this)
-  if [ -x /etc/init.d/hylafax-hfaxd ]; then
-    /etc/init.d/hylafax-hfaxd start 2>/dev/null || true
-  fi
-  # Also try direct start with various modes
-  # Mode 1: inetd-style (forking, used by systemd unit)
-  /usr/local/sbin/hfaxd -i hylafax > /dev/null 2>&1 &
+  chown -R uucp:uucp /var/spool/hylafax 2>/dev/null || true
+  chown -R uucp:uucp /var/log/hfaxd.log 2>/dev/null || true
+  # Run as uucp, just like faxq/iaxmodem/faxgetty
+  su -s /bin/sh uucp -c '/usr/local/sbin/hfaxd -i hylafax' > /dev/null 2>&1 &
   sleep 2
-  # Check if hfaxd is running by looking for its process
   if ps aux | grep -v grep | grep -q '[h]faxd'; then
-    echo ">>> hfaxd is running"
+    echo ">>> hfaxd is running (uucp)"
   else
-    # Mode 2: try with explicit spool path
-    /usr/local/sbin/hfaxd -q /var/spool/hylafax -i hylafax > /dev/null 2>&1 &
-    sleep 2
-    if ps aux | grep -v grep | grep -q '[h]faxd'; then
-      echo ">>> hfaxd started (spool mode)"
-    else
-      echo ">>> WARNING: hfaxd failed to start — fax sending will not work"
-      # Log what went wrong
-      /usr/local/sbin/hfaxd -i hylafax -d 2>&1 | head -5 > /var/log/hfaxd.err 2>&1 || true
-    fi
+    echo ">>> WARNING: hfaxd failed to start"
   fi
 fi
 
