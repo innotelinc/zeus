@@ -127,9 +127,19 @@ if [ -f /usr/local/sbin/faxadduser ]; then
 fi
 
 # Configure hfaxd to trust localhost (no password required)
+# faxsetup overwrites hosts.hfaxd, so we configure it after faxsetup.
+# Make it world-readable so PHP-FPM (asterisk user) can read it.
 echo '127.0.0.1::admin:' > /var/spool/hylafax/etc/hosts.hfaxd
 echo 'localhost::admin:' >> /var/spool/hylafax/etc/hosts.hfaxd
+chmod 644 /var/spool/hylafax/etc/hosts.hfaxd
 echo ">>> hosts.hfaxd configured for localhost trust"
+
+# Create .hylarc for asterisk user (runs sendfax via PHP-FPM)
+mkdir -p /var/www/.hylafax
+echo 'host: localhost' > /var/www/.hylarc
+echo 'protocol: tcp' >> /var/www/.hylarc
+chown -R asterisk:asterisk /var/www/.hylafax /var/www/.hylarc
+export HOME=/var/www
 
 # Start hfaxd (HylaFAX client daemon) — must run as uucp like other fax services
 # The systemd unit uses Type=forking with ExecStart=/usr/local/sbin/hfaxd -i hylafax
@@ -137,7 +147,7 @@ if [ -f /usr/local/sbin/hfaxd ]; then
   [ -p /var/spool/hylafax/FIFO ] || /usr/sbin/mkfifo /var/spool/hylafax/FIFO 2>/dev/null || true
   chown uucp:uucp /var/spool/hylafax/FIFO 2>/dev/null || true
   chown -R uucp:uucp /var/spool/hylafax 2>/dev/null || true
-  chown -R uucp:uucp /var/log/hfaxd.log 2>/dev/null || true
+  chmod 644 /var/spool/hylafax/etc/hosts.hfaxd 2>/dev/null || true
   # Run as uucp, just like faxq/iaxmodem/faxgetty
   su -s /bin/sh uucp -c '/usr/local/sbin/hfaxd -i hylafax' > /dev/null 2>&1 &
   sleep 2
