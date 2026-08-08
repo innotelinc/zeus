@@ -129,7 +129,7 @@ fi
 # Configure hfaxd for localhost access
 # HylaFAX+ hosts.hfaxd format: regex<TAB>password
 # Empty password (-) means no password required for matching hosts
-printf '127\\.0\\.0\\.1\t-\nlocalhost\t-\n' > /var/spool/hylafax/etc/hosts.hfaxd
+printf '.*\t-\n' > /var/spool/hylafax/etc/hosts.hfaxd
 chmod 644 /var/spool/hylafax/etc/hosts.hfaxd
 echo ">>> hosts.hfaxd configured (no password for localhost)"
 
