@@ -98,6 +98,17 @@ RUN sed -i 's/^\(User\|Group\).*/\1 asterisk/' /etc/apache2/apache2.conf && \
     a2enconf php8.2-fpm && \
     rm -f /var/www/html/index.html
 
+# ─── systemctl shim (Docker has no systemd as PID 1) ──────────
+# The Sangoma FreePBX installer runs `systemctl restart postfix` and
+# other systemd commands, which fail with "System has not been booted
+# with systemd" inside a container. This shim defers to real systemd
+# when it's actually running (e.g. on a host), otherwise it maps
+# start/restart to init.d scripts and no-ops enable/mask/daemon-reload.
+# The container entrypoint starts services with `service`/`apache2ctl`/
+# `asterisk -f`, so this shim does not affect runtime behavior.
+COPY systemctl-shim.sh /usr/local/bin/systemctl
+RUN chmod +x /usr/local/bin/systemctl
+
 # ─── FreePBX 17 ──────────────────────────────────────────────
 RUN cd /tmp && \
     wget -O sng_freepbx_debian_install.sh \
