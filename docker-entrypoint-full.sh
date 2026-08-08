@@ -83,7 +83,54 @@ fi
 # Replace DB password placeholder in local_config.php
 if [ -f /var/www/html/fax/includes/local_config.php ]; then
   sed -i "s/define('AFDB_PASS',.*/define('AFDB_PASS',     '${AVANTFAX_DB_PASS}');/" /var/www/html/fax/includes/local_config.php
+  sed -i "s/define('ADMIN_EMAIL',.*/define('ADMIN_EMAIL', '${FAX_EMAIL:-fax@innotel.us}');/" /var/www/html/fax/includes/local_config.php
+  sed -i "s|AVANTFAX_HOSTNAME|${HOSTNAME:-fax.innotel.us}|g" /var/www/html/fax/includes/local_config.php
 fi
+
+# Import AvantFax user SQL if available
+if [ -f /var/www/html/fax/includes/create_user.sql ]; then
+  mysql -u root avantfax < /var/www/html/fax/includes/create_user.sql 2>/dev/null || true
+fi
+
+# ── Fax stack services (HylaFAX+ + IAXModem) ──────────────────
+echo ">>> Starting fax stack..."
+
+# Create HylaFAX admin user if not exists
+if [ -f /usr/local/sbin/faxadduser ]; then
+  faxdeluser localhost 2>/dev/null || true
+  faxdeluser 127.0.0.1 2>/dev/null || true
+  echo "${AVANTFAX_DB_PASS}" | faxadduser -a admin "${AVANTFAX_DB_PASS}" 2>/dev/null || true
+fi
+
+# Start hfaxd (HylaFAX client/server protocol daemon)
+if [ -f /usr/local/sbin/hfaxd ]; then
+  /usr/local/sbin/hfaxd -i hylafax &
+  echo ">>> hfaxd started"
+fi
+
+# Start faxq (HylaFAX queue scheduler)
+if [ -f /usr/local/sbin/faxq ]; then
+  /usr/local/sbin/faxq &
+  echo ">>> faxq started"
+fi
+
+# Start IAXmodem + faxgetty for each virtual modem
+FAX_NUMBER="${FAX_NUMBER:-7745057136}"
+for N in 1 2 3 4; do
+  # Create device node if missing
+  if [ ! -c /dev/ttyIAX${N} ]; then
+    mknod /dev/ttyIAX${N} c 240 ${N} 2>/dev/null || true
+  fi
+  # Start IAXmodem (IAX → serial bridge)
+  if [ -f /usr/local/sbin/iaxmodem ] && [ -f /etc/iaxmodem/ttyIAX${N} ]; then
+    /usr/local/sbin/iaxmodem ttyIAX${N} &
+  fi
+  # Start faxgetty (monitors modem line for incoming faxes)
+  if [ -f /usr/local/sbin/faxgetty ] && [ -f /var/spool/hylafax/etc/config.ttyIAX${N} ]; then
+    /usr/local/sbin/faxgetty ttyIAX${N} &
+  fi
+done
+echo ">>> Fax modems started (ttyIAX1-4)"
 
 # ── Start PHP-FPM (both versions) ────────────────────────────
 service php8.2-fpm start

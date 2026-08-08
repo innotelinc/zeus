@@ -225,6 +225,39 @@ icesupport = yes
 EOF
 RUN echo '#include rtp_custom.conf' >> /etc/asterisk/rtp.conf
 
+# ─── IAX2 config for fax modems ─────────────────────────────
+# IAXModem connects to Asterisk via IAX2 protocol.
+# Each virtual modem registers as a separate IAX peer.
+RUN cat > /etc/asterisk/iax_fax_custom.conf <<'IAXEOF'
+[fax-modem-template](!)
+type = peer
+host = dynamic
+trunk = yes
+context = from-internal
+disallow = all
+allow = ulaw
+dtmfmode = rfc2833
+qualify = yes
+
+[iaxmodem1](fax-modem-template)
+secret = 329fax
+
+[iaxmodem2](fax-modem-template)
+secret = 329fax
+
+[iaxmodem3](fax-modem-template)
+secret = 329fax
+
+[iaxmodem4](fax-modem-template)
+secret = 329fax
+IAXEOF
+RUN if [ -f /etc/asterisk/iax.conf ]; then \
+      echo '#include iax_fax_custom.conf' >> /etc/asterisk/iax.conf; \
+    fi && \
+    if [ -f /etc/asterisk/iax_custom.conf ]; then \
+      echo '#include iax_fax_custom.conf' >> /etc/asterisk/iax_custom.conf; \
+    fi
+
 # ─── AMI (Manager Interface) ─────────────────────────────────
 RUN cat > /etc/asterisk/manager_custom.conf <<'EOF'
 [pbxportal]
@@ -325,32 +358,220 @@ $CALLIDn_CIDName = 2;
 $CALLIDn_DIDNum = 3;
 $FAXMAILUSER = 'root';
 $WWWUSER = 'asterisk';
-define('ADMIN_EMAIL', 'fax@innotel.us');
+define('ADMIN_EMAIL', 'AVANTFAX_ADMIN_EMAIL');
 $NOTIFY_INCLUDE_PDF = true;
+$FAXRCVD_INCLUDE_THUMBNAIL = true;
 $FAXRCVD_INCLUDE_PDF = true;
 $ENABLE_DID_ROUTING = false;
-$AVANTFAX_SERVERNAME = 'fax.innotel.us';
-$TIFF_TO_G4 = false;
-$AVANTFAX_DEBUG = false;
+$AUTOCONFDID = true;
+$dft_config_lang = 'en';
+$AVANTFAX_SERVERNAME = 'AVANTFAX_HOSTNAME';
+$TIFF_TO_G4 = false; $AVANTFAX_DEBUG = false;
 define('RESTRICTED_USER_MODE', false);
-define('MAX_USERNAME_SIZE', 15);
-define('MAX_PASSWD_SIZE', 15);
-define('MIN_PASSWD_SIZE', 8);
-define('MAX_EMAIL_SIZE', 99);
-$SENDFAX_REQUEUE_EMAIL = true;
-$SENDFAX_USE_COVERPAGE = true;
-$ARCHIVEFAX2EMAIL = true;
-$ARCHIVE_WIDE = true;
-$DEFAULT_FAXES_PER_PAGE_INBOX = 25;
-$DEFAULT_FAXES_PER_PAGE_ARCHIVE = 30;
+define('MAX_USERNAME_SIZE', 15); define('MAX_PASSWD_SIZE', 15);
+define('MIN_PASSWD_SIZE', 8); define('MAX_EMAIL_SIZE', 99);
+$SENDFAX_REQUEUE_EMAIL = true; $SENDFAX_USE_COVERPAGE = true;
+$ARCHIVEFAX2EMAIL = true; $ARCHIVE_WIDE = true;
+$DEFAULT_FAXES_PER_PAGE_INBOX = 25; $DEFAULT_FAXES_PER_PAGE_ARCHIVE = 30;
 define('ENABLE_OCR_SUPPORT', false);
 $FAXRCVD_PRINT_PDF = false;
 define('USE_SMTPSERVER', false);
 $MAX_SESSION_LIFETIME = 8*60*60;
-$PAPERSIZE = 'letter';
-$DPI = 92;
-$DPIS = 200;
+$PAPERSIZE = 'letter'; $DPI = 92; $DPIS = 200;
 PHPCFG
+
+# ─── IAXModem 1.3.5 ──────────────────────────────────────────
+RUN cd /usr/src && \
+    wget -q https://downloads.sourceforge.net/project/iaxmodem/iaxmodem/iaxmodem-1.3.5.tar.gz && \
+    tar zxf iaxmodem-1.3.5.tar.gz && rm iaxmodem-1.3.5.tar.gz && \
+    cd iaxmodem-1.3.5 && \
+    ./configure --libdir=/usr/lib64 && make && \
+    mkdir -p /etc/iaxmodem /var/log/iaxmodem && \
+    cp iaxmodem /usr/local/sbin/ && \
+    cd /usr/src && rm -rf iaxmodem-1.3.5
+
+# IAXModem config for 4 virtual modems
+RUN FAX_NUMBER="${FAX_NUMBER:-7745057136}" && \
+    for N in 1 2 3 4; do \
+      cat > "/etc/iaxmodem/ttyIAX${N}" <<IAXCFG
+device          /dev/ttyIAX${N}
+owner           uucp:uucp
+mode            660
+port            $((4569 + N))
+refresh         60
+server          127.0.0.1
+peername        iaxmodem${N}
+secret          329fax
+codec           ulaw
+cidname         Fax Server
+cidnumber       ${FAX_NUMBER}
+nojitterbuffer
+IAXCFG
+    done
+
+# ─── HylaFAX+ 7.0.11 ────────────────────────────────────────
+RUN cd /usr/src && \
+    wget -q https://downloads.sourceforge.net/project/hylafax/HylaFAX%2B/hylafax-7.0.11.tar.gz && \
+    tar zxf hylafax-7.0.11.tar.gz && rm hylafax-7.0.11.tar.gz && \
+    cd hylafax-7.0.11 && \
+    ./configure && make && make install && \
+    ln -sf /usr/bin/gs /usr/local/bin/gs && \
+    cd /usr/src && rm -rf hylafax-7.0.11
+
+# HylaFAX modem configs for ttyIAX1-4
+RUN FAX_NUMBER="${FAX_NUMBER:-7745057136}" && \
+    FAX_AREACODE="${FAX_AREACODE:-774}" && \
+    FAX_COUNTRY="${FAX_COUNTRY:-1}" && \
+    mkdir -p /var/spool/hylafax/etc && \
+    for N in 1 2 3 4; do \
+      cat > "/var/spool/hylafax/etc/config.ttyIAX${N}" <<HCFG
+CountryCode:            ${FAX_COUNTRY}
+AreaCode:               ${FAX_AREACODE}
+FAXNumber:              ${FAX_NUMBER}
+LongDistancePrefix:     1
+InternationalPrefix:    011
+DialStringRules:        "etc/dialrules"
+ServerTracing:          1
+SessionTracing:         1
+RecvFileMode:           0600
+LogFileMode:            0600
+DeviceMode:             0600
+RingsBeforeAnswer:      1
+SpeakerVolume:          off
+GettyArgs:              "-h %l dx_%s"
+LocalIdentifier:        "1${FAX_NUMBER}"
+TagLineFont:            etc/lutRS18.pcf
+TagLineFormat:          "From %%l|%c|Page %%P of %%T"
+MaxRecvPages:           200
+JobReqNoCarrier:        180
+JobReqNoAnswer:         180
+FaxRcvdCmd:             bin/faxrcvd.php
+DynamicConfig:          bin/dynconf.php
+NotifyCmd:              bin/notify.php
+ModemType:              Class1
+ModemResetCmds:         "ATH1\\nAT+VCID=1"
+ModemReadyCmds:         ATH0
+Class1AdaptRecvCmd:     AT+FAR=1
+Class1TMConnectDelay:   400
+Class1RMQueryCmd:       "!24,48,72,96"
+Class1TMQueryCmd:       "!24,48,72,96"
+CallIDPattern:          "NMBR="
+CallIDPattern:          "NAME="
+CallIDPattern:          "ANID="
+CallIDPattern:          "NDID="
+HCFG
+    done
+
+# HylaFAX user + hosts config
+RUN echo "127.0.0.1" >> /var/spool/hylafax/etc/hosts.hfaxd && \
+    cat >> /usr/local/lib/fax/hyla.conf <<'HYLAEOF'
+JobFmt: "%-5j %1a %15o %-15.15e %5P %5D %5i %7z %.25s"
+RcvFmt: "%7o %-10t %-25s %-20f %5p %1z %-40e"
+PageSize:       na-let
+VRes:   196
+HYLAEOF
+
+# ImageMagick policy — allow PDF/PS for fax conversion
+RUN POLICY=/etc/ImageMagick-6/policy.xml && \
+    if [ -f "$POLICY" ]; then \
+      for PAT in PS PS2 PS3 EPS PDF XPS; do \
+        sed -i "s|<policy domain=\"coder\" rights=\"none\" pattern=\"${PAT}\"|<policy domain=\"coder\" rights=\"read|write\" pattern=\"${PAT}\"|g" "$POLICY" || true; \
+      done; \
+    fi
+
+# ─── AvantFax API proxy (portal → HylaFAX+ CLI bridge) ─────
+RUN mkdir -p /var/www/html/fax/api && \
+    cat > /var/www/html/fax/api/users.php <<'PHPEOF'
+<?php
+header('Content-Type: application/json');
+$body = json_decode(file_get_contents('php://input'), true);
+if (!$body || ($body['action'] ?? '') !== 'create') {
+  http_response_code(400); echo json_encode(['error' => 'Invalid request']); exit;
+}
+$user = escapeshellarg($body['username'] ?? '');
+$pass = escapeshellarg($body['password'] ?? substr(bin2hex(random_bytes(4)), 0, 8));
+$email = escapeshellarg($body['email'] ?? '');
+$cmd = "faxadduser -a $pass -u $user -p $pass $email 2>&1";
+exec($cmd, $out, $code);
+if ($code === 0) {
+  echo json_encode(['success' => true, 'username' => $body['username']]);
+} else {
+  http_response_code(500); echo json_encode(['error' => implode("\n", $out)]);
+}
+PHPEOF
+RUN cat > /var/www/html/fax/api/send.php <<'PHPEOF'
+<?php
+header('Content-Type: application/json');
+$body = json_decode(file_get_contents('php://input'), true);
+if (!$body) { http_response_code(400); echo json_encode(['error'=>'Invalid request']); exit; }
+$dest = escapeshellarg($body['destination'] ?? '');
+$subj = escapeshellarg($body['subject'] ?? 'Fax');
+// Accept either a local file path or a base64-encoded file content
+$filePath = $body['file'] ?? null;
+$fileContent = $body['file_content'] ?? null;
+$fileName = $body['file_name'] ?? 'fax.pdf';
+$tmpFile = null;
+if ($fileContent) {
+  $tmpFile = '/tmp/' . uniqid('fax_') . '.pdf';
+  $decoded = base64_decode($fileContent);
+  if ($decoded === false || file_put_contents($tmpFile, $decoded) === false) {
+    http_response_code(500); echo json_encode(['error' => 'Failed to decode/write fax file']); exit;
+  }
+  $filePath = $tmpFile;
+}
+$file = escapeshellarg($filePath ?? '');
+$cmd = "sendfax -n -d $dest -S $subj $file 2>&1";
+exec($cmd, $out, $code);
+if ($tmpFile && file_exists($tmpFile)) { unlink($tmpFile); }
+$jobId = '';
+foreach ($out as $line) { if (preg_match('/request id is (\d+)/', $line, $m)) { $jobId = $m[1]; break; } }
+if ($jobId) {
+  echo json_encode(['success' => true, 'job_id' => $jobId]);
+} else {
+  http_response_code(500); echo json_encode(['error' => implode("\n", $out)]);
+}
+PHPEOF
+RUN cat > /var/www/html/fax/api/status.php <<'PHPEOF'
+<?php
+header('Content-Type: application/json');
+$jobId = escapeshellarg($_GET['job_id'] ?? '');
+$cmd = "faxstat -d -l $jobId 2>&1";
+exec($cmd, $out);
+$lines = implode("\n", $out);
+echo json_encode(['job_id' => $_GET['job_id'] ?? '', 'raw' => $lines]);
+PHPEOF
+RUN chown -R asterisk:asterisk /var/www/html/fax/api && \
+    chmod 755 /var/www/html/fax/api/*.php
+
+# AvantFax API Apache config — allow portal to call api proxy
+RUN cat > /etc/apache2/conf-available/avantfax-api.conf <<'APACHEOF'
+<Directory /var/www/html/fax/api>
+    AllowOverride None
+    Require all granted
+    <FilesMatch "\.php$">
+        SetHandler "proxy:fcgi://127.0.0.1:9074"
+    </FilesMatch>
+</Directory>
+APACHEOF
+RUN a2enconf avantfax-api
+
+# ─── AvantFax ↔ HylaFAX+ integration symlinks ──────────────
+RUN mv /usr/local/bin/faxcover /usr/local/bin/faxcover.old 2>/dev/null || true && \
+    ln -sf /var/www/html/fax/includes/faxcover.php /usr/local/bin/faxcover && \
+    ln -sf /var/www/html/fax/includes/faxrcvd.php  /var/spool/hylafax/bin/faxrcvd.php && \
+    ln -sf /var/www/html/fax/includes/dynconf.php   /var/spool/hylafax/bin/dynconf.php && \
+    ln -sf /var/www/html/fax/includes/notify.php    /var/spool/hylafax/bin/notify.php && \
+    ln -sf /usr/local/bin/faxstat /usr/bin/faxstat 2>/dev/null || true && \
+    chown -R asterisk:asterisk /var/www/html/fax && \
+    groupadd uucp 2>/dev/null || true && \
+    usermod -aG uucp asterisk && \
+    chown -R asterisk:uucp /var/www/html/fax/tmp /var/www/html/fax/faxes
+
+# PEAR packages for AvantFax
+RUN pear channel-update pear.php.net 2>/dev/null || true && \
+    pear install --alldeps Mail Net_SMTP Mail_mime \
+      MDB2_driver_mysql-beta pear/Auth_SASL2-beta \
+      pear/MDB2-beta pear/MDB2_Driver_mysqli-beta 2>/dev/null || true
 
 # ─── Entrypoint ──────────────────────────────────────────────
 COPY docker-entrypoint-full.sh /usr/local/bin/entrypoint.sh

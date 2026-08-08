@@ -3,7 +3,7 @@ import { requireUser, badRequest } from "@/lib/api-helpers";
 import { sendFax } from "@/lib/avantfax";
 import db from "@/lib/db";
 import { randomUUID } from "node:crypto";
-import { writeFile, mkdir } from "node:fs/promises";
+import { writeFile, mkdir, readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { existsSync } from "node:fs";
 import type { Fax } from "@/lib/types";
@@ -107,10 +107,15 @@ export async function POST(req: Request) {
   let sent = false;
   if (!scheduledAt) {
     try {
+      // Read the saved file from disk and send base64 content
+      // (portal and freepbx are separate containers — file paths don't cross)
+      const pdfBuffer = await readFile(filePath);
+      const fileContent = pdfBuffer.toString("base64");
+
       const result = await sendFax({
         fromDid: did.did,
         toNumber: toNumber,
-        filePath: fileName,
+        fileContent,
         subject: subject ?? undefined,
       });
 
