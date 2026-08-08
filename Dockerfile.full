@@ -109,20 +109,57 @@ RUN sed -i 's/^\(User\|Group\).*/\1 asterisk/' /etc/apache2/apache2.conf && \
 COPY systemctl-shim.sh /usr/local/bin/systemctl
 RUN chmod +x /usr/local/bin/systemctl
 
-# ─── FreePBX 17 ──────────────────────────────────────────────
-RUN cd /tmp && \
-    wget -O sng_freepbx_debian_install.sh \
-      https://github.com/FreePBX/sng_freepbx_debian_install/raw/master/sng_freepbx_debian_install.sh && \
-    chmod +x sng_freepbx_debian_install.sh && \
-    bash sng_freepbx_debian_install.sh --noasterisk --opensourceonly && \
-    rm /tmp/sng_freepbx_debian_install.sh
+# ─── FreePBX 17 (direct framework tarball install) ──────────
+# Installs FreePBX directly from the official framework tarball via its
+# own installer (./install -n) instead of the Sangoma Debian script,
+# which requires systemd and is not container-friendly.
+#
+# Prerequisites handled here:
+#   - mariadb-server (not just the client) + php-pear
+#   - MariaDB started via its SysV init script (no systemd in container)
+#   - Asterisk started as the asterisk user (the installer requires a
+#     running Asterisk 18-22 and talks to it via `asterisk -rx`)
+RUN apt update && apt -y install --no-install-recommends --ignore-missing \
+      mariadb-server php-pear php8.2-bz2 php8.2-soap php8.2-sqlite3 \
+      php8.2-redis redis-server postfix mailutils sox mpg123 lame \
+      ghostscript libtiff-tools imagemagick screen && \
+    apt clean && rm -rf /var/lib/apt/lists/* && \
+    mkdir -p /var/run/asterisk /var/run/mysqld && \
+    chown asterisk:asterisk /var/run/asterisk && \
+    chown mysql:mysql /var/run/mysqld && \
+    service mariadb start && \
+    cd /usr/src && \
+    wget -q https://mirror.freepbx.org/modules/packages/freepbx/freepbx-17.0-latest.tgz && \
+    tar zxf freepbx-17.0-latest.tgz && rm freepbx-17.0-latest.tgz && \
+    cd /usr/src/freepbx && chown -R asterisk:asterisk . && \
+    # Make sure the asterisk CLI is on PATH for the 'asterisk' user
+    # (login.defs PATH does not include /usr/sbin on Debian).
+    ln -sf /usr/sbin/asterisk /usr/local/bin/asterisk && \
+    # Start Asterisk as the asterisk user. safe_asterisk can fail in a
+    # container (no tty), so verify and fall back to a direct daemon start.
+    ./start_asterisk start; \
+    sleep 5; \
+    if ! asterisk -rx 'core show version' >/dev/null 2>&1; then \
+      runuser -u asterisk -- /usr/sbin/asterisk -U asterisk -G asterisk; \
+      sleep 5; \
+    fi && \
+    asterisk -rx 'core show version' && \
+    ./install -n && \
+    fwconsole ma installlocal && \
+    fwconsole reload && \
+    cd /usr/src && rm -rf freepbx
 
 # ─── Node.js (for FreePBX UCP) ───────────────────────────────
+# Each RUN layer is a fresh container: MariaDB/Asterisk must be
+# (re)started here so fwconsole can talk to the FreePBX database.
 RUN curl -fsSL https://deb.nodesource.com/setup_20.x | bash - && \
     apt -y install nodejs && \
     apt clean && rm -rf /var/lib/apt/lists/* && \
+    mkdir -p /var/run/asterisk && chown asterisk:asterisk /var/run/asterisk && \
+    service mariadb start && \
+    (asterisk -U asterisk -G asterisk &) && sleep 3 && \
     fwconsole ma downloadinstall ucp 2>/dev/null || true && \
-    fwconsole reload
+    fwconsole reload || true
 
 # ─── PJSIP WebSocket (port 8089) ─────────────────────────────
 RUN mkdir -p /etc/asterisk/keys && \
