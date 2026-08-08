@@ -18,7 +18,7 @@ set -euo pipefail
 # ─── VARIABLES ────────────────────────────────────────────────
 HOSTNAME="${HOSTNAME:-voice.innotel.us}"
 PUB_IP="${PUB_IP:-}"
-DB_PASS="${DB_PASS:-DD@l1lama}"
+DB_PASS="${DB_PASS:-eExoVkmrjqJcUv3A17Zc}"
 ADMIN_EMAIL="${ADMIN_EMAIL:-admin@innotel.us}"
 FAX_EMAIL="${FAX_EMAIL:-fax@innotel.us}"
 SMTP_HOST="${SMTP_HOST:-mail.innotel.us}"
@@ -29,7 +29,7 @@ FAX_NUMBER="${FAX_NUMBER:-7745057136}"
 FAX_AREACODE="${FAX_AREACODE:-774}"
 FAX_COUNTRY="${FAX_COUNTRY:-1}"
 DOGRAH_WS_URI="${DOGRAH_WS_URI:-ws://aivoice.innotel.us/api/v1/telephony/ws/ari}"
-DOGRAH_ARI_PASS="${DOGRAH_ARI_PASS:-DD@l1lama-dograh}"
+DOGRAH_ARI_PASS="${DOGRAH_ARI_PASS:-eExoVkmrjqJcUv3A17Zc-dograh}"
 ARI_HTTP_PORT="${ARI_HTTP_PORT:-8088}"
 
 # PBX Portal variables
@@ -1270,7 +1270,7 @@ raw = out[out.find("{"):out.rfind("}")+1]
 try: js = json.loads(raw)
 except: js = {"summary":transcript[:200],"intent":"unknown","sentiment":"neutral"}
 
-db = pymysql.connect(host="localhost",user="asterisk",password="DD@l1lama",db="asteriskcdrdb")
+db = pymysql.connect(host="localhost",user="asterisk",password="eExoVkmrjqJcUv3A17Zc",db="asteriskcdrdb")
 c = db.cursor()
 c.execute("INSERT INTO ai_call_summaries (uniqueid,caller,callee,summary,intent,sentiment) VALUES (%s,%s,%s,%s,%s,%s)", (uniqueid,caller,callee,js["summary"],js["intent"],js["sentiment"]))
 c.execute("UPDATE cdr SET userfield=%s WHERE uniqueid=%s", (js["summary"],uniqueid))
@@ -1497,7 +1497,7 @@ echo "╔═══════════════════════�
 echo "║  INNOTEL FULL STACK — INSTALLATION COMPLETE              ║"
 echo "╠══════════════════════════════════════════════════════════╣"
 echo "║  PBX Portal   : https://${HOSTNAME}:3000                 "
-echo "║  Demo login   : demo@innotel.us / demo1234              ║"
+echo "║  Demo login   : demo@innotel.us / 8dpWR8wl4eYncm5v              ║"
 echo "║  FreePBX Admin: http://${HOSTNAME}/admin                 "
 echo "║  AvantFAX     : http://${HOSTNAME}/fax                   "
 echo "║  Webmin       : https://${HOSTNAME}:10000               ║"

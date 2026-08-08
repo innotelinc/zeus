@@ -76,7 +76,7 @@ Built with **Next.js 16 (App Router) + React 19 + Tailwind CSS v4** and **SQLite
 ```bash
 npm install
 cp .env.example .env   # fill in your credentials
-npm run seed           # creates demo@innotel.us / demo1234
+npm run seed           # creates demo@innotel.us / 8dpWR8wl4eYncm5v
 npm run dev            # runs on http://localhost:3000
 ```
 
@@ -85,7 +85,7 @@ npm run dev            # runs on http://localhost:3000
 | Field    | Value              |
 |----------|--------------------|
 | Email    | demo@innotel.us    |
-| Password | demo1234           |
+| Password | 8dpWR8wl4eYncm5v           |
 | Plan     | Business           |
 | Numbers  | 13025551001, 13025551002 |
 | Ext      | 1001               |

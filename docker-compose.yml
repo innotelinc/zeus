@@ -8,7 +8,7 @@
 #   cp .env.docker.example .env   # then fill in your values
 #   docker compose up -d
 #
-# Demo login: demo@innotel.us / demo1234
+# Demo login: demo@innotel.us / 8dpWR8wl4eYncm5v
 # ═══════════════════════════════════════════════════════════════
 
 services:

@@ -16,14 +16,14 @@ db.exec(schema);
 
 // ── Seed demo user ──
 const userId = randomUUID();
-const passwordHash = "$2b$10$q3VjaEcI.bQhZ9vk2EX0Ou6EK1EkP0K1e61bHHh/3/cq4q5TT6zJy"; // "demo1234"
+const passwordHash = "$2b$10$zdH2ueaSGT4q24xozAiWC.sKhMU7jX3dredo6fMKrvTlmw60tb.OO";
 
 const existing = db.prepare("SELECT id, password_hash FROM users WHERE email = ?").get("demo@innotel.us");
 if (existing) {
   const brokenHash = "$2a$10$VqCTt.CuhS0zFXP0bPn1LuyCJOHPfBrV2YhEhuqJw3MN1fLs9Dfaa";
   if (existing.password_hash === brokenHash) {
     db.prepare("UPDATE users SET password_hash = ? WHERE email = ?").run(passwordHash, "demo@innotel.us");
-    console.log("🔧 Repaired broken demo password hash. Login with demo1234 now works.");
+    console.log("🔧 Repaired broken demo password hash. Login now works.");
   } else {
     console.log("⚠ Demo user already exists, skipping seed.");
     db.close();
@@ -48,7 +48,7 @@ db.prepare(
 // ── Seed demo extension ──
 db.prepare(
   "INSERT INTO freepbx_extensions (id, user_id, extension_id, extension_name, extension_secret, voicemail_enabled, voicemail_pin, status) VALUES (?, ?, ?, ?, ?, 1, ?, 'active')"
-).run(randomUUID(), userId, "1001", "Demo Extension", "a1b2c3d4e5f6g7h8", "1234");
+).run(randomUUID(), userId, "1001", "Demo Extension", "accbacb7495dfd426d5607a7aa42c17b", "1234");
 
 // ── Seed demo contacts ──
 db.prepare(
@@ -98,7 +98,7 @@ db.prepare(
 
 console.log("✅ Seed complete!");
 console.log("   Email:    demo@innotel.us");
-console.log("   Password: demo1234");
+console.log("   Password: 8dpWR8wl4eYncm5v");
 console.log("   Plan:     Business");
 console.log("   Numbers:  13025551001, 13025551002");
 console.log("   Ext:      1001");
