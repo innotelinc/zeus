@@ -166,14 +166,19 @@ RUN apt update && apt -y install --no-install-recommends --ignore-missing \
     fwconsole reload && \
     cd /usr/src && rm -rf freepbx
 
-# ─── FreePBX UCP module ──────────────────────────────────────
+# ─── FreePBX API + UCP modules ───────────────────────────────
 # Node.js is already installed in the FreePBX install layer above;
 # layers share the filesystem, only processes don't persist.
 # Each RUN layer is a fresh container: MariaDB/Asterisk must be
 # (re)started here so fwconsole can talk to the FreePBX database.
+#
+# The 'api' module provides the OAuth2 token endpoint and GraphQL
+# API that the portal uses (via src/lib/freepbx.ts). The 'ucp'
+# module powers the User Control Panel for WebRTC/softphone.
 RUN mkdir -p /var/run/asterisk && chown asterisk:asterisk /var/run/asterisk && \
     service mariadb start && \
     (asterisk -U asterisk -G asterisk &) && sleep 3 && \
+    fwconsole ma downloadinstall api 2>/dev/null || true && \
     fwconsole ma downloadinstall ucp 2>/dev/null || true && \
     fwconsole reload || true
 

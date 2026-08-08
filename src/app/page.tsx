@@ -187,11 +187,11 @@ export default function LandingPage() {
             href="/signup"
             className="btn-primary mt-8 inline-flex px-8 py-3 text-base"
           >
-            Start free trial
+            Get started now
             <ArrowRightIcon size={18} />
           </Link>
           <p className="mt-4 text-xs text-white/25">
-            No credit card required. 7-day free trial.
+
           </p>
         </div>
       </section>
