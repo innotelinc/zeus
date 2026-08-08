@@ -126,26 +126,20 @@ if [ -f /usr/local/sbin/faxadduser ]; then
   echo ">>> HylaFAX admin user created"
 fi
 
-# Configure hfaxd for localhost access with a simple password
-# The HylaFAX+ protocol requires a non-empty password.
-HYLAFAX_PW='faxpass'
-echo "127.0.0.1:${HYLAFAX_PW}:admin:" > /var/spool/hylafax/etc/hosts.hfaxd
-echo "localhost:${HYLAFAX_PW}:admin:" >> /var/spool/hylafax/etc/hosts.hfaxd
+# Configure hfaxd for localhost access
+# HylaFAX+ hosts.hfaxd format: regex<TAB>password
+# Empty password (-) means no password required for matching hosts
+printf '127\\.0\\.0\\.1\t-\nlocalhost\t-\n' > /var/spool/hylafax/etc/hosts.hfaxd
 chmod 644 /var/spool/hylafax/etc/hosts.hfaxd
-echo ">>> hosts.hfaxd configured for localhost"
+echo ">>> hosts.hfaxd configured (no password for localhost)"
 
 # Create .hylarc for asterisk user (runs sendfax via PHP-FPM)
 mkdir -p /var/www/.hylafax
 echo "host: localhost" > /var/www/.hylarc
 echo "protocol: tcp" >> /var/www/.hylarc
-echo "Passwd: ${HYLAFAX_PW}" >> /var/www/.hylarc
 chown -R asterisk:asterisk /var/www/.hylafax /var/www/.hylarc
-# Also add password to system-wide hyla.conf (sendfax reads both)
-if ! grep -q '^Passwd:' /usr/local/lib/fax/hyla.conf 2>/dev/null; then
-  sed -i "/^Host:/a Passwd: ${HYLAFAX_PW}" /usr/local/lib/fax/hyla.conf
-fi
-echo ">>> hylafax client auth configured"
 export HOME=/var/www
+echo ">>> hylafax client config ready"
 
 # Start hfaxd (HylaFAX client daemon) — must run as uucp like other fax services
 # The systemd unit uses Type=forking with ExecStart=/usr/local/sbin/hfaxd -i hylafax
