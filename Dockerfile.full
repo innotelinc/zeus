@@ -416,8 +416,11 @@ RUN FAX_NUMBER="${FAX_NUMBER:-7745057136}" && \
     done
 
 # HylaFAX user + hosts config
-RUN echo "127.0.0.1" >> /var/spool/hylafax/etc/hosts.hfaxd && \
+# Allow localhost connections without password (trusted)
+RUN echo "127.0.0.1::admin:" >> /var/spool/hylafax/etc/hosts.hfaxd && \
+    echo "localhost::admin:" >> /var/spool/hylafax/etc/hosts.hfaxd && \
     cat >> /usr/local/lib/fax/hyla.conf <<'HYLAEOF'
+Host:           localhost
 JobFmt: "%-5j %1a %15o %-15.15e %5P %5D %5i %7z %.25s"
 RcvFmt: "%7o %-10t %-25s %-20f %5p %1z %-40e"
 PageSize:       na-let
