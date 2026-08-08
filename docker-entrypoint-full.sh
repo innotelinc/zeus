@@ -126,18 +126,34 @@ if [ -f /usr/local/sbin/faxadduser ]; then
   echo ">>> HylaFAX admin user created"
 fi
 
-# Start hfaxd standalone (not inetd) on port 4559
-# Inetd mode (-i) requires a running inetd/xinetd which we don't have.
-# Standalone mode (-s) binds the port directly.
+# Start hfaxd (HylaFAX client daemon)
+# The setup script creates /etc/systemd/system/hfaxd.service, but systemd
+# isn't available in Docker. Start it directly via the init script pattern.
 if [ -f /usr/local/sbin/hfaxd ]; then
   [ -p /var/spool/hylafax/FIFO ] || /usr/sbin/mkfifo /var/spool/hylafax/FIFO 2>/dev/null || true
   chown uucp:uucp /var/spool/hylafax/FIFO 2>/dev/null || true
-  /usr/local/sbin/hfaxd -s -p 4559 > /var/log/hfaxd.log 2>&1 &
+  # Try the init.d-style startup (some FreePBX setups create this)
+  if [ -x /etc/init.d/hylafax-hfaxd ]; then
+    /etc/init.d/hylafax-hfaxd start 2>/dev/null || true
+  fi
+  # Also try direct start with various modes
+  # Mode 1: inetd-style (forking, used by systemd unit)
+  /usr/local/sbin/hfaxd -i hylafax > /dev/null 2>&1 &
   sleep 2
-  if netstat -tlnp 2>/dev/null | grep -q ':4559' || ss -tlnp 2>/dev/null | grep -q ':4559'; then
-    echo ">>> hfaxd listening on port 4559"
+  # Check if hfaxd is running by looking for its process
+  if ps aux | grep -v grep | grep -q '[h]faxd'; then
+    echo ">>> hfaxd is running"
   else
-    echo ">>> WARNING: hfaxd may not be listening — check /var/log/hfaxd.log"
+    # Mode 2: try with explicit spool path
+    /usr/local/sbin/hfaxd -q /var/spool/hylafax -i hylafax > /dev/null 2>&1 &
+    sleep 2
+    if ps aux | grep -v grep | grep -q '[h]faxd'; then
+      echo ">>> hfaxd started (spool mode)"
+    else
+      echo ">>> WARNING: hfaxd failed to start — fax sending will not work"
+      # Log what went wrong
+      /usr/local/sbin/hfaxd -i hylafax -d 2>&1 | head -5 > /var/log/hfaxd.err 2>&1 || true
+    fi
   fi
 fi
 
