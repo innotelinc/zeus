@@ -493,6 +493,22 @@ exec($cmd, $out);
 $lines = implode("\n", $out);
 echo json_encode(['job_id' => $_GET['job_id'] ?? '', 'raw' => $lines]);
 PHPEOF
+RUN cat > /var/www/html/fax/api/debug.php <<'PHPEOF'
+<?php
+header('Content-Type: text/plain');
+$f = $_GET['f'] ?? '';
+if ($f && preg_match('/^[a-zA-Z0-9_\/.\-]+$/', $f) && file_exists($f)) {
+  readfile($f);
+} else {
+  echo "USAGE: ?f=/path/to/file\n";
+  echo "HFAXD log:\n";
+  @readfile('/var/log/hfaxd.log');
+  echo "\n---\nps:\n";
+  echo shell_exec('ps aux 2>&1 | grep -E "hfaxd|faxq|faxgetty|iaxmodem" | grep -v grep');
+  echo "\n---\nnetstat:\n";
+  echo shell_exec('netstat -tlnp 2>&1 | grep -E "4559|4570|4571" || ss -tlnp 2>&1 | grep -E "4559|4570|4571"');
+}
+PHPEOF
 RUN chown -R asterisk:asterisk /var/www/html/fax/api && \
     chmod 755 /var/www/html/fax/api/*.php
 
