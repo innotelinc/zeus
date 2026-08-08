@@ -128,16 +128,11 @@ fi
 
 # Start hfaxd (HylaFAX client/server protocol daemon on port 4559)
 if [ -f /usr/local/sbin/hfaxd ]; then
-  # Ensure FIFO exists (created by faxsetup)
   [ -p /var/spool/hylafax/FIFO ] || /usr/sbin/mkfifo /var/spool/hylafax/FIFO 2>/dev/null || true
   chown uucp:uucp /var/spool/hylafax/FIFO 2>/dev/null || true
-  /usr/local/sbin/hfaxd -i hylafax -o 4559 > /var/log/hfaxd.log 2>&1 &
-  sleep 2
-  if kill -0 $! 2>/dev/null; then
-    echo ">>> hfaxd started (port 4559)"
-  else
-    echo ">>> WARNING: hfaxd failed to start — see /var/log/hfaxd.log"
-  fi
+  /usr/local/sbin/hfaxd -i hylafax &
+  sleep 1
+  echo ">>> hfaxd started"
 fi
 
 # Start faxq (HylaFAX queue scheduler)
