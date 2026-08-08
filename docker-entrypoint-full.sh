@@ -16,6 +16,44 @@ if [ -n "${FREEPBX_AMI_SECRET:-}" ]; then
   sed -i "s/secret = .*/secret = ${FREEPBX_AMI_SECRET}/" /etc/asterisk/manager_custom.conf
 fi
 
+# Ensure ucp_events AMI user exists (may be missing from persisted volumes)
+if ! grep -q '^\[ucp_events\]' /etc/asterisk/manager_custom.conf 2>/dev/null; then
+  echo ">>> Adding missing ucp_events AMI user..."
+  cat >> /etc/asterisk/manager_custom.conf <<'AMICFG'
+
+[ucp_events]
+secret = ucp_events_secret
+deny = 0.0.0.0/0.0.0.0
+permit = 127.0.0.1/255.255.255.255
+read = system,call,log,verbose,command,agent,user,config,dtmf,reporting,cdr,dialplan,originate
+write = system,call,log,verbose,command,agent,user,config,dtmf,reporting,cdr,dialplan,originate
+eventfilter=!Event: RTCP*
+eventfilter=!Event: VarSet
+eventfilter=!Event: Newexten
+AMICFG
+fi
+
+# Sync FreePBX internal AMI credentials (AMPMGRUSER/PASS) with manager.conf
+# The auto-generated user in manager.conf may not match the database if
+# the asterisk-config volume persisted from a different image build.
+if [ -f /etc/asterisk/manager.conf ]; then
+  # Extract the auto-generated 32-hex-char AMI user and its secret
+  AMI_USER=$(grep -oP '(?<=\[)[0-9a-f]{32}(?=\])' /etc/asterisk/manager.conf | head -1)
+  if [ -n "${AMI_USER}" ]; then
+    AMI_PASS=$(sed -n "/\[${AMI_USER}\]/,/^\[/{/^secret *= */{s/[^=]*= *//p;q}}" /etc/asterisk/manager.conf)
+  fi
+  if [ -n "${AMI_USER}" ] && [ -n "${AMI_PASS}" ]; then
+    mysql -u root asterisk -e "UPDATE freepbx_settings SET value = '${AMI_USER}' WHERE keyword = 'AMPMGRUSER'" 2>/dev/null || true
+    mysql -u root asterisk -e "UPDATE freepbx_settings SET value = '${AMI_PASS}' WHERE keyword = 'AMPMGRPASS'" 2>/dev/null || true
+    echo ">>> Synced FreePBX AMI credentials with manager.conf"
+  fi
+fi
+
+# Ensure UCPMGRPASS matches the ucp_events secret in manager_custom.conf
+# The sed above may have changed it to FREEPBX_AMI_SECRET, so use that if set.
+UCP_AMI_SECRET="${FREEPBX_AMI_SECRET:-ucp_events_secret}"
+mysql -u root asterisk -e "UPDATE freepbx_settings SET value = '${UCP_AMI_SECRET}' WHERE keyword = 'UCPMGRPASS' AND (value IS NULL OR value = '')" 2>/dev/null || true
+
 # Register OAuth2 client for the portal (if API module is installed)
 if [ -n "${FREEPBX_CLIENT_ID:-}" ] && [ -n "${FREEPBX_CLIENT_SECRET:-}" ]; then
   echo ">>> Registering OAuth2 client '${FREEPBX_CLIENT_ID}'..."

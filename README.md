@@ -139,6 +139,12 @@ docker compose -f docker-compose.full.yml up -d
 
 **Files used:** `Dockerfile.full`, `docker-compose.full.yml`, `docker-entrypoint-full.sh`
 
+The entrypoint automatically:
+- Registers the OAuth2 client for the portal
+- Syncs FreePBX internal AMI credentials (`AMPMGRUSER`/`AMPMGRPASS`) with `manager.conf`
+- Ensures the `ucp_events` AMI user exists (restores it if the persistent volume wiped it)
+- Sets `UCPMGRPASS` so the UCP/WebRTC softphone can connect to Asterisk AMI
+
 | Service | Image | Ports |
 |---|---|---|
 | MariaDB | `mariadb:10.11` | 3306 (internal) |
