@@ -26,9 +26,20 @@ export default function LoginPage() {
       });
 
       if (data?.success) {
-        // The session cookie is stored by the browser from the login API
-        // response, so a client-side navigation is safe here.
-        router.push("/dashboard");
+        // Verify the session cookie was stored before navigating.
+        // Some browser/network configurations delay Set-Cookie processing.
+        try {
+          const me = await api<{ user?: unknown }>("/api/auth/me");
+          if (me?.user) {
+            router.push("/dashboard");
+            return;
+          }
+        } catch {
+          // session not ready yet — try a short delay then navigate anyway
+        }
+        // Fallback: navigate after a brief delay to let the cookie settle
+        setTimeout(() => router.push("/dashboard"), 200);
+        return;
       } else {
         setError("Unexpected response from server. Please try again.");
       }

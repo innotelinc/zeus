@@ -1,6 +1,7 @@
 "use client";
 
 import { useState, useEffect } from "react";
+import dynamic from "next/dynamic";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { Logo } from "@/components/Logo";
@@ -17,8 +18,13 @@ import {
 } from "@/components/icons";
 import type { User, FreePBXExtension } from "@/lib/types";
 import { planLabel } from "@/lib/client-api";
-import SoftphoneSection from "@/components/dashboard/SoftphoneSection";
 import { ToastProvider } from "@/components/ToastProvider";
+
+// Lazy-load SoftphoneSection (sip.js) — browser-only WebRTC, must not SSR
+const SoftphoneSection = dynamic(
+  () => import("@/components/dashboard/SoftphoneSection"),
+  { ssr: false },
+);
 
 interface Props {
   user: User;
