@@ -60,7 +60,9 @@ RUN wget "https://downloads.asterisk.org/pub/telephony/asterisk/releases/asteris
     tar zxf "asterisk-${ASTERISK_VER}.tar.gz" && \
     cd "asterisk-${ASTERISK_VER}" && \
     contrib/scripts/get_mp3_source.sh && \
-    contrib/scripts/install_prereq install && \
+    # NOTE: install_prereq is skipped on Debian 12 — it requires
+    # 'aptitude', which was removed from bookworm. All required
+    # build deps are already installed in the base system step.
     ./configure \
       --libdir=/usr/lib64 \
       --with-crypto --with-ssl --with-srtp --with-sqlite3 \
