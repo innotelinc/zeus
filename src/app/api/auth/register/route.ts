@@ -63,7 +63,7 @@ export async function POST(req: Request) {
   store.set(SESSION_COOKIE, createSessionToken(id), {
     httpOnly: true,
     sameSite: "lax",
-    secure: process.env.NODE_ENV === "production",
+    secure: process.env.SESSION_SECURE === "true",
     path: "/",
     maxAge: 60 * 60 * 24 * 7,
   });
