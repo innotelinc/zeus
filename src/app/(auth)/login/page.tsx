@@ -26,8 +26,9 @@ export default function LoginPage() {
       });
 
       if (data?.success) {
-        // Full page reload ensures the session cookie is sent
-        window.location.href = "/dashboard";
+        // The session cookie is stored by the browser from the login API
+        // response, so a client-side navigation is safe here.
+        router.push("/dashboard");
       } else {
         setError("Unexpected response from server. Please try again.");
       }

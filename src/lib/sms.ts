@@ -104,7 +104,7 @@ async function getOrCreateConversation(
   contactPhone: string,
   phoneNumberId: string,
 ): Promise<SmsConversation> {
-  let conv = db
+  const conv = db
     .prepare(
       `SELECT c.* FROM sms_conversations c
        WHERE c.user_id = ? AND c.contact_phone = ?

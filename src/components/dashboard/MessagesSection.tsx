@@ -30,11 +30,14 @@ export default function MessagesSection({ conversations: initialConversations, n
 
   const messagesEndRef = useRef<HTMLDivElement>(null);
 
-  // Contact lookup on phone number change
+  // Contact lookup on phone number change.
+  // Note: never call setState synchronously here — the effect below calls this
+  // during its body, and the react-hooks/set-state-in-effect rule flags that.
   const lookupContact = useCallback(async (phone: string) => {
     const clean = phone.replace(/\D/g, "");
     if (clean.length < 7) {
-      setMatchedContact(null);
+      // Defer the update out of the effect's synchronous execution.
+      queueMicrotask(() => setMatchedContact(null));
       return;
     }
     try {
@@ -48,14 +51,22 @@ export default function MessagesSection({ conversations: initialConversations, n
     }
   }, []);
 
-  // Handle prefill from contacts deep-link
+  // Handle prefill from contacts deep-link. State is adjusted during render
+  // (the React-recommended pattern for responding to prop changes); the async
+  // contact lookup stays in an effect.
+  if (prefillPhone && !prefillHandled) {
+    setNewPhone(prefillPhone);
+    setNewMode(true);
+    setActiveConv(null);
+    setPrefillHandled(true);
+  }
+
   useEffect(() => {
-    if (prefillPhone && !prefillHandled) {
-      setNewPhone(prefillPhone);
-      setNewMode(true);
-      setActiveConv(null);
-      lookupContact(prefillPhone);
-      setPrefillHandled(true);
+    if (prefillPhone && prefillHandled) {
+      // Defer the lookup so no setState happens synchronously in this effect
+      // body (react-hooks/set-state-in-effect).
+      const id = setTimeout(() => lookupContact(prefillPhone), 0);
+      return () => clearTimeout(id);
     }
   }, [prefillPhone, prefillHandled, lookupContact]);
 

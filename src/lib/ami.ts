@@ -15,7 +15,6 @@
  */
 
 import net from "node:net";
-import crypto from "node:crypto";
 
 // ─── Types ───
 

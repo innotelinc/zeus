@@ -2,7 +2,7 @@ import { NextResponse } from "next/server";
 import { requireUser, notFound } from "@/lib/api-helpers";
 import { getMessages } from "@/lib/sms";
 import db from "@/lib/db";
-import type { SmsConversation, SmsMessage } from "@/lib/types";
+import type { SmsConversation } from "@/lib/types";
 
 export const dynamic = "force-dynamic";
 

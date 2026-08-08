@@ -13,6 +13,9 @@ FROM base AS deps
 RUN apk add --no-cache python3 make g++ sqlite-dev
 
 COPY package.json package-lock.json ./
+# patches/ must exist before npm ci so the postinstall (patch-package) can
+# apply the Next.js workaround for the error-page prerender bug.
+COPY patches ./patches
 RUN npm ci
 
 # ─── Stage 2: Build the application ──────────────────────────

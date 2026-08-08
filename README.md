@@ -149,7 +149,7 @@ docker compose -f docker-compose.full.yml up -d
 Pre-built full-stack images (release only):
 
 ```bash
-docker pull ghcr.io/innotelinc/pbx-portal:fullstack-latest
+docker pull ghcr.io/innotelinc/pbx-portal:latest-fullstack
 ```
 
 ### Option 3: npm (dev)
@@ -312,9 +312,15 @@ scripts/
   schema.sql              # SQLite schema
   seed.mjs                # Demo account seed
   migrations/             # Schema migrations
+patches/
+  next+16.3.0.patch       # patch-package: skips static generation of synthetic
+                          # error routes (see "Build notes" below)
 src/
   app/
     page.tsx              # Landing page
+    layout.tsx            # Root layout (all routes are force-dynamic, see below)
+    not-found.tsx         # Custom 404 page
+    global-error.tsx      # Custom 500 error boundary
     (auth)/login          # Sign in
     (auth)/signup         # Create account (with plan selection)
     dashboard/
@@ -405,12 +411,34 @@ GitHub Actions builds and publishes Docker images on push:
 |---|---|---|
 | Push to `master` | `ghcr.io/innotelinc/pbx-portal` | `latest`, `sha-xxxxx`, `master` |
 | Release `v*` | `ghcr.io/innotelinc/pbx-portal` | semver (`1.0.0`, `1.0`) |
-| Release `v*` | `ghcr.io/innotelinc/pbx-portal` | `fullstack-latest`, `fullstack-v1.0.0` |
+| Release `v*` | `ghcr.io/innotelinc/pbx-portal` | `latest-fullstack`, `1.0.0-fullstack` |
+
+On every PR the portal image is built and smoke-tested (starts up, responds to `/` and `/api/health`), and the full-stack compose file is validated. The full-stack image (Asterisk + FreePBX, 45-90 min build) is **not** built on every PR — it is built on release and can be triggered manually or on a schedule via the `build-fullstack-check` job (no push).
 
 **Workflow:** `.github/workflows/docker-publish.yml`
 
 ---
 
-## License
+## Build notes (Next.js 16 workaround)
+
+`next build` fails in some environments (including the Docker/CI builders used by this project) with a framework-level crash while **statically generating error routes**:
+
+```
+Error occurred prerendering page "/_global-error" …
+TypeError: Cannot read properties of null (reading 'useContext')
+```
+
+This is an upstream Next.js bug (see vercel/next.js issues #86178, #87719, #95741 — unfixed across all 16.x as of Aug 2026) that also manifests as a `<Html>` import error on Next 15.x (#86177). It is triggered when statically prerendering pages that consume `next/navigation` (and the synthetic `/_global-error` and `/_not-found` routes), and is not reproducible on every machine, which is why it has no minimal repro yet.
+
+The workaround applied in this repo has two parts:
+
+1. **`src/app/layout.tsx` exports `export const dynamic = "force-dynamic"`** — every route is server-rendered on demand instead of statically prerendered. This is a no-op for the dashboard (already dynamic) and costs a bit of TTFB on the landing/login/signup pages, which are lightweight. (A per-page `force-dynamic` on client pages does **not** work — Next 16 ignores route segment config exported from `"use client"` pages.)
+2. **`patches/next+16.3.0.patch` (applied automatically by `patch-package` via the `postinstall` script)** — skips static generation of the synthetic `/_global-error` and `/_not-found` routes and the default pages-router `/404` `/500`, which still get added to the export list even when every app page is dynamic. The patch is tiny and version-pinned; if `npm install` fails to apply it (e.g. after a `next` upgrade), the error will say so loudly — check whether the upstream fix has shipped and update/remove the patch.
+
+To verify the workaround is active after `npm ci`: `grep -c pbx-patch node_modules/next/dist/esm/build/index.js` should print `2`.
+
+Custom `src/app/not-found.tsx` and `src/app/global-error.tsx` provide the 404/500 UI (previously the built-in defaults).
+
+---
 
 Proprietary — Innotel Inc.

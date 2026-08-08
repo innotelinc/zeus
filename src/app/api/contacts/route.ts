@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import { randomUUID } from "node:crypto";
-import { requireUser, badRequest, notFound } from "@/lib/api-helpers";
+import { requireUser, badRequest } from "@/lib/api-helpers";
 import { contactSchema } from "@/lib/validators";
 import db from "@/lib/db";
 import type { Contact } from "@/lib/types";

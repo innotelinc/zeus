@@ -63,7 +63,7 @@ export function DashboardShell({ user, extensions, children }: Props) {
   const isActive = (href: string) =>
     href === "/dashboard"
       ? pathname === "/dashboard"
-      : pathname.startsWith(href);
+      : (pathname?.startsWith(href) ?? false);
 
   return (
     <ToastProvider>

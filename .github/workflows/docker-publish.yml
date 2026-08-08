@@ -7,6 +7,10 @@ on:
     branches: [master]
   release:
     types: [published]
+  workflow_dispatch:
+  schedule:
+    # Weekly check that the full-stack Docker image still builds
+    - cron: "0 3 * * 1"
 
 env:
   REGISTRY: ghcr.io
@@ -51,6 +55,9 @@ jobs:
           curl -sf -o /dev/null -w '%{http_code}' http://localhost:3099/
           curl -sf http://localhost:3099/api/health || true
           docker rm -f pbx-pr-test
+
+      - name: Validate full-stack compose file
+        run: docker compose -f docker-compose.full.yml config -q
 
   # ── Portal-only image (built on every push) ─────────────────
   build-portal:
@@ -142,3 +149,39 @@ jobs:
           labels: ${{ steps.meta-full.outputs.labels }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
+
+  # ── Full-stack install check (no push) ──────────────────────
+  # Builds the complete Asterisk + FreePBX image (45-90 min) to verify the
+  # full Docker install still works. Triggered manually (workflow_dispatch)
+  # or on the weekly schedule — deliberately NOT run on every PR.
+  build-fullstack-check:
+    # Manual (workflow_dispatch) or weekly schedule only — too slow for PRs
+    if: github.event_name == 'workflow_dispatch' || github.event_name == 'schedule'
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    permissions:
+      contents: read
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Validate full-stack compose file
+        run: docker compose -f docker-compose.full.yml config -q
+
+      - name: Build full-stack image (dry-run)
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: Dockerfile.full
+          push: false
+          load: false
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Report build result
+        if: always()
+        run: echo "Full-stack build finished. Check the logs above for success/failure details."

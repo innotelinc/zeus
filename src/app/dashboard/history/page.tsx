@@ -1,7 +1,7 @@
 import { getCurrentUser } from "@/lib/auth";
 import { getUserDashboard } from "@/lib/dashboard";
 import { fmtDate, fmtDuration } from "@/lib/client-api";
-import { HistoryIcon, PhoneIcon, DownloadIcon } from "@/components/icons";
+import { HistoryIcon, PhoneIcon } from "@/components/icons";
 
 export const dynamic = "force-dynamic";
 

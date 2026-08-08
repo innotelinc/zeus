@@ -72,10 +72,12 @@ export function ToastProvider({ children }: { children: ReactNode }) {
     [removeToast],
   );
 
-  // Cleanup on unmount
+  // Cleanup on unmount — snapshot the ref contents so the cleanup closure
+  // reads the same map instance it was created with.
   useEffect(() => {
+    const timersMap = timers.current;
     return () => {
-      timers.current.forEach((t) => clearTimeout(t));
+      timersMap.forEach((t) => clearTimeout(t));
     };
   }, []);
 

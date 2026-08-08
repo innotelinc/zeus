@@ -1,9 +1,9 @@
 import { NextResponse } from "next/server";
 import { requireUser, badRequest } from "@/lib/api-helpers";
 import { smsSchema } from "@/lib/validators";
-import { sendMessage, getConversations } from "@/lib/sms";
+import { sendMessage } from "@/lib/sms";
 import db from "@/lib/db";
-import type { SmsConversation, SmsMessage } from "@/lib/types";
+import type { SmsConversation } from "@/lib/types";
 
 export const dynamic = "force-dynamic";
 

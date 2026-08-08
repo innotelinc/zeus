@@ -74,7 +74,7 @@ export async function POST(req: Request) {
   }
 
   const faxId = randomUUID();
-  let fileName = `fax_${faxId}.pdf`;
+  const fileName = `fax_${faxId}.pdf`;
   const filePath = join(uploadsDir, fileName);
 
   // Save file to disk
@@ -87,7 +87,7 @@ export async function POST(req: Request) {
       const pdf = generateTextPdf(body, toNumber, subject);
       await writeFile(filePath, pdf);
     }
-  } catch (e) {
+  } catch {
     return NextResponse.json(
       { error: "Failed to save fax file" },
       { status: 500 },

@@ -33,6 +33,7 @@ export default function SoftphoneSection({ extensions }: Props) {
   const [callDuration, setCallDuration] = useState(0);
   const [volume, setVolume] = useState(1);
   const [showDtmf, setShowDtmf] = useState(false);
+  const [muted, setMuted] = useState(false);
 
   const userAgentRef = useRef<UserAgent | null>(null);
   const registererRef = useRef<Registerer | null>(null);
@@ -70,13 +71,6 @@ export default function SoftphoneSection({ extensions }: Props) {
     return servers;
   }, []);
 
-  useEffect(() => {
-    return () => {
-      cleanupAll();
-    };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
-
   function cleanupAll() {
     if (autoRejectTimerRef.current) {
       clearTimeout(autoRejectTimerRef.current);
@@ -95,6 +89,12 @@ export default function SoftphoneSection({ extensions }: Props) {
     registererRef.current = null;
     activeCallRef.current = null;
   }
+
+  useEffect(() => {
+    return () => {
+      cleanupAll();
+    };
+  }, []);
 
   async function connectExtension() {
     if (!selectedExt) return;
@@ -325,6 +325,7 @@ export default function SoftphoneSection({ extensions }: Props) {
       // ignore
     }
     activeCallRef.current = { ...call, muted };
+    setMuted(muted);
   }
 
   function toggleHold() {
@@ -352,9 +353,9 @@ export default function SoftphoneSection({ extensions }: Props) {
     if (callTimerRef.current) {
       clearInterval(callTimerRef.current);
       callTimerRef.current = null;
-    }
-    setCallDuration(0);
+    }      setCallDuration(0);
     activeCallRef.current = null;
+    setMuted(false);
     setDialNumber("");
     setShowDtmf(false);
     setCallState((prev) => {
@@ -364,6 +365,7 @@ export default function SoftphoneSection({ extensions }: Props) {
   }
 
   function startCallTimer(session: SipSession, direction: "inbound" | "outbound") {
+    // Called only from SIP event handlers, never during render
     const start = Date.now();
     activeCallRef.current = {
       session,
@@ -610,12 +612,12 @@ export default function SoftphoneSection({ extensions }: Props) {
 
                     <div className="flex gap-4 mt-2">
                       <button type="button" onClick={toggleMute} className={`flex h-12 w-12 items-center justify-center rounded-full border transition ${
-                        activeCallRef.current?.muted
+                        muted
                           ? "bg-rose-500/20 border-rose-500/50 text-rose-300"
                           : "border-white/[0.1] bg-white/[0.04] text-white/60 hover:text-white hover:bg-white/[0.08]"
                       }`} title="Mute">
                         <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                          {activeCallRef.current?.muted ? (
+                          {muted ? (
                             <><polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"/><line x1="23" x2="17" y1="9" y2="15"/><line x1="17" x2="23" y1="9" y2="15"/></>
                           ) : (
                             <polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"/>

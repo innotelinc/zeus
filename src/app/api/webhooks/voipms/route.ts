@@ -93,7 +93,6 @@ export async function POST(req: NextRequest) {
     const from = body.from || body.sender || "";
     const message = body.message || body.msg || body.text || "";
     const smsId = body.id || body.sms_id || "";
-    const date = body.date || "";
 
     console.log(
       `[SMS Webhook] From: ${from} → DID: ${did} | MsgID: ${smsId}`,
@@ -125,12 +124,12 @@ export async function POST(req: NextRequest) {
         return NextResponse.json({ status: "received", warning: "DID not registered" });
       }
 
-      await recordInbound(altNumber, from, message, smsId, date);
+      await recordInbound(altNumber, from, message, smsId);
       return NextResponse.json({ status: "received" });
     }
 
     // ── Record the inbound message ────────────────────────────
-    await recordInbound(number, from, message, smsId, date);
+    await recordInbound(number, from, message, smsId);
 
     return NextResponse.json({ status: "received" });
   } catch (e) {
@@ -144,7 +143,6 @@ async function recordInbound(
   from: string,
   message: string,
   smsId: string,
-  _date: string,
 ) {
   try {
     await receiveMessage({

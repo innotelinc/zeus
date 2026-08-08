@@ -1,0 +1,70 @@
+diff --git a/node_modules/next/dist/build/index.js b/node_modules/next/dist/build/index.js
+index 10b1e6f..1eb62ed 100644
+--- a/node_modules/next/dist/build/index.js
++++ b/node_modules/next/dist/build/index.js
+@@ -1456,7 +1456,7 @@ async function build(dir, experimentalAnalyze = false, reactProductionProfiling
+                                                 // - It has no dynamic param
+                                                 // - It doesn't have generateStaticParams but `dynamic` is set to
+                                                 //   `error` or `force-static`
+-                                                if (!isDynamic) {
++                                                if (!isDynamic && originalAppPath !== _entryconstants.UNDERSCORE_GLOBAL_ERROR_ROUTE_ENTRY && originalAppPath !== _entryconstants.UNDERSCORE_NOT_FOUND_ROUTE_ENTRY) { // [pbx-patch]
+                                                     staticPaths.set(originalAppPath, [
+                                                         {
+                                                             params: {},
+@@ -1742,7 +1742,7 @@ async function build(dir, experimentalAnalyze = false, reactProductionProfiling
+             const tbdPrerenderRoutes = [];
+             const { i18n } = config;
+             const usedStaticStatusPages = _constants1.STATIC_STATUS_PAGES.filter((page)=>mappedPages[page] && mappedPages[page].startsWith('private-next-pages'));
+-            usedStaticStatusPages.forEach((page)=>{
++            usedStaticStatusPages.forEach((page)=>{ if (true) return; // [pbx-patch] skip static export of pages status pages
+                 if (!ssgPages.has(page) && !customAppGetInitialProps) {
+                     staticPages.add(page);
+                 }
+diff --git a/node_modules/next/dist/build/utils.js b/node_modules/next/dist/build/utils.js
+index 6ec0fe0..d00e4a4 100644
+--- a/node_modules/next/dist/build/utils.js
++++ b/node_modules/next/dist/build/utils.js
+@@ -596,7 +596,7 @@ async function isPageStatic({ dir, page, distDir, configFileName, httpAgentOptio
+     // Skip page data collection for synthetic _global-error routes
+     if (page === _constants1.UNDERSCORE_GLOBAL_ERROR_ROUTE) {
+         return {
+-            isStatic: true,
++            isStatic: false /* [pbx-patch] */,
+             isRoutePPREnabled: false,
+             prerenderFallbackMode: undefined,
+             prerenderedRoutes: undefined,
+diff --git a/node_modules/next/dist/esm/build/index.js b/node_modules/next/dist/esm/build/index.js
+index fdfaacf..4b6ac54 100644
+--- a/node_modules/next/dist/esm/build/index.js
++++ b/node_modules/next/dist/esm/build/index.js
+@@ -1388,7 +1388,7 @@ export default async function build(dir, experimentalAnalyze = false, reactProdu
+                                                 // - It has no dynamic param
+                                                 // - It doesn't have generateStaticParams but `dynamic` is set to
+                                                 //   `error` or `force-static`
+-                                                if (!isDynamic) {
++                                                if (!isDynamic && originalAppPath !== UNDERSCORE_GLOBAL_ERROR_ROUTE_ENTRY && originalAppPath !== UNDERSCORE_NOT_FOUND_ROUTE_ENTRY) { // [pbx-patch]
+                                                     staticPaths.set(originalAppPath, [
+                                                         {
+                                                             params: {},
+@@ -1674,7 +1674,7 @@ export default async function build(dir, experimentalAnalyze = false, reactProdu
+             const tbdPrerenderRoutes = [];
+             const { i18n } = config;
+             const usedStaticStatusPages = STATIC_STATUS_PAGES.filter((page)=>mappedPages[page] && mappedPages[page].startsWith('private-next-pages'));
+-            usedStaticStatusPages.forEach((page)=>{
++            usedStaticStatusPages.forEach((page)=>{ if (true) return; // [pbx-patch] skip static export of pages status pages
+                 if (!ssgPages.has(page) && !customAppGetInitialProps) {
+                     staticPages.add(page);
+                 }
+diff --git a/node_modules/next/dist/esm/build/utils.js b/node_modules/next/dist/esm/build/utils.js
+index c44a582..7a9a4ab 100644
+--- a/node_modules/next/dist/esm/build/utils.js
++++ b/node_modules/next/dist/esm/build/utils.js
+@@ -407,7 +407,7 @@ export async function isPageStatic({ dir, page, distDir, configFileName, httpAge
+     // Skip page data collection for synthetic _global-error routes
+     if (page === UNDERSCORE_GLOBAL_ERROR_ROUTE) {
+         return {
+-            isStatic: true,
++            isStatic: false /* [pbx-patch] */,
+             isRoutePPREnabled: false,
+             prerenderFallbackMode: undefined,
+             prerenderedRoutes: undefined,

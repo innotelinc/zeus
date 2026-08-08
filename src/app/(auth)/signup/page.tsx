@@ -4,13 +4,13 @@ import { useState, Suspense } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import Link from "next/link";
 import { Logo } from "@/components/Logo";
-import { CheckCircleIcon, ArrowRightIcon } from "@/components/icons";
+import { ArrowRightIcon } from "@/components/icons";
 import { api } from "@/lib/client-api";
 
 function SignupForm() {
   const router = useRouter();
   const params = useSearchParams();
-  const initialPlan = params.get("plan") === "business" ? "business" : "consumer";
+  const initialPlan = params?.get("plan") === "business" ? "business" : "consumer";
 
   const [plan, setPlan] = useState<"consumer" | "business">(initialPlan);
   const [name, setName] = useState("");

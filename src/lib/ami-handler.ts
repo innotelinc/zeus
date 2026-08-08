@@ -144,7 +144,6 @@ function handleBridge(event: AmiEvent): void {
 function handleHangup(event: AmiEvent): void {
   const uniqueId = event.Uniqueid;
   const cause = event.Cause ?? "0";
-  const causeTxt = event["Cause-txt"] ?? "Normal Clearing";
 
   const call = activeCalls.get(uniqueId);
   if (!call) return;

@@ -42,7 +42,7 @@ function getDb(): Database.Database {
 }
 
 const db = new Proxy({} as Database.Database, {
-  get(_target, prop, receiver) {
+  get(_target, prop) {
     const realDb = getDb();
     const value = Reflect.get(realDb, prop, realDb);
     if (typeof value === "function") {

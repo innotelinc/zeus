@@ -2,7 +2,6 @@ import { NextResponse } from "next/server";
 import { requireUser } from "@/lib/api-helpers";
 import { getAmiClient } from "@/lib/ami";
 import db from "@/lib/db";
-import type { FreePBXExtension } from "@/lib/types";
 
 export const dynamic = "force-dynamic";
 
