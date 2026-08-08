@@ -30,7 +30,7 @@ async function getAccessToken(): Promise<string> {
     );
   }
 
-  const res = await fetch(`${baseUrl()}/admin/api/api/oauth2/token`, {
+  const res = await fetch(`${baseUrl()}/admin/config.php?display=api&command=oauth2&route=token`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
@@ -62,7 +62,7 @@ async function gql<T = unknown>(
   variables?: Record<string, unknown>,
 ): Promise<T> {
   const token = await getAccessToken();
-  const res = await fetch(`${baseUrl()}/admin/api/api/gql`, {
+  const res = await fetch(`${baseUrl()}/admin/config.php?display=api&command=gql`, {
     method: "POST",
     headers: {
       Authorization: `Bearer ${token}`,

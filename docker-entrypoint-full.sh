@@ -7,6 +7,10 @@ set -e
 
 echo ">>> Starting Innotel PBX Full Stack..."
 
+# Start MariaDB (FreePBX database) — must run before OAuth2 client registration
+mkdir -p /var/run/mysqld && chown mysql:mysql /var/run/mysqld 2>/dev/null || true
+service mariadb start
+
 # Override AMI secret from env var if provided
 if [ -n "${FREEPBX_AMI_SECRET:-}" ]; then
   sed -i "s/secret = .*/secret = ${FREEPBX_AMI_SECRET}/" /etc/asterisk/manager_custom.conf
@@ -42,10 +46,6 @@ if [ -n "${FREEPBX_CLIENT_ID:-}" ] && [ -n "${FREEPBX_CLIENT_SECRET:-}" ]; then
     }
   " 2>/dev/null || echo 'WARNING: Could not register OAuth2 client (API module may not be installed yet)'
 fi
-
-# Start MariaDB (FreePBX database) — no systemd in container, use init script
-mkdir -p /var/run/mysqld && chown mysql:mysql /var/run/mysqld 2>/dev/null || true
-service mariadb start
 
 # Start Redis (FreePBX 17 cache/session)
 service redis-server start 2>/dev/null || true

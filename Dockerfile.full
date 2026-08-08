@@ -178,7 +178,7 @@ RUN apt update && apt -y install --no-install-recommends --ignore-missing \
 RUN mkdir -p /var/run/asterisk && chown asterisk:asterisk /var/run/asterisk && \
     service mariadb start && \
     (asterisk -U asterisk -G asterisk &) && sleep 3 && \
-    fwconsole ma downloadinstall api 2>/dev/null || true && \
+    fwconsole ma downloadinstall api 2>&1 || echo 'WARNING: API module install failed' && \
     fwconsole ma downloadinstall ucp 2>/dev/null || true && \
     fwconsole reload || true
 

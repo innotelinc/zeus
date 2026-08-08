@@ -90,7 +90,7 @@ export async function GET() {
 
     try {
       const res = await fetch(
-        `${url.replace(/\/$/, "")}/admin/api/api/oauth2/token`,
+        `${url.replace(/\/$/, "")}/admin/config.php?display=api&command=oauth2&route=token`,
         {
           method: "POST",
           headers: { "Content-Type": "application/json" },
