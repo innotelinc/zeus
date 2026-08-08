@@ -123,6 +123,12 @@ RUN apt update && apt -y install --no-install-recommends --ignore-missing \
       mariadb-server php-pear php8.2-bz2 php8.2-soap php8.2-sqlite3 \
       php8.2-redis redis-server postfix mailutils sox mpg123 lame \
       ghostscript libtiff-tools imagemagick screen && \
+    # FreePBX 17's installer requires Node.js 8+ (it runs `node --version`
+    # during ./install and aborts with "NodeJS 8 or higher is not
+    # installed" otherwise), so install Node here — BEFORE the installer
+    # runs — instead of in the later UCP layer.
+    curl -fsSL https://deb.nodesource.com/setup_20.x | bash - && \
+    apt -y install --no-install-recommends nodejs && \
     apt clean && rm -rf /var/lib/apt/lists/* && \
     mkdir -p /var/run/asterisk /var/run/mysqld && \
     chown asterisk:asterisk /var/run/asterisk && \
@@ -149,13 +155,12 @@ RUN apt update && apt -y install --no-install-recommends --ignore-missing \
     fwconsole reload && \
     cd /usr/src && rm -rf freepbx
 
-# ─── Node.js (for FreePBX UCP) ───────────────────────────────
+# ─── FreePBX UCP module ──────────────────────────────────────
+# Node.js is already installed in the FreePBX install layer above;
+# layers share the filesystem, only processes don't persist.
 # Each RUN layer is a fresh container: MariaDB/Asterisk must be
 # (re)started here so fwconsole can talk to the FreePBX database.
-RUN curl -fsSL https://deb.nodesource.com/setup_20.x | bash - && \
-    apt -y install nodejs && \
-    apt clean && rm -rf /var/lib/apt/lists/* && \
-    mkdir -p /var/run/asterisk && chown asterisk:asterisk /var/run/asterisk && \
+RUN mkdir -p /var/run/asterisk && chown asterisk:asterisk /var/run/asterisk && \
     service mariadb start && \
     (asterisk -U asterisk -G asterisk &) && sleep 3 && \
     fwconsole ma downloadinstall ucp 2>/dev/null || true && \
