@@ -54,6 +54,12 @@ service redis-server start 2>/dev/null || true
 service cron start 2>/dev/null || true
 
 # ── AvantFax setup ─────────────────────────────────────────────
+# Ensure the fax symlink exists (may be hidden by persistent volume)
+if [ ! -L /var/www/html/fax ] && [ -d /usr/src/avantfax/avantfax ]; then
+  ln -sf /usr/src/avantfax/avantfax /var/www/html/fax
+  echo ">>> AvantFax symlink repaired"
+fi
+
 AVANTFAX_DB_PASS="${AVANTFAX_DB_PASS:-$(openssl rand -hex 8)}"
 echo ">>> Setting up AvantFax database..."
 
