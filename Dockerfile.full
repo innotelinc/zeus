@@ -270,6 +270,16 @@ write = system,call,log,verbose,command,agent,user,config,dtmf,reporting,cdr,dia
 eventfilter=!Event: RTCP*
 eventfilter=!Event: VarSet
 eventfilter=!Event: Newexten
+
+[ucp_events]
+secret = ucp_events_secret
+deny = 0.0.0.0/0.0.0.0
+permit = 127.0.0.1/255.255.255.255
+read = system,call,log,verbose,command,agent,user,config,dtmf,reporting,cdr,dialplan,originate
+write = system,call,log,verbose,command,agent,user,config,dtmf,reporting,cdr,dialplan,originate
+eventfilter=!Event: RTCP*
+eventfilter=!Event: VarSet
+eventfilter=!Event: Newexten
 EOF
 RUN sed -i 's/^enabled=.*/enabled=yes/' /etc/asterisk/manager.conf 2>/dev/null || true
 

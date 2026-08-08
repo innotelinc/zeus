@@ -130,6 +130,11 @@ if [ -f /usr/local/sbin/faxadduser ]; then
   echo ">>> HylaFAX admin user created"
 fi
 
+# Ensure HylaFAX spool dirs exist and are writable by uucp group (asterisk is in uucp)
+mkdir -p /var/spool/hylafax/sendq /var/spool/hylafax/doneq /var/spool/hylafax/docq
+chown -R uucp:uucp /var/spool/hylafax/sendq /var/spool/hylafax/doneq /var/spool/hylafax/docq 2>/dev/null || true
+chmod -R 770 /var/spool/hylafax/sendq /var/spool/hylafax/doneq /var/spool/hylafax/docq 2>/dev/null || true
+
 # Start hfaxd (HylaFAX client daemon) — runs as uucp like other fax services
 # The systemd unit uses Type=forking with ExecStart=/usr/local/sbin/hfaxd -i hylafax
 if [ -f /usr/local/sbin/hfaxd ]; then
