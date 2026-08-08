@@ -88,7 +88,9 @@ export class AmiClient {
     return new Promise((resolve, reject) => {
       this.socket = net.createConnection({ host: cfg.host, port: cfg.port }, () => {
         this.buffer = "";
-        // Wait for the server banner, then login
+        // Send login immediately on connect
+        const loginMsg = `Action: Login\r\nUsername: ${cfg.username}\r\nSecret: ${cfg.secret}\r\nEvents: on\r\n\r\n`;
+        this.socket!.write(loginMsg);
       });
 
       this.socket.on("data", (chunk: Buffer) => {
@@ -323,13 +325,6 @@ export async function startAmi(): Promise<AmiClient> {
   });
 
   await client.connect();
-
-  // Login after connection
-  const cfg = config();
-  if (cfg.username && cfg.secret) {
-    const loginMsg = `Action: Login\r\nUsername: ${cfg.username}\r\nSecret: ${cfg.secret}\r\nEvents: on\r\n\r\n`;
-    client["socket"]?.write(loginMsg);
-  }
 
   // Heartbeat every 30s
   setInterval(() => {
