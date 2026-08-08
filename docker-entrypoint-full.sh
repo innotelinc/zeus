@@ -126,6 +126,11 @@ if [ -f /usr/local/sbin/faxadduser ]; then
   echo ">>> HylaFAX admin user created"
 fi
 
+# Configure hfaxd to trust localhost (no password required)
+echo '127.0.0.1::admin:' > /var/spool/hylafax/etc/hosts.hfaxd
+echo 'localhost::admin:' >> /var/spool/hylafax/etc/hosts.hfaxd
+echo ">>> hosts.hfaxd configured for localhost trust"
+
 # Start hfaxd (HylaFAX client daemon) — must run as uucp like other fax services
 # The systemd unit uses Type=forking with ExecStart=/usr/local/sbin/hfaxd -i hylafax
 if [ -f /usr/local/sbin/hfaxd ]; then
