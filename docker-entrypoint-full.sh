@@ -126,18 +126,19 @@ if [ -f /usr/local/sbin/faxadduser ]; then
   echo ">>> HylaFAX admin user created"
 fi
 
-# Configure hfaxd to trust localhost (no password required)
-# faxsetup overwrites hosts.hfaxd, so we configure it after faxsetup.
-# Make it world-readable so PHP-FPM (asterisk user) can read it.
-echo '127.0.0.1::admin:' > /var/spool/hylafax/etc/hosts.hfaxd
-echo 'localhost::admin:' >> /var/spool/hylafax/etc/hosts.hfaxd
+# Configure hfaxd for localhost access with a simple password
+# The HylaFAX+ protocol requires a non-empty password.
+HYLAFAX_PW='faxpass'
+echo "127.0.0.1:${HYLAFAX_PW}:admin:" > /var/spool/hylafax/etc/hosts.hfaxd
+echo "localhost:${HYLAFAX_PW}:admin:" >> /var/spool/hylafax/etc/hosts.hfaxd
 chmod 644 /var/spool/hylafax/etc/hosts.hfaxd
-echo ">>> hosts.hfaxd configured for localhost trust"
+echo ">>> hosts.hfaxd configured for localhost"
 
 # Create .hylarc for asterisk user (runs sendfax via PHP-FPM)
 mkdir -p /var/www/.hylafax
-echo 'host: localhost' > /var/www/.hylarc
-echo 'protocol: tcp' >> /var/www/.hylarc
+echo "host: localhost" > /var/www/.hylarc
+echo "protocol: tcp" >> /var/www/.hylarc
+echo "pass: ${HYLAFAX_PW}" >> /var/www/.hylarc
 chown -R asterisk:asterisk /var/www/.hylafax /var/www/.hylarc
 export HOME=/var/www
 
