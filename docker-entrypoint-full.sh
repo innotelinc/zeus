@@ -140,6 +140,11 @@ echo "host: localhost" > /var/www/.hylarc
 echo "protocol: tcp" >> /var/www/.hylarc
 echo "pass: ${HYLAFAX_PW}" >> /var/www/.hylarc
 chown -R asterisk:asterisk /var/www/.hylafax /var/www/.hylarc
+# Also add password to system-wide hyla.conf (sendfax reads both)
+if ! grep -q '^pass:' /usr/local/lib/fax/hyla.conf 2>/dev/null; then
+  sed -i "/^Host:/a pass: ${HYLAFAX_PW}" /usr/local/lib/fax/hyla.conf
+fi
+echo ">>> hylafax client auth configured"
 export HOME=/var/www
 
 # Start hfaxd (HylaFAX client daemon) — must run as uucp like other fax services
