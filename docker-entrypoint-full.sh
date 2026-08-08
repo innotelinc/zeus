@@ -126,13 +126,19 @@ if [ -f /usr/local/sbin/faxadduser ]; then
   echo ">>> HylaFAX admin user created"
 fi
 
-# Start hfaxd (HylaFAX client/server protocol daemon on port 4559)
+# Start hfaxd standalone (not inetd) on port 4559
+# Inetd mode (-i) requires a running inetd/xinetd which we don't have.
+# Standalone mode (-s) binds the port directly.
 if [ -f /usr/local/sbin/hfaxd ]; then
   [ -p /var/spool/hylafax/FIFO ] || /usr/sbin/mkfifo /var/spool/hylafax/FIFO 2>/dev/null || true
   chown uucp:uucp /var/spool/hylafax/FIFO 2>/dev/null || true
-  /usr/local/sbin/hfaxd -i hylafax &
-  sleep 1
-  echo ">>> hfaxd started"
+  /usr/local/sbin/hfaxd -s -p 4559 > /var/log/hfaxd.log 2>&1 &
+  sleep 2
+  if netstat -tlnp 2>/dev/null | grep -q ':4559' || ss -tlnp 2>/dev/null | grep -q ':4559'; then
+    echo ">>> hfaxd listening on port 4559"
+  else
+    echo ">>> WARNING: hfaxd may not be listening — check /var/log/hfaxd.log"
+  fi
 fi
 
 # Start faxq (HylaFAX queue scheduler)
