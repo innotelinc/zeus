@@ -96,10 +96,18 @@ fi
 echo ">>> Starting fax stack..."
 
 # Fix IAX calltoken (the image layer may be cached without requirecalltoken=no)
-if [ -f /etc/asterisk/iax_fax_custom.conf ]; then
-  sed -i '/^requirecalltoken/d' /etc/asterisk/iax_fax_custom.conf
-  sed -i '/^\[fax-modem-template\]/,/^\[/{/^qualify/s/$/\nrequirecalltoken = no/}' /etc/asterisk/iax_fax_custom.conf 2>/dev/null || true
-  echo ">>> IAX calltoken fix applied"
+# Use calltokenoptional in [general] — simpler than per-peer sed
+if [ -f /etc/asterisk/iax.conf ]; then
+  if ! grep -q 'calltokenoptional' /etc/asterisk/iax.conf; then
+    sed -i '/^\[general\]/a calltokenoptional = 127.0.0.1/255.255.255.255' /etc/asterisk/iax.conf
+    echo ">>> IAX calltoken fix applied (iax.conf general)"
+  fi
+fi
+# Also fix iax_custom.conf if it exists
+if [ -f /etc/asterisk/iax_custom.conf ]; then
+  if ! grep -q 'calltokenoptional' /etc/asterisk/iax_custom.conf; then
+    sed -i '/^\[general\]/a calltokenoptional = 127.0.0.1/255.255.255.255' /etc/asterisk/iax_custom.conf 2>/dev/null || true
+  fi
 fi
 
 # Initialize HylaFAX spool (first-run only — idempotent)
@@ -120,12 +128,15 @@ fi
 
 # Start hfaxd (HylaFAX client/server protocol daemon on port 4559)
 if [ -f /usr/local/sbin/hfaxd ]; then
-  /usr/local/sbin/hfaxd -i hylafax -o 4559 &
-  sleep 1
+  # Ensure FIFO exists (created by faxsetup)
+  [ -p /var/spool/hylafax/FIFO ] || /usr/sbin/mkfifo /var/spool/hylafax/FIFO 2>/dev/null || true
+  chown uucp:uucp /var/spool/hylafax/FIFO 2>/dev/null || true
+  /usr/local/sbin/hfaxd -i hylafax -o 4559 > /var/log/hfaxd.log 2>&1 &
+  sleep 2
   if kill -0 $! 2>/dev/null; then
     echo ">>> hfaxd started (port 4559)"
   else
-    echo ">>> WARNING: hfaxd failed to start"
+    echo ">>> WARNING: hfaxd failed to start — see /var/log/hfaxd.log"
   fi
 fi
 
