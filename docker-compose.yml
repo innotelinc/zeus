@@ -18,8 +18,9 @@ services:
       dockerfile: Dockerfile
     container_name: pbx-portal
     restart: unless-stopped
-    # AppArmor's docker-default profile can't be checked in sandboxed/
-    # containerized Docker hosts (unreadable /sys/kernel/security/apparmor)
+    # AppArmor was removed from the host (apt purge), but the kernel LSM may
+    # still be active — keep apparmor=unconfined so the docker-default profile
+    # is not applied to this container.
     security_opt:
       - apparmor=unconfined
     ports:
