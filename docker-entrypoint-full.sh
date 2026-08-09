@@ -55,16 +55,19 @@ UCP_AMI_SECRET="${FREEPBX_AMI_SECRET:-ucp_events_secret}"
 mysql -u root asterisk -e "UPDATE freepbx_settings SET value = '${UCP_AMI_SECRET}' WHERE keyword = 'UCPMGRPASS' AND (value IS NULL OR value = '')" 2>/dev/null || true
 
 # Register OAuth2 client for the portal (if API module is installed)
+# Always updates the client_secret so that FREEPBX_CLIENT_SECRET changes take
+# effect on restart without needing to manually fix the database.
 if [ -n "${FREEPBX_CLIENT_ID:-}" ] && [ -n "${FREEPBX_CLIENT_SECRET:-}" ]; then
   echo ">>> Registering OAuth2 client '${FREEPBX_CLIENT_ID}'..."
   php -r "
     \$db = new PDO('mysql:host=localhost;dbname=asterisk', 'root', '');
     \$db->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
+    \$secretHash = hash('sha256', '${FREEPBX_CLIENT_SECRET}');
     // Check if client already exists
     \$stmt = \$db->prepare('SELECT id FROM api_applications WHERE client_id = ?');
     \$stmt->execute(['${FREEPBX_CLIENT_ID}']);
-    if (!\$stmt->fetch()) {
-      \$secretHash = hash('sha256', '${FREEPBX_CLIENT_SECRET}');
+    \$existing = \$stmt->fetch(PDO::FETCH_ASSOC);
+    if (!\$existing) {
       \$stmt = \$db->prepare(
         'INSERT INTO api_applications (owner, name, description, grant_type, client_id, client_secret, redirect_uri, website, algo, allowed_scopes)
          VALUES (NULL, ?, ?, ?, ?, ?, NULL, NULL, ?, ?)'
@@ -80,7 +83,10 @@ if [ -n "${FREEPBX_CLIENT_ID:-}" ] && [ -n "${FREEPBX_CLIENT_SECRET:-}" ]; then
       ]);
       echo 'OAuth2 client registered.' . PHP_EOL;
     } else {
-      echo 'OAuth2 client already exists.' . PHP_EOL;
+      // Update existing client secret to match current env var
+      \$stmt = \$db->prepare('UPDATE api_applications SET client_secret = ?, algo = ? WHERE client_id = ?');
+      \$stmt->execute([\$secretHash, 'sha256', '${FREEPBX_CLIENT_ID}']);
+      echo 'OAuth2 client secret updated.' . PHP_EOL;
     }
   " 2>/dev/null || echo 'WARNING: Could not register OAuth2 client (API module may not be installed yet)'
 fi

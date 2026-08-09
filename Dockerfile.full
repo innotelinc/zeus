@@ -182,6 +182,18 @@ RUN mkdir -p /var/run/asterisk && chown asterisk:asterisk /var/run/asterisk && \
     fwconsole ma downloadinstall ucp 2>/dev/null || true && \
     fwconsole reload || true
 
+# ─── FreePBX API module patches ─────────────────────────────
+# Fix 1: getFlattenedScopes() crashes when a scope module (e.g. "framework")
+# is not in $activeModules — add a guard to skip unknown modules.
+RUN sed -i '/foreach (\$validScopes\[$type] as \$module => \$scope) {/a\
+\t\t\t\t\tif (!isset($activeModules[$module])) { continue; }' \
+    /var/www/html/admin/modules/api/Api.class.php
+
+# Fix 2: Gql/Api.php crashes on undefined $_GET['route'] — add null coalescing.
+# Replace bare $_GET['route'] with ($_GET['route'] ?? '').
+RUN sed -i "s|\$_GET\['route'\]|(\$_GET['route'] ?? '')|g" \
+    /var/www/html/admin/modules/api/Gql/Api.php
+
 # ─── PJSIP WebSocket (port 8089) ─────────────────────────────
 RUN mkdir -p /etc/asterisk/keys && \
     openssl req -x509 -newkey rsa:2048 -nodes \

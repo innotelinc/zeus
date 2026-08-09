@@ -25,6 +25,10 @@ RUN apk add --no-cache python3 make g++ sqlite-dev
 COPY --from=deps /app/node_modules ./node_modules
 COPY . .
 
+# Bust Turbopack/Next.js cache — changes to this line invalidate the build layer.
+# Increment the counter below if source changes are not being picked up.
+RUN echo "build-cache-buster: v3"
+
 ENV NEXT_TELEMETRY_DISABLED=1
 RUN npm run build
 

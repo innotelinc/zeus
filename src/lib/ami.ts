@@ -301,14 +301,18 @@ export class AmiClient {
 }
 
 // ─── Singleton ───
+// NOTE: Uses globalThis so the singleton is shared across all
+// Turbopack chunks (module-scoped variables can be duplicated
+// when different entry points import the same module).
 
-let _client: AmiClient | null = null;
+const globalKey = Symbol.for("pbx.amiClient");
 
 export function getAmiClient(): AmiClient {
-  if (!_client) {
-    _client = new AmiClient();
+  const g = globalThis as Record<symbol, AmiClient>;
+  if (!g[globalKey]) {
+    g[globalKey] = new AmiClient();
   }
-  return _client;
+  return g[globalKey];
 }
 
 /** Start the AMI client and auto-login with Events: on. */

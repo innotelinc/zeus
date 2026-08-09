@@ -30,14 +30,15 @@ async function getAccessToken(): Promise<string> {
     );
   }
 
-  const res = await fetch(`${baseUrl()}/admin/config.php?display=api&command=oauth2&route=token`, {
+  const body = new URLSearchParams();
+  body.set("grant_type", "client_credentials");
+  body.set("client_id", client_id);
+  body.set("client_secret", client_secret);
+
+  const res = await fetch(`${baseUrl()}/admin/api/api/token`, {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      grant_type: "client_credentials",
-      client_id,
-      client_secret,
-    }),
+    headers: { "Content-Type": "application/x-www-form-urlencoded" },
+    body: body.toString(),
   });
 
   if (!res.ok) {
@@ -62,7 +63,7 @@ async function gql<T = unknown>(
   variables?: Record<string, unknown>,
 ): Promise<T> {
   const token = await getAccessToken();
-  const res = await fetch(`${baseUrl()}/admin/config.php?display=api&command=gql`, {
+  const res = await fetch(`${baseUrl()}/admin/ajax.php?module=api&command=gql`, {
     method: "POST",
     headers: {
       Authorization: `Bearer ${token}`,

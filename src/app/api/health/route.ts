@@ -94,16 +94,16 @@ export async function GET() {
         const timeout = setTimeout(() => controller.abort(), 5_000);
 
         try {
+          const body = new URLSearchParams();
+          body.set("grant_type", "client_credentials");
+          body.set("client_id", clientId);
+          body.set("client_secret", clientSecret);
           const res = await fetch(
-            `${url.replace(/\/$/, "")}/admin/config.php?display=api&command=oauth2&route=token`,
+            `${url.replace(/\/$/, "")}/admin/api/api/token`,
             {
               method: "POST",
-              headers: { "Content-Type": "application/json" },
-              body: JSON.stringify({
-                grant_type: "client_credentials",
-                client_id: clientId,
-                client_secret: clientSecret,
-              }),
+              headers: { "Content-Type": "application/x-www-form-urlencoded" },
+              body: body.toString(),
               signal: controller.signal,
             },
           );
