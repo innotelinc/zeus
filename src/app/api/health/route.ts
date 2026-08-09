@@ -43,101 +43,107 @@ async function probe(
 }
 
 export async function GET() {
-  // ── Database (SQLite) ──────────────────────────────────────
-  const dbResult = await probe("database", async () => {
-    const row = db.prepare("SELECT 1 as ok").get() as { ok: number };
-    if (row.ok !== 1) throw new Error("Unexpected query result");
-  });
+  // ── Run all probes concurrently (avoids sequential timeouts
+  //    exceeding the Docker healthcheck timeout when external
+  //    services are unreachable). ─────────────────────────────
+  const [dbResult, voipmsResult, freepbxResult, amiResult, stripeResult] =
+    await Promise.all([
+      // ── Database (SQLite) ──────────────────────────────────
+      probe("database", async () => {
+        const row = db.prepare("SELECT 1 as ok").get() as { ok: number };
+        if (row.ok !== 1) throw new Error("Unexpected query result");
+      }),
 
-  // ── VoIP.ms API ────────────────────────────────────────────
-  const voipmsResult = await probe("voipms_api", async () => {
-    const user = process.env.VOIPMS_API_USERNAME;
-    const pass = process.env.VOIPMS_API_PASSWORD;
-    if (!user || !pass) throw new Error("VOIPMS_API_USERNAME or VOIPMS_API_PASSWORD not set");
+      // ── VoIP.ms API ────────────────────────────────────────
+      probe("voipms_api", async () => {
+        const user = process.env.VOIPMS_API_USERNAME;
+        const pass = process.env.VOIPMS_API_PASSWORD;
+        if (!user || !pass) throw new Error("VOIPMS_API_USERNAME or VOIPMS_API_PASSWORD not set");
 
-    const url = new URL("https://voip.ms/api/v1/rest.php");
-    url.searchParams.set("api_username", user);
-    url.searchParams.set("api_password", pass);
-    url.searchParams.set("method", "getAccountInfo");
+        const url = new URL("https://voip.ms/api/v1/rest.php");
+        url.searchParams.set("api_username", user);
+        url.searchParams.set("api_password", pass);
+        url.searchParams.set("method", "getAccountInfo");
 
-    const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), 5_000);
+        const controller = new AbortController();
+        const timeout = setTimeout(() => controller.abort(), 5_000);
 
-    try {
-      const res = await fetch(url.toString(), {
-        signal: controller.signal,
-      });
-      if (!res.ok)
-        throw new Error(`VoIP.ms API returned ${res.status}`);
-      const data = (await res.json()) as { status?: string };
-      if (data.status !== "success")
-        throw new Error(`VoIP.ms API: ${data.status ?? "unknown"}`);
-    } finally {
-      clearTimeout(timeout);
-    }
-  });
+        try {
+          const res = await fetch(url.toString(), {
+            signal: controller.signal,
+          });
+          if (!res.ok)
+            throw new Error(`VoIP.ms API returned ${res.status}`);
+          const data = (await res.json()) as { status?: string };
+          if (data.status !== "success")
+            throw new Error(`VoIP.ms API: ${data.status ?? "unknown"}`);
+        } finally {
+          clearTimeout(timeout);
+        }
+      }),
 
-  // ── FreePBX API ────────────────────────────────────────────
-  const freepbxResult = await probe("freepbx_api", async () => {
-    const url = process.env.FREEPBX_URL;
-    const clientId = process.env.FREEPBX_CLIENT_ID;
-    const clientSecret = process.env.FREEPBX_CLIENT_SECRET;
-    if (!url || !clientId || !clientSecret)
-      throw new Error("FREEPBX_URL, FREEPBX_CLIENT_ID, or FREEPBX_CLIENT_SECRET not set");
+      // ── FreePBX API ────────────────────────────────────────
+      probe("freepbx_api", async () => {
+        const url = process.env.FREEPBX_URL;
+        const clientId = process.env.FREEPBX_CLIENT_ID;
+        const clientSecret = process.env.FREEPBX_CLIENT_SECRET;
+        if (!url || !clientId || !clientSecret)
+          throw new Error("FREEPBX_URL, FREEPBX_CLIENT_ID, or FREEPBX_CLIENT_SECRET not set");
 
-    const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), 5_000);
+        const controller = new AbortController();
+        const timeout = setTimeout(() => controller.abort(), 5_000);
 
-    try {
-      const res = await fetch(
-        `${url.replace(/\/$/, "")}/admin/config.php?display=api&command=oauth2&route=token`,
-        {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            grant_type: "client_credentials",
-            client_id: clientId,
-            client_secret: clientSecret,
-          }),
-          signal: controller.signal,
-        },
-      );
-      if (!res.ok)
-        throw new Error(`FreePBX OAuth2 returned ${res.status}`);
-      const data = (await res.json()) as { access_token?: string };
-      if (!data.access_token)
-        throw new Error("No access_token in FreePBX response");
-    } finally {
-      clearTimeout(timeout);
-    }
-  });
+        try {
+          const res = await fetch(
+            `${url.replace(/\/$/, "")}/admin/config.php?display=api&command=oauth2&route=token`,
+            {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({
+                grant_type: "client_credentials",
+                client_id: clientId,
+                client_secret: clientSecret,
+              }),
+              signal: controller.signal,
+            },
+          );
+          if (!res.ok)
+            throw new Error(`FreePBX OAuth2 returned ${res.status}`);
+          const data = (await res.json()) as { access_token?: string };
+          if (!data.access_token)
+            throw new Error("No access_token in FreePBX response");
+        } finally {
+          clearTimeout(timeout);
+        }
+      }),
 
-  // ── Asterisk AMI ───────────────────────────────────────────
-  const amiResult = await probe("asterisk_ami", async () => {
-    const ami = getAmiClient();
-    if (!ami.isConnected) {
-      // Check if AMI is configured
-      const host = process.env.ASTERISK_AMI_HOST;
-      if (!host) {
-        // AMI not configured — not an error, just degraded
-        return;
-      }
-      throw new Error(`AMI not connected to ${host}:${process.env.ASTERISK_AMI_PORT || "5038"}`);
-    }
-    // AMI is connected
-  });
+      // ── Asterisk AMI ───────────────────────────────────────
+      probe("asterisk_ami", async () => {
+        const ami = getAmiClient();
+        if (!ami.isConnected) {
+          // Check if AMI is configured
+          const host = process.env.ASTERISK_AMI_HOST;
+          if (!host) {
+            // AMI not configured — not an error, just degraded
+            return;
+          }
+          throw new Error(`AMI not connected to ${host}:${process.env.ASTERISK_AMI_PORT || "5038"}`);
+        }
+        // AMI is connected
+      }),
 
-  // ── Stripe (config check only) ─────────────────────────────
-  const stripeResult = await probe("stripe", async () => {
-    const key = process.env.STRIPE_SECRET_KEY;
-    if (!key) throw new Error("STRIPE_SECRET_KEY not set");
-    // Verify it looks like a valid Stripe secret key
-    if (!key.startsWith("sk_") && !key.startsWith("rk_"))
-      throw new Error("STRIPE_SECRET_KEY does not match expected format");
-    // Optional: verify the webhook secret is set too
-    const wh = process.env.STRIPE_WEBHOOK_SECRET;
-    if (!wh) throw new Error("STRIPE_WEBHOOK_SECRET not set");
-  });
+      // ── Stripe (config check only) ─────────────────────────
+      probe("stripe", async () => {
+        const key = process.env.STRIPE_SECRET_KEY;
+        if (!key) throw new Error("STRIPE_SECRET_KEY not set");
+        // Verify it looks like a valid Stripe secret key
+        if (!key.startsWith("sk_") && !key.startsWith("rk_"))
+          throw new Error("STRIPE_SECRET_KEY does not match expected format");
+        // Optional: verify the webhook secret is set too
+        const wh = process.env.STRIPE_WEBHOOK_SECRET;
+        if (!wh) throw new Error("STRIPE_WEBHOOK_SECRET not set");
+      }),
+    ]);
 
   // ── Aggregate status ───────────────────────────────────────
   const services: HealthResponse["services"] = {
