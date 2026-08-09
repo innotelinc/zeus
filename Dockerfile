@@ -32,8 +32,11 @@ RUN npm run build
 RUN cd .next/standalone && npm prune --omit=dev
 
 # ─── Stage 3: Production runner ──────────────────────────────
+# The entrypoint runs as root so it can chown the (possibly stale,
+# root-owned) data volume on start, then drops privileges to the
+# nextjs user via su-exec before running the app.
 FROM node:22-alpine AS runner
-RUN apk add --no-cache sqlite-dev curl
+RUN apk add --no-cache sqlite-dev curl su-exec
 
 WORKDIR /app
 
@@ -58,8 +61,6 @@ RUN chmod +x /app/docker-entrypoint.sh
 
 # Create data directory for SQLite (persistent volume mount point)
 RUN mkdir -p /app/data && chown -R nextjs:nodejs /app/data /app/scripts
-
-USER nextjs
 
 EXPOSE 3000
 
