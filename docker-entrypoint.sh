@@ -26,7 +26,8 @@ else
   echo ">>> Database exists — skipping seed."
 fi
 
-# Docker injects HOSTNAME=<container-id>, and Next's standalone server binds
-# to that hostname's IP instead of 0.0.0.0 — breaking the in-container
-# healthcheck (curl to localhost). Unset it so the server binds 0.0.0.0.
-exec su-exec nextjs:nodejs env -u HOSTNAME "$@"
+# Next's standalone server binds to $HOSTNAME — Docker injects the container
+# id, and .env/compose may set the public IP (not a local interface), which
+# makes listen() fail with EADDRNOTAVAIL. Pin it to 0.0.0.0 so the server
+# listens on all local interfaces regardless of the inherited value.
+exec su-exec nextjs:nodejs env HOSTNAME=0.0.0.0 "$@"

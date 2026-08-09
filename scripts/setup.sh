@@ -1455,7 +1455,7 @@ User=root
 WorkingDirectory=${APP_DIR}
 Environment=NODE_ENV=production
 Environment=PORT=3000
-ExecStart=/usr/bin/node ${APP_DIR}/node_modules/.bin/next start -p 3000
+ExecStart=/usr/bin/node ${APP_DIR}/node_modules/.bin/next start -H 0.0.0.0 -p 3000
 Restart=always
 RestartSec=5
 StandardOutput=journal

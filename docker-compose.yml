@@ -32,8 +32,16 @@ services:
     environment:
       - NODE_ENV=production
       - PORT=3000
+      # Next binds to $HOSTNAME (set to the public IP in .env, or injected by
+      # Docker as the container id) — pin it so the server listens on all
+      # local interfaces (0.0.0.0) instead of failing with EADDRNOTAVAIL.
+      - HOSTNAME=0.0.0.0
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:3000/api/health"]
+      # No `-f`: the health endpoint returns 503 when >=2 external services
+      # (FreePBX/VoIP.ms/Stripe) are down. The container is healthy as long as
+      # the portal itself responds — any HTTP response counts; only transport
+      # errors (connection refused/timeout) fail the check.
+      test: ["CMD", "curl", "-s", "-o", "/dev/null", "http://localhost:3000/api/health"]
       interval: 30s
       timeout: 10s
       retries: 3
