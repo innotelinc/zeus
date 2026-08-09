@@ -18,6 +18,10 @@ services:
       dockerfile: Dockerfile
     container_name: pbx-portal
     restart: unless-stopped
+    # AppArmor's docker-default profile can't be checked in sandboxed/
+    # containerized Docker hosts (unreadable /sys/kernel/security/apparmor)
+    security_opt:
+      - apparmor=unconfined
     ports:
       - "3000:3000"
     volumes:

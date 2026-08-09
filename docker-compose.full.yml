@@ -31,6 +31,8 @@ services:
     image: innotel/freepbx:latest
     container_name: pbx-freepbx
     restart: unless-stopped
+    security_opt:
+      - apparmor=unconfined
     ports:
       - "80:80"           # FreePBX web UI
       - "5060:5060/udp"   # SIP
@@ -87,6 +89,8 @@ services:
       dockerfile: Dockerfile
     container_name: pbx-portal
     restart: unless-stopped
+    security_opt:
+      - apparmor=unconfined
     depends_on:
       - freepbx
     ports:
