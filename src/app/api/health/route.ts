@@ -78,16 +78,25 @@ export async function GET() {
       // ── Asterisk AMI ───────────────────────────────────────
       probe("asterisk_ami", async () => {
         const ami = getAmiClient();
-        if (!ami.isConnected) {
-          // Check if AMI is configured
-          const host = process.env.ASTERISK_AMI_HOST;
-          if (!host) {
-            // AMI not configured — not an error, just degraded
-            return;
-          }
-          throw new Error(`AMI not connected to ${host}:${process.env.ASTERISK_AMI_PORT || "5038"}`);
+        const host = process.env.ASTERISK_AMI_HOST;
+        if (!host) {
+          // AMI not configured — not applicable
+          return;
         }
-        // AMI is connected
+
+        if (ami.isConnected) {
+          // Verify the connection is actually alive with a ping
+          const alive = await ami.ping();
+          if (!alive) {
+            throw new Error("AMI ping failed — connection may be stale");
+          }
+          return;
+        }
+
+        // Not connected — auto-reconnect is handling it, report current state
+        throw new Error(
+          `AMI not connected to ${host}:${process.env.ASTERISK_AMI_PORT ?? "5038"}`,
+        );
       }),
 
       // ── Stripe (config check only) ─────────────────────────
