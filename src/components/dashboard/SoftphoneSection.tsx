@@ -516,7 +516,6 @@ export default function SoftphoneSection({ extensions }: Props) {
                       <div className="space-y-3">
                         <select
                           className="w-full rounded-xl border px-4 py-2.5 text-sm outline-none transition bg-[var(--input-bg)] border-[var(--input-border)] text-[var(--foreground)] focus:border-[var(--input-focus-border)]"
-                          style={{ colorScheme: undefined }}
                           value={selectedExtId}
                           onChange={(e) => setSelectedExtId(e.target.value)}
                         >

@@ -314,3 +314,47 @@ export async function queryExtensionState(
     return null;
   }
 }
+
+/** Query PJSIP endpoint status via AMI for extensions not covered by hints. */
+async function queryPjsipEndpointState(
+  client: AmiClient,
+  extensionId: string,
+): Promise<string | null> {
+  try {
+    const result = await client.sendAction({
+      Action: "PJSIPShowEndpoint",
+      Endpoint: extensionId,
+    });
+    // DeviceState is a direct key in the parsed AMI response
+    if (result.DeviceState) {
+      return mapAmiExtensionStatus(result.DeviceState);
+    }
+    return null;
+  } catch {
+    return null;
+  }
+}
+
+/** Refresh device state for all extensions from live Asterisk data.
+ *  Called on AMI connect so states never stay "unknown" after startup. */
+export async function refreshAllExtensionStates(client: AmiClient): Promise<void> {
+  const extensions = db
+    .prepare("SELECT extension_id FROM freepbx_extensions")
+    .all() as Array<{ extension_id: string }>;
+
+  for (const { extension_id } of extensions) {
+    // Try hint-based query first (works for FreePBX-provisioned extensions)
+    let state = await queryExtensionState(client, extension_id);
+
+    // Fall back to PJSIP endpoint query for manually created endpoints
+    if (!state || state === "unknown") {
+      state = await queryPjsipEndpointState(client, extension_id);
+    }
+
+    if (state && state !== "unknown") {
+      db.prepare(
+        "UPDATE freepbx_extensions SET device_state = ?, updated_at = datetime('now') WHERE extension_id = ? AND device_state != ?",
+      ).run(state, extension_id, state);
+    }
+  }
+}

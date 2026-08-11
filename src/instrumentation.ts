@@ -11,9 +11,14 @@ export async function register() {
 
     initAmiHandler();
 
-    startAmi().then((client) => {
+    startAmi().then(async (client) => {
       if (client.isConnected) {
         console.log("AMI: Client started and event handlers registered");
+        // Refresh all extension states now that we're connected
+        const { refreshAllExtensionStates } = await import("@/lib/ami-handler");
+        refreshAllExtensionStates(client).catch((e: Error) =>
+          console.warn("AMI: Failed to refresh extension states:", e.message),
+        );
       } else {
         console.warn("AMI: Client initialized but not connected — check credentials / network");
       }

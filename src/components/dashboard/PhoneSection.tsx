@@ -30,6 +30,8 @@ export default function PhoneSection({ numbers: initialNumbers, extensions: init
   const [provisionMode, setProvisionMode] = useState(false);
   const [extForm, setExtForm] = useState({ id: "", name: "", email: "" });
   const [provisioning, setProvisioning] = useState(false);
+  const [deletingExt, setDeletingExt] = useState<string | null>(null);
+  const [confirmDeleteExt, setConfirmDeleteExt] = useState<string | null>(null);
 
   const maxNumbers = plan === "business" ? 5 : 1;
 
@@ -86,7 +88,7 @@ export default function PhoneSection({ numbers: initialNumbers, extensions: init
           id: res.extensionId, user_id: "", extension_id: res.extensionId,
           extension_name: extForm.name, extension_secret: res.secret,
           voicemail_enabled: 1, voicemail_pin: null, status: "active",
-          device_state: "unknown", created_at: new Date().toISOString(), updated_at: new Date().toISOString(),
+          device_state: "offline", created_at: new Date().toISOString(), updated_at: new Date().toISOString(),
         }]);
         setProvisionMode(false);
         setExtForm({ id: "", name: "", email: "" });
@@ -95,6 +97,18 @@ export default function PhoneSection({ numbers: initialNumbers, extensions: init
     } catch (e) {
       toast.error(e instanceof Error ? e.message : "Provisioning failed");
     } finally { setProvisioning(false); }
+  }
+
+  async function deleteExtension(extDbId: string, extNumber: string) {
+    setDeletingExt(extDbId);
+    try {
+      await api(`/api/phone/extensions?id=${encodeURIComponent(extDbId)}`, { method: "DELETE" });
+      setExtensions(prev => prev.filter(e => e.id !== extDbId));
+      setConfirmDeleteExt(null);
+      toast.success(`Extension ${extNumber} removed.`);
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : "Delete failed");
+    } finally { setDeletingExt(null); }
   }
 
   async function refresh() {
@@ -152,6 +166,25 @@ export default function PhoneSection({ numbers: initialNumbers, extensions: init
           </div>
         </div>
       )}
+
+      {/* Delete extension confirm */}
+      {confirmDeleteExt && (() => {
+        const ext = extensions.find(e => e.id === confirmDeleteExt);
+        return (
+          <div className="rounded-2xl border border-rose-500/20 bg-rose-500/5 p-6 text-center">
+            <div className="flex justify-center mb-3"><AlertCircleIcon size={28} className="text-rose-400" /></div>
+            <p className="font-medium text-white">Remove Extension {ext?.extension_id ?? "?"}?</p>
+            <p className="mt-1 text-sm text-white/40">This will delete the extension from FreePBX, remove voicemail, and clean up all associated config.</p>
+            <div className="mt-4 flex justify-center gap-3">
+              <button type="button" onClick={() => deleteExtension(confirmDeleteExt, ext?.extension_id ?? "")} disabled={deletingExt === confirmDeleteExt}
+                className="rounded-xl bg-rose-500 px-6 py-2 text-sm font-medium text-white transition hover:bg-rose-600 disabled:opacity-50">
+                {deletingExt === confirmDeleteExt ? "Removing..." : "Yes, remove it"}
+              </button>
+              <button type="button" onClick={() => setConfirmDeleteExt(null)} className="btn-ghost px-6 py-2 text-sm">Cancel</button>
+            </div>
+          </div>
+        );
+      })()}
 
       {/* Numbers card */}
       <div className="rounded-2xl border border-white/[0.06] bg-white/[0.02] p-6">
@@ -237,18 +270,25 @@ export default function PhoneSection({ numbers: initialNumbers, extensions: init
             {extensions.map(ext => {
               const st = extState(ext.device_state);
               return (
-                <div key={ext.id} className="flex items-center justify-between rounded-xl border border-white/[0.06] bg-white/[0.02] px-5 py-4">
+                <div key={ext.id} className="flex items-center justify-between rounded-xl border border-white/[0.06] bg-white/[0.02] px-5 py-4 group">
                   <div className="flex items-center gap-3">
                     <div className="relative">
                       <CheckCircleIcon size={18} className={ext.device_state === "idle" ? "text-mint-400" : "text-white/25"} />
-                      <span className={`absolute -right-0.5 -top-0.5 h-2.5 w-2.5 rounded-full border-2 border-ink-950 ${st.dot}`} />
+                      <span className={`absolute -right-0.5 -top-0.5 h-2.5 w-2.5 rounded-full border-2 border-[var(--background)] ${st.dot}`} />
                     </div>
                     <div>
                       <div className="font-mono text-lg font-semibold text-white">Ext {ext.extension_id}</div>
                       <div className="text-xs text-white/40">{ext.extension_name}{ext.voicemail_enabled ? " · Voicemail enabled" : ""}</div>
                     </div>
                   </div>
-                  <span className={`rounded-full px-2.5 py-0.5 text-[11px] font-medium ${st.bg}`}>{st.label}</span>
+                  <div className="flex items-center gap-2">
+                    <span className={`rounded-full px-2.5 py-0.5 text-[11px] font-medium ${st.bg}`}>{st.label}</span>
+                    <button type="button" onClick={() => setConfirmDeleteExt(ext.id)}
+                      className="rounded-lg p-1.5 text-white/20 transition hover:text-rose-400 hover:bg-rose-500/10 opacity-0 group-hover:opacity-100"
+                      title={`Remove Ext ${ext.extension_id}`}>
+                      <TrashIcon size={15} />
+                    </button>
+                  </div>
                 </div>
               );
             })}

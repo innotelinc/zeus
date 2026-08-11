@@ -276,6 +276,16 @@ html.light .glass {
 }
 .animate-scale-in { animation: scale-in 0.2s cubic-bezier(0.22, 1, 0.36, 1) both; }
 
+/* ── Select dropdown theming ────────────────────────── */
+/* Native <select> popups use the OS color-scheme.
+   Match it to our theme so options are readable. */
+select {
+  color-scheme: dark;
+}
+html.light select {
+  color-scheme: light;
+}
+
 /* ── Form primitives ────────────────────────────────── */
 
 .input-base {

@@ -166,6 +166,7 @@ services:
       NEXT_PUBLIC_URL: https://${HOSTNAME:-voice.innotel.us}:3000
     volumes:
       - portal-data:/app/data
+      - asterisk-config:/etc/asterisk:rw
     healthcheck:
       # No `-f`: the health endpoint returns 503 when >=2 external services
       # (FreePBX/VoIP.ms/Stripe) are down. The container is healthy as long as
