@@ -1,6 +1,5 @@
 import type { Metadata } from "next";
-import { redirect } from "next/navigation";
-import { getCurrentUser } from "@/lib/auth";
+import { requireDashboardUser } from "@/lib/dashboard-auth";
 import db from "@/lib/db";
 import { DashboardShell } from "@/components/dashboard/DashboardShell";
 import type { FreePBXExtension } from "@/lib/types";
@@ -14,8 +13,7 @@ export default async function DashboardLayout({
 }: {
   children: React.ReactNode;
 }) {
-  const user = await getCurrentUser();
-  if (!user) redirect("/login?next=/dashboard");
+  const user = await requireDashboardUser();
 
   const extensions = db
     .prepare("SELECT * FROM freepbx_extensions WHERE user_id = ? ORDER BY created_at DESC")

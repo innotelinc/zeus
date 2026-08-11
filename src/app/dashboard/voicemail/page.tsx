@@ -1,14 +1,12 @@
-import { getCurrentUser } from "@/lib/auth";
+import { requireDashboardUser } from "@/lib/dashboard-auth";
 import { getUserDashboard } from "@/lib/dashboard";
-import VoicemailClient from "@/components/dashboard/VoicemailSection";
+import VoicemailSection from "@/components/dashboard/VoicemailSection";
 
 export const dynamic = "force-dynamic";
 
 export default async function VoicemailPage() {
-  const user = await getCurrentUser();
-  if (!user) return null;
-
+  const user = await requireDashboardUser();
   const dash = getUserDashboard(user.id);
 
-  return <VoicemailClient voicemails={dash.voicemails} />;
+  return <VoicemailSection voicemails={dash.voicemails} />;
 }

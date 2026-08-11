@@ -1,11 +1,10 @@
-import { getCurrentUser } from "@/lib/auth";
-import SettingsClient from "@/components/dashboard/SettingsSection";
+import { requireDashboardUser } from "@/lib/dashboard-auth";
+import SettingsSection from "@/components/dashboard/SettingsSection";
 
 export const dynamic = "force-dynamic";
 
 export default async function SettingsPage() {
-  const user = await getCurrentUser();
-  if (!user) return null;
+  const user = await requireDashboardUser();
 
-  return <SettingsClient user={user} />;
+  return <SettingsSection user={user} />;
 }

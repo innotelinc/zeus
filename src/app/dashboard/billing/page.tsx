@@ -1,14 +1,12 @@
-import { getCurrentUser } from "@/lib/auth";
+import { requireDashboardUser } from "@/lib/dashboard-auth";
 import { getUserDashboard } from "@/lib/dashboard";
-import BillingClient from "@/components/dashboard/BillingSection";
+import BillingSection from "@/components/dashboard/BillingSection";
 
 export const dynamic = "force-dynamic";
 
 export default async function BillingPage() {
-  const user = await getCurrentUser();
-  if (!user) return null;
-
+  const user = await requireDashboardUser();
   const dash = getUserDashboard(user.id);
 
-  return <BillingClient user={user} invoices={dash.invoices} />;
+  return <BillingSection user={user} invoices={dash.invoices} />;
 }
