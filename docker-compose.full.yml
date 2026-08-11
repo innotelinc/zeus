@@ -133,7 +133,9 @@ services:
       ASTERISK_AMI_SECRET: ${FREEPBX_AMI_SECRET:-}
 
       # ── WebRTC / TURN ──
-      NEXT_PUBLIC_FREEPBX_WSS_URL: wss://${HOSTNAME:-voice.innotel.us}:8089/ws
+      # WSS URL for softphone: use dedicated ws.innotel.us hostname by default.
+      # Override via FREEPBX_WSS_HOST env var (e.g. voice.innotel.us or an IP).
+      NEXT_PUBLIC_FREEPBX_WSS_URL: wss://${FREEPBX_WSS_HOST:-ws.innotel.us}:8089/ws
       NEXT_PUBLIC_TURN_SERVER: ${TURN_SERVER:-}
       NEXT_PUBLIC_TURN_USERNAME: ${TURN_USERNAME:-}
       NEXT_PUBLIC_TURN_CREDENTIAL: ${TURN_CREDENTIAL:-}

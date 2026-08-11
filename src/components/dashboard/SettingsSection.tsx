@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { api } from "@/lib/client-api";
 import { CheckCircleIcon } from "@/components/icons";
 import { useToast } from "@/components/ToastProvider";
@@ -10,6 +10,8 @@ import Link from "next/link";
 interface Props {
   user: User;
 }
+
+const WSS_STORAGE_KEY = "wssUrl";
 
 export default function SettingsSection({ user }: Props) {
   const { toast } = useToast();
@@ -25,6 +27,34 @@ export default function SettingsSection({ user }: Props) {
 
   const [saving, setSaving] = useState(false);
   const [pwdSaving, setPwdSaving] = useState(false);
+
+  const defaultWss = process.env.NEXT_PUBLIC_FREEPBX_WSS_URL ?? `wss://${typeof window !== "undefined" ? window.location.hostname : "localhost"}:8089/ws`;
+  const [wssUrl, setWssUrl] = useState(defaultWss);
+  const [wssSaved, setWssSaved] = useState(false);
+
+  useEffect(() => {
+    const stored = localStorage.getItem(WSS_STORAGE_KEY);
+    if (stored) setWssUrl(stored);
+  }, []);
+
+  function saveWssUrl() {
+    const trimmed = wssUrl.trim();
+    if (!trimmed.startsWith("wss://") && !trimmed.startsWith("ws://")) {
+      toast.error("URL must start with wss:// or ws://");
+      return;
+    }
+    localStorage.setItem(WSS_STORAGE_KEY, trimmed);
+    setWssSaved(true);
+    toast.success("WebSocket URL saved. Reconnect the softphone to apply.");
+    setTimeout(() => setWssSaved(false), 3000);
+  }
+
+  function resetWssUrl() {
+    localStorage.removeItem(WSS_STORAGE_KEY);
+    setWssUrl(defaultWss);
+    setWssSaved(false);
+    toast.success("Reset to default. Reconnect the softphone to apply.");
+  }
 
   async function saveProfile(e: React.FormEvent) {
     e.preventDefault();
@@ -127,6 +157,35 @@ export default function SettingsSection({ user }: Props) {
             <Link href="/dashboard/billing" className="font-medium text-brand-300 hover:text-brand-200">Upgrade to Business</Link>
           </p>
         )}
+      </div>
+
+      {/* Softphone WebSocket URL */}
+      <div className="rounded-2xl border border-white/[0.06] bg-white/[0.02] p-6 space-y-4">
+        <div>
+          <h2 className="text-lg font-semibold text-white">Softphone WebSocket</h2>
+          <p className="mt-1 text-sm text-white/45">
+            WebSocket URL for the WebRTC softphone. Must point to the Asterisk WSS endpoint (port 8089).
+            Change this if your PBX is on a different hostname.
+          </p>
+        </div>
+        <div className="flex gap-3">
+          <input
+            className="flex-1 rounded-xl border border-white/[0.08] bg-white/[0.04] px-4 py-2.5 text-sm font-mono text-white placeholder:text-white/20 focus:border-brand-500/50 focus:outline-none"
+            value={wssUrl}
+            onChange={(e) => { setWssUrl(e.target.value); setWssSaved(false); }}
+            placeholder="wss://ws.innotel.us:8089/ws"
+          />
+          <button type="button" onClick={saveWssUrl} disabled={wssSaved}
+            className={`btn-primary px-4 py-2 text-sm ${wssSaved ? "opacity-50" : ""}`}>
+            {wssSaved ? "Saved ✓" : "Save"}
+          </button>
+          <button type="button" onClick={resetWssUrl}
+            className="btn-ghost px-4 py-2 text-sm">Reset</button>
+        </div>
+        <p className="text-xs text-white/25">
+          Current: <code className="text-brand-300">{localStorage.getItem(WSS_STORAGE_KEY) || defaultWss}</code>
+          {localStorage.getItem(WSS_STORAGE_KEY) && <span className="text-sun-400"> (custom)</span>}
+        </p>
       </div>
 
       {/* Integrations */}

@@ -303,10 +303,8 @@ if [ "$START_WEB_UI" = "1" ]; then
   if [ "$CERT_SUBJECT" = "buildkitsandbox" ] || [ ! -f "$CERT_FILE" ]; then
     echo ">>> Regenerating self-signed TLS cert with proper SANs..."
     HOSTNAME_VAL="${HOSTNAME:-voice.innotel.us}"
-    # Extract LAN IP (first non-loopback IPv4)
-    LAN_IP=$(ip -4 addr show scope global 2>/dev/null | grep -oP '(?<=inet\s)\d+(\.\d+){3}' | head -1)
-    SAN_LIST="DNS:${HOSTNAME_VAL},DNS:freepbx"
-    [ -n "$LAN_IP" ] && SAN_LIST="${SAN_LIST},IP:${LAN_IP}"
+    # Build SAN list with all expected hostnames
+    SAN_LIST="DNS:${HOSTNAME_VAL},DNS:voice.innotel.us,DNS:pbx.innotel.us,DNS:ws.innotel.us,DNS:freepbx"
     SAN_LIST="${SAN_LIST},IP:127.0.0.1"
 
     mkdir -p /etc/asterisk/keys/integration

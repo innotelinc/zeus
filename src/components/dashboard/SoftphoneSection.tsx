@@ -52,10 +52,15 @@ export default function SoftphoneSection({ extensions }: Props) {
 
   const wssUrl = useMemo(() => {
     if (typeof window === "undefined") return "wss://localhost:8089/ws";
-    return (
-      process.env.NEXT_PUBLIC_FREEPBX_WSS_URL ??
-      `wss://${window.location.hostname}:8089/ws`
-    );
+    // 1. User override from Settings (localStorage)
+    const stored = localStorage.getItem("wssUrl");
+    if (stored) return stored;
+    // 2. Env var (set in docker-compose)
+    if (process.env.NEXT_PUBLIC_FREEPBX_WSS_URL) {
+      return process.env.NEXT_PUBLIC_FREEPBX_WSS_URL;
+    }
+    // 3. Fallback: same hostname as dashboard
+    return `wss://${window.location.hostname}:8089/ws`;
   }, []);
 
   const iceServers = useMemo(() => {
