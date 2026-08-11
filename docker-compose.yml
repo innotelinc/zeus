@@ -36,6 +36,9 @@ services:
       # Docker as the container id) — pin it so the server listens on all
       # local interfaces (0.0.0.0) instead of failing with EADDRNOTAVAIL.
       - HOSTNAME=0.0.0.0
+      # ── Session ──
+      - SESSION_SECRET=${SESSION_SECRET:-}
+      - SESSION_SECURE=${SESSION_SECURE:-false}
     healthcheck:
       # No `-f`: the health endpoint returns 503 when >=2 external services
       # (FreePBX/VoIP.ms/Stripe) are down. The container is healthy as long as

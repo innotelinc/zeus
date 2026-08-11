@@ -19,35 +19,49 @@ export default function LoginPage() {
     setError(null);
     setLoading(true);
 
+    let data: { success: boolean } | undefined;
     try {
-      const data = await api<{ success: boolean }>("/api/auth/login", {
+      data = await api<{ success: boolean }>("/api/auth/login", {
         method: "POST",
         body: JSON.stringify({ email, password }),
       });
-
-      if (data?.success) {
-        // Verify the session cookie was stored before navigating.
-        // Some browser/network configurations delay Set-Cookie processing.
-        try {
-          const me = await api<{ user?: unknown }>("/api/auth/me");
-          if (me?.user) {
-            router.push("/dashboard");
-            return;
-          }
-        } catch {
-          // session not ready yet — try a short delay then navigate anyway
-        }
-        // Fallback: navigate after a brief delay to let the cookie settle
-        setTimeout(() => router.push("/dashboard"), 200);
-        return;
-      } else {
-        setError("Unexpected response from server. Please try again.");
-      }
     } catch (e) {
       setError(e instanceof Error ? e.message : "Login failed");
-    } finally {
       setLoading(false);
+      return;
     }
+
+    if (!data?.success) {
+      setError("Unexpected response from server. Please try again.");
+      setLoading(false);
+      return;
+    }
+
+    // Verify the session cookie was stored before navigating.
+    try {
+      const me = await api<{ user?: unknown }>("/api/auth/me");
+      if (me?.user) {
+        router.push("/dashboard");
+        return;
+      }
+    } catch {
+      // session not ready yet — retry after a short delay
+    }
+    // Retry after a delay — cookies may need time to settle in the browser
+    setTimeout(async () => {
+      try {
+        const me = await api<{ user?: unknown }>("/api/auth/me");
+        if (me?.user) {
+          router.push("/dashboard");
+          return;
+        }
+      } catch {
+        // still not ready
+      }
+      // If session still isn't valid, show an error instead of navigating
+      setError("Session not established. Please try logging in again.");
+      setLoading(false);
+    }, 500);
   }
 
   return (

@@ -152,6 +152,7 @@ export default function FaxSection({ faxAccount, faxes: initialFaxes, numbers }:
 
       const res = await fetch("/api/fax/send", {
         method: "POST",
+        credentials: "include",
         body: formData,
       });
 

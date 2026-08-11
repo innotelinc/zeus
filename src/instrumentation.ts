@@ -11,10 +11,14 @@ export async function register() {
 
     initAmiHandler();
 
-    startAmi().then(() => {
-      console.log("AMI: Client started and event handlers registered");
+    startAmi().then((client) => {
+      if (client.isConnected) {
+        console.log("AMI: Client started and event handlers registered");
+      } else {
+        console.warn("AMI: Client initialized but not connected — check credentials / network");
+      }
     }).catch((err: Error) => {
-      console.warn("AMI: Could not start client:", err.message);
+      console.error("AMI: Unexpected error during startup:", err.message);
     });
   }
 }

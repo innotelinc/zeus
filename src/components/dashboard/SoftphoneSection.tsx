@@ -1,8 +1,9 @@
 "use client";
 
 import { useState, useEffect, useRef, useMemo } from "react";
-import { UserAgent, Registerer, Inviter, SessionState } from "sip.js";
+import { UserAgent, Registerer, SessionState } from "sip.js";
 import type { FreePBXExtension } from "@/lib/types";
+import { api } from "@/lib/client-api";
 import { PhoneIcon } from "@/components/icons";
 import { useToast } from "@/components/ToastProvider";
 
@@ -43,6 +44,9 @@ export default function SoftphoneSection({ extensions }: Props) {
   const callTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const remoteAudioRef = useRef<HTMLAudioElement | null>(null);
   const stateListenerRefs = useRef<Array<{ remove: () => void }>>([]);
+  const originatingRef = useRef(false);
+  const originateTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const remotePartyRef = useRef("");
 
   const selectedExt = extensions.find((e) => e.id === selectedExtId);
 
@@ -75,6 +79,10 @@ export default function SoftphoneSection({ extensions }: Props) {
     if (autoRejectTimerRef.current) {
       clearTimeout(autoRejectTimerRef.current);
       autoRejectTimerRef.current = null;
+    }
+    if (originateTimeoutRef.current) {
+      clearTimeout(originateTimeoutRef.current);
+      originateTimeoutRef.current = null;
     }
     if (callTimerRef.current) {
       clearInterval(callTimerRef.current);
@@ -124,7 +132,21 @@ export default function SoftphoneSection({ extensions }: Props) {
 
       userAgent.delegate = {
         onInvite: (invitation) => {
+          // If we originated this call via AMI, auto-answer the callback
+          if (originatingRef.current) {
+            originatingRef.current = false;
+            if (originateTimeoutRef.current) {
+              clearTimeout(originateTimeoutRef.current);
+              originateTimeoutRef.current = null;
+            }
+            // acceptInvitation handles Established/Terminated listeners
+            acceptInvitation(invitation, "outbound");
+            return;
+          }
+
+          // Regular incoming call
           const remoteId = invitation.remoteIdentity.uri.user ?? "Unknown";
+          remotePartyRef.current = remoteId;
           setIncomingCaller(remoteId);
           setCallState("ringing-in");
           pendingInvitationRef.current = invitation;
@@ -198,64 +220,63 @@ export default function SoftphoneSection({ extensions }: Props) {
   }
 
   async function makeCall() {
-    const userAgent = userAgentRef.current;
-    if (!userAgent || !dialNumber.trim()) return;
+    if (!selectedExt || !dialNumber.trim()) return;
 
     setCallState("ringing-out");
     const targetNumber = dialNumber.trim();
 
+    // Set originating state BEFORE the async API call — Asterisk's INVITE
+    // may arrive via WebSocket while we're waiting for the HTTP response.
+    originatingRef.current = true;
+    remotePartyRef.current = targetNumber;
+
+    // Use AMI Originate for outbound calls through the PBX trunk.
+    // Asterisk will call the user's extension back, and the onInvite
+    // handler auto-answers it (see originatingRef check below).
     try {
-      const domain = new URL(wssUrl).hostname;
-      const uri = UserAgent.makeURI(`sip:${targetNumber}@${domain}`);
-      if (!uri) {
-        toast.error("Invalid phone number");
-        setCallState("idle");
-        return;
-      }
-
-      const inviter = new Inviter(userAgent, uri, {
-        sessionDescriptionHandlerOptions: {
-          constraints: { audio: true, video: false },
+      const data = await api<{ success: boolean; destination: string }>(
+        "/api/ami/originate",
+        {
+          method: "POST",
+          body: JSON.stringify({
+            extension_id: selectedExt.id,
+            destination: targetNumber,
+          }),
         },
-      });
+      );
 
-      const session: SipSession = inviter;
-      const sub = inviter.stateChange;
-      sub.addListener((state: SessionState) => {
-        if (state === SessionState.Established) {
-          setCallState("in-call");
-          startCallTimer(session, "outbound");
-          attachMedia(session);
-        } else if (state === SessionState.Terminated) {
-          endCallToIdle();
-        }
-      });
-
-      await inviter.invite();
+      if (data?.success) {
+        // Safety timeout: if Asterisk doesn't call back within 10s, reset
+        originateTimeoutRef.current = setTimeout(() => {
+          if (originatingRef.current) {
+            originatingRef.current = false;
+            remotePartyRef.current = "";
+            toast.error("Call setup timed out — please try again.");
+            setCallState("idle");
+            setDialNumber("");
+          }
+        }, 10_000);
+      } else {
+        throw new Error("Originate request failed");
+      }
     } catch (e) {
       toast.error(e instanceof Error ? e.message : "Call failed");
       setCallState("idle");
+      originatingRef.current = false;
+      remotePartyRef.current = "";
     }
   }
 
-  async function answerCall() {
-    const invitation = pendingInvitationRef.current;
-    if (!invitation) return;
-
+  /** Accept an incoming invitation (shared by manual answer and auto-answer). */
+  async function acceptInvitation(invitation: SipSession, direction: "inbound" | "outbound") {
     setCallState("in-call");
-    setIncomingCaller("");
-
-    if (autoRejectTimerRef.current) {
-      clearTimeout(autoRejectTimerRef.current);
-      autoRejectTimerRef.current = null;
-    }
 
     try {
       const sub = invitation.stateChange;
       sub.addListener((state: SessionState) => {
         if (state === SessionState.Established) {
           attachMedia(invitation);
-          startCallTimer(invitation, "inbound");
+          startCallTimer(invitation, direction);
         } else if (state === SessionState.Terminated) {
           endCallToIdle();
         }
@@ -266,12 +287,25 @@ export default function SoftphoneSection({ extensions }: Props) {
           constraints: { audio: true, video: false },
         },
       });
-      pendingInvitationRef.current = null;
     } catch (e) {
       toast.error(e instanceof Error ? e.message : "Failed to answer call");
-      setCallState("idle");
-      pendingInvitationRef.current = null;
+      endCallToIdle();
     }
+  }
+
+  async function answerCall() {
+    const invitation = pendingInvitationRef.current;
+    if (!invitation) return;
+
+    setIncomingCaller("");
+
+    if (autoRejectTimerRef.current) {
+      clearTimeout(autoRejectTimerRef.current);
+      autoRejectTimerRef.current = null;
+    }
+
+    pendingInvitationRef.current = null;
+    await acceptInvitation(invitation, "inbound");
   }
 
   function rejectCall() {
@@ -288,6 +322,9 @@ export default function SoftphoneSection({ extensions }: Props) {
 
   function hangup() {
     const call = activeCallRef.current;
+    const extId = selectedExt?.id;
+
+    // Send SIP BYE (primary hangup — terminates the signaling)
     if (call?.session) {
       try {
         call.session.bye?.();
@@ -295,6 +332,16 @@ export default function SoftphoneSection({ extensions }: Props) {
         // ignore
       }
     }
+
+    // Also request AMI channel hangup as a best-effort cleanup
+    // for any lingering channels (fire-and-forget)
+    if (extId) {
+      api("/api/ami/hangup", {
+        method: "POST",
+        body: JSON.stringify({ extension_id: extId }),
+      }).catch(() => {});
+    }
+
     endCallToIdle();
   }
 
@@ -353,7 +400,14 @@ export default function SoftphoneSection({ extensions }: Props) {
     if (callTimerRef.current) {
       clearInterval(callTimerRef.current);
       callTimerRef.current = null;
-    }      setCallDuration(0);
+    }
+    if (originateTimeoutRef.current) {
+      clearTimeout(originateTimeoutRef.current);
+      originateTimeoutRef.current = null;
+    }
+    originatingRef.current = false;
+    remotePartyRef.current = "";
+    setCallDuration(0);
     activeCallRef.current = null;
     setMuted(false);
     setDialNumber("");
@@ -369,7 +423,7 @@ export default function SoftphoneSection({ extensions }: Props) {
     const start = Date.now();
     activeCallRef.current = {
       session,
-      remoteId: "",
+      remoteId: remotePartyRef.current,
       direction,
       startTime: start,
       muted: false,
@@ -428,9 +482,9 @@ export default function SoftphoneSection({ extensions }: Props) {
           <PhoneIcon size={18} className={callState === "in-call" ? "text-mint-400" : callState === "ringing-in" ? "text-sun-400 animate-pulse" : ""} />
           {callState === "idle" && "WebRTC Softphone — Click to open"}
           {callState === "disconnected" && "Softphone — Connect an extension"}
-          {callState === "in-call" && `On call · ${formatDuration(callDuration)}`}
+          {callState === "in-call" && `📞 ${activeCallRef.current?.remoteId || "On call"} · ${formatDuration(callDuration)}`}
           {callState === "ringing-in" && `Incoming from ${incomingCaller}`}
-          {callState === "held" && `On hold · ${formatDuration(callDuration)}`}
+          {callState === "held" && `⏸ ${activeCallRef.current?.remoteId || "On hold"} · ${formatDuration(callDuration)}`}
           {callState === "ringing-out" && `Calling ${dialNumber}...`}
           {callState === "registering" && "Connecting..."}
         </button>
@@ -577,7 +631,9 @@ export default function SoftphoneSection({ extensions }: Props) {
                       <div className="text-lg font-semibold text-white">
                         {callState === "held" ? "On Hold" : callState === "ringing-out" ? "Ringing..." : "Connected"}
                       </div>
-                      <div className="text-sm text-white/45">{dialNumber || "In call"}</div>
+                      <div className="text-sm text-white/45">
+                        {activeCallRef.current?.remoteId || "In call"}
+                      </div>
                       <div className="mt-1 font-mono text-2xl font-bold text-white">
                         {formatDuration(callDuration)}
                       </div>

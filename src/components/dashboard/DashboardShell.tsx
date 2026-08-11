@@ -53,7 +53,9 @@ export function DashboardShell({ user, extensions, children }: Props) {
   useEffect(() => {
     async function poll() {
       try {
-        const res = await fetch("/api/ami/status");
+        const res = await fetch("/api/ami/status", {
+          credentials: "include",
+        });
         const data = await res.json();
         setAmiConnected(data.ami_connected);
         setActiveCalls(data.active_calls ?? 0);

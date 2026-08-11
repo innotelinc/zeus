@@ -62,6 +62,9 @@ export class AmiClient {
   private buffer = "";
   private actionId = 0;
   private connected = false;
+  private connecting = false;
+  private connectResolve: ((value: void) => void) | null = null;
+  private connectReject: ((e: Error) => void) | null = null;
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
   private handlers: AmiEventHandler[] = [];
   private reconnectDelay = 1000;
@@ -80,12 +83,28 @@ export class AmiClient {
   async connect(): Promise<void> {
     const cfg = config();
     if (!cfg.username || !cfg.secret) {
-      console.warn("AMI: ASTERISK_AMI_USERNAME / ASTERISK_AMI_SECRET not set — skipping AMI connection");
-      return;
+      throw new Error(
+        "AMI: ASTERISK_AMI_USERNAME / ASTERISK_AMI_SECRET not set — cannot connect",
+      );
     }
 
+    // Guard against parallel connect() calls
+    if (this.connecting) {
+      throw new Error("AMI: Connection already in progress");
+    }
+    if (this.connected) return;
+
+    this.connecting = true;
     this.shouldReconnect = true;
+
+    // Destroy any stale socket from a previous connection attempt
+    this.socket?.destroy();
+    this.socket = null;
+
     return new Promise((resolve, reject) => {
+      this.connectResolve = resolve;
+      this.connectReject = reject;
+
       this.socket = net.createConnection({ host: cfg.host, port: cfg.port }, () => {
         this.buffer = "";
         // Send login immediately on connect
@@ -95,11 +114,12 @@ export class AmiClient {
 
       this.socket.on("data", (chunk: Buffer) => {
         this.buffer += chunk.toString("utf8");
-        this.processBuffer(resolve, reject);
+        this.processBuffer();
       });
 
       this.socket.on("close", () => {
         this.connected = false;
+        this.connecting = false;
         this.buffer = "";
         console.warn("AMI: Connection closed");
         this.scheduleReconnect();
@@ -108,14 +128,23 @@ export class AmiClient {
       this.socket.on("error", (err: Error) => {
         this.connected = false;
         console.error("AMI: Socket error:", err.message);
-        if (!this.connected) {
-          this.scheduleReconnect();
+        // Reject the connect() promise if we're in the connection phase
+        if (this.connecting) {
+          this.connecting = false;
+          this.connectReject?.(err);
+          this.connectResolve = null;
+          this.connectReject = null;
         }
+        this.scheduleReconnect();
       });
 
       setTimeout(() => {
-        if (!this.connected) {
-          reject(new Error("AMI connection timed out"));
+        if (!this.connected && this.connecting) {
+          const err = new Error("AMI connection timed out");
+          this.connecting = false;
+          reject(err);
+          this.connectResolve = null;
+          this.connectReject = null;
         }
       }, 10_000);
     });
@@ -159,6 +188,44 @@ export class AmiClient {
     this.socket.write(msg);
   }
 
+  /**
+   * List all active channels via CoreShowChannels.
+   * Registers a temporary event listener, sends the action, collects
+   * CoreShowChannel events, and resolves when CoreShowChannelsComplete arrives.
+   */
+  async listChannels(): Promise<string[]> {
+    return new Promise((resolve, reject) => {
+      const channels: string[] = [];
+      let complete = false;
+
+      const unsubscribe = this.onEvent((event) => {
+        if (event.Event === "CoreShowChannel") {
+          channels.push(event.Channel ?? "");
+        }
+        if (event.Event === "CoreShowChannelsComplete") {
+          complete = true;
+          unsubscribe();
+          resolve(channels);
+        }
+      });
+
+      this.sendAction({ Action: "CoreShowChannels" }).catch((err) => {
+        if (!complete) {
+          unsubscribe();
+          reject(err);
+        }
+      });
+
+      // Safety timeout: resolve with what we have after 5s
+      setTimeout(() => {
+        if (!complete) {
+          unsubscribe();
+          resolve(channels);
+        }
+      }, 5_000);
+    });
+  }
+
   /** Disconnect and stop reconnecting. */
   disconnect(): void {
     this.shouldReconnect = false;
@@ -187,10 +254,7 @@ export class AmiClient {
 
   // ─── Internal ───
 
-  private processBuffer(
-    connectResolve?: (value: void) => void,
-    connectReject?: (e: Error) => void,
-  ): void {
+  private processBuffer(): void {
     // Process complete messages (terminated by \r\n\r\n)
     while (true) {
       const idx = this.buffer.indexOf("\r\n\r\n");
@@ -205,16 +269,22 @@ export class AmiClient {
       // Handle login response
       if (parsed.Response === "Success" && !this.connected) {
         this.connected = true;
+        this.connecting = false;
         console.log("AMI: Connected and authenticated");
         this.reconnectDelay = 1000;
-        connectResolve?.();
+        this.connectResolve?.();
+        this.connectResolve = null;
+        this.connectReject = null;
         continue;
       }
 
       if (parsed.Response === "Error") {
         if (!this.connected) {
           const err = new Error(`AMI auth failed: ${parsed.Message ?? "Unknown"}`);
-          connectReject?.(err);
+          this.connecting = false;
+          this.connectReject?.(err);
+          this.connectResolve = null;
+          this.connectReject = null;
           this.scheduleReconnect();
         }
         // Resolve/reject pending action
@@ -319,18 +389,25 @@ export function getAmiClient(): AmiClient {
 export async function startAmi(): Promise<AmiClient> {
   const client = getAmiClient();
 
-  // Auto-login and subscribe to all events
+  // Auto-subscribe to all events once fully booted
   client.onEvent(async (event) => {
-    // On first connect, request full events
     if (event.Event === "FullyBooted") {
       await client.sendAction({ Action: "Events", EventMask: "on" }).catch(() => {});
       console.log("AMI: Subscribed to all events");
     }
   });
 
-  await client.connect();
+  // connect() throws if credentials are missing or connection fails
+  try {
+    await client.connect();
+  } catch (err) {
+    console.warn("AMI: Could not connect:", (err as Error).message);
+    return client;
+  }
 
-  // Heartbeat every 30s
+  if (!client.isConnected) return client;
+
+  // Heartbeat every 30s to keep the connection alive
   setInterval(() => {
     client.ping().catch(() => {});
   }, 30_000).unref();
