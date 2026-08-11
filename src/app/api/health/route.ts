@@ -63,7 +63,7 @@ export async function GET() {
         const url = new URL("https://voip.ms/api/v1/rest.php");
         url.searchParams.set("api_username", user);
         url.searchParams.set("api_password", pass);
-        url.searchParams.set("method", "getAccountInfo");
+        url.searchParams.set("method", "getBalance");
 
         const controller = new AbortController();
         const timeout = setTimeout(() => controller.abort(), 5_000);
@@ -85,33 +85,20 @@ export async function GET() {
       // ── FreePBX API ────────────────────────────────────────
       probe("freepbx_api", async () => {
         const url = process.env.FREEPBX_URL;
-        const clientId = process.env.FREEPBX_CLIENT_ID;
-        const clientSecret = process.env.FREEPBX_CLIENT_SECRET;
-        if (!url || !clientId || !clientSecret)
-          throw new Error("FREEPBX_URL, FREEPBX_CLIENT_ID, or FREEPBX_CLIENT_SECRET not set");
+        if (!url) throw new Error("FREEPBX_URL not set");
 
         const controller = new AbortController();
         const timeout = setTimeout(() => controller.abort(), 5_000);
 
         try {
-          const body = new URLSearchParams();
-          body.set("grant_type", "client_credentials");
-          body.set("client_id", clientId);
-          body.set("client_secret", clientSecret);
-          const res = await fetch(
-            `${url.replace(/\/$/, "")}/admin/api/api/token`,
-            {
-              method: "POST",
-              headers: { "Content-Type": "application/x-www-form-urlencoded" },
-              body: body.toString(),
-              signal: controller.signal,
-            },
-          );
-          if (!res.ok)
-            throw new Error(`FreePBX OAuth2 returned ${res.status}`);
-          const data = (await res.json()) as { access_token?: string };
-          if (!data.access_token)
-            throw new Error("No access_token in FreePBX response");
+          // Simple connectivity check — the OAuth2 token endpoint has a
+          // known PHP bug in some FreePBX versions (Undefined array key
+          // "framework"), so we just verify the FreePBX web UI responds.
+          const res = await fetch(`${url.replace(/\/$/, "")}/admin/`, {
+            signal: controller.signal,
+          });
+          if (!res.ok && res.status >= 500)
+            throw new Error(`FreePBX web UI returned ${res.status}`);
         } finally {
           clearTimeout(timeout);
         }
