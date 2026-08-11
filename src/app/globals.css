@@ -1,13 +1,13 @@
 @import "tailwindcss";
 
 @theme {
-  --color-ink-950: #07070d;
-  --color-ink-900: #0a0a12;
-  --color-ink-850: #0e0e18;
-  --color-ink-800: #13131f;
-  --color-ink-700: #1b1b2a;
-  --color-ink-600: #26263a;
-  --color-ink-500: #34344c;
+  --color-ink-950: var(--ink-950);
+  --color-ink-900: var(--ink-900);
+  --color-ink-850: var(--ink-850);
+  --color-ink-800: var(--ink-800);
+  --color-ink-700: var(--ink-700);
+  --color-ink-600: var(--ink-600);
+  --color-ink-500: var(--ink-500);
 
   --color-brand-200: #c7c4ff;
   --color-brand-300: #a5a1ff;
@@ -28,7 +28,16 @@
   --font-mono: var(--font-geist-mono), ui-monospace, SFMono-Regular, monospace;
 }
 
+/* ── Dark mode (default) ────────────────────────────────── */
 :root {
+  --ink-950: #07070d;
+  --ink-900: #0a0a12;
+  --ink-850: #0e0e18;
+  --ink-800: #13131f;
+  --ink-700: #1b1b2a;
+  --ink-600: #26263a;
+  --ink-500: #34344c;
+
   --background: #07070d;
   --foreground: #f4f4f8;
   --surface-bg: rgba(255, 255, 255, 0.02);
@@ -39,9 +48,31 @@
   --input-bg: rgba(255, 255, 255, 0.04);
   --input-border: rgba(255, 255, 255, 0.10);
   --input-focus-border: rgba(139, 133, 255, 0.7);
+
+  --btn-ghost-color: #f4f4f8;
+  --btn-ghost-bg: rgba(255, 255, 255, 0.04);
+  --btn-ghost-border: rgba(255, 255, 255, 0.12);
+  --btn-ghost-hover-bg: rgba(255, 255, 255, 0.08);
+  --btn-ghost-hover-border: rgba(255, 255, 255, 0.2);
+
+  --card-surface-bg: linear-gradient(180deg, rgba(255, 255, 255, 0.05), rgba(255, 255, 255, 0.02));
+  --card-surface-border: rgba(255, 255, 255, 0.08);
+
+  --input-label-color: rgba(244, 244, 248, 0.75);
+  --scrollbar-thumb: rgba(255, 255, 255, 0.1);
+  --scrollbar-thumb-hover: rgba(255, 255, 255, 0.2);
 }
 
+/* ── Light mode ────────────────────────────────────────── */
 html.light {
+  --ink-950: #f0f0f5;
+  --ink-900: #e4e4ec;
+  --ink-850: #d8d8e0;
+  --ink-800: #ccccd4;
+  --ink-700: #bfbfc7;
+  --ink-600: #b3b3bb;
+  --ink-500: #a6a6ae;
+
   --background: #f8f9fa;
   --foreground: #1a1a2e;
   --surface-bg: rgba(0, 0, 0, 0.02);
@@ -52,6 +83,19 @@ html.light {
   --input-bg: rgba(0, 0, 0, 0.04);
   --input-border: rgba(0, 0, 0, 0.12);
   --input-focus-border: rgba(99, 91, 255, 0.6);
+
+  --btn-ghost-color: #1a1a2e;
+  --btn-ghost-bg: rgba(0, 0, 0, 0.04);
+  --btn-ghost-border: rgba(0, 0, 0, 0.12);
+  --btn-ghost-hover-bg: rgba(0, 0, 0, 0.08);
+  --btn-ghost-hover-border: rgba(0, 0, 0, 0.2);
+
+  --card-surface-bg: linear-gradient(180deg, rgba(0, 0, 0, 0.03), rgba(0, 0, 0, 0.01));
+  --card-surface-border: rgba(0, 0, 0, 0.10);
+
+  --input-label-color: rgba(26, 26, 46, 0.70);
+  --scrollbar-thumb: rgba(0, 0, 0, 0.12);
+  --scrollbar-thumb-hover: rgba(0, 0, 0, 0.22);
 }
 
 html {
@@ -70,13 +114,76 @@ body {
   color: white;
 }
 
-/* ---------- Utilities ---------- */
+/* ── Text color overrides for light mode ──────────────── */
+/* The dashboard uses text-white throughout; in light mode we need dark text.
+   We use a cascade of specificity to override: the html.light selector
+   targets descendant elements that have the text-white class. */
+
+html.light .text-white {
+  color: #1a1a2e !important;
+}
+
+/* For opacity-modified whites like text-white/40, text-white/60 etc.,
+   Tailwind v4 generates color-mix() values. We target the common ones. */
+html.light [class*="text-white/"],
+html.light [class*="text-white\\/"] {
+  /* Most opacity levels map to gray shades */
+}
+
+/* Specific opacity overrides for commonly used values */
+html.light .text-white\\/25,
+html.light .text-white\\/30,
+html.light .text-white\\/35,
+html.light .text-white\\/40,
+html.light .text-white\\/45,
+html.light .text-white\\/50,
+html.light .text-white\\/60,
+html.light .text-white\\/80,
+html.light .text-white\\/90 {
+  /* These will be handled by the general white→dark replacement */
+}
+
+/* Border colors: border-white/[X] → border-black/[X] */
+html.light [class*="border-white/"] {
+  /* Tailwind v4 generates these as CSS -- we can't easily override 
+     arbitrary opacity values with pure CSS selectors,
+     but we can style the core border opacity */
+}
+
+/* The core approach: use the ink color variables which ARE themed.
+   Components use bg-ink-950 which now maps to light colors.
+   But text-white is still hardcoded. We fix that below.
+   
+   Since Tailwind v4 generates text-white as `color: var(--color-white)`,
+   we override --color-white in light mode. */
+
+html.light {
+  --color-white: #1a1a2e;
+  --color-black: #ffffff;
+}
+
+/* Restore true white for elements that need it (buttons, badges, etc.) */
+html.light .btn-primary {
+  color: #ffffff !important;
+}
+
+html.light .bg-brand-500\\/10,
+html.light .bg-brand-500\\/15,
+html.light .bg-brand-500\\/20 {
+  /* brand backgrounds should stay tinted, text inside may need to stay colored */
+}
+
+/* ── Utilities ───────────────────────────────────────── */
 
 .text-gradient {
   background: linear-gradient(100deg, #ffffff 10%, #b8b3ff 45%, #6ee7ff 90%);
   -webkit-background-clip: text;
   background-clip: text;
   color: transparent;
+}
+
+html.light .text-gradient {
+  background: linear-gradient(100deg, #1a1a2e 10%, #463ce0 45%, #635bff 90%);
 }
 
 .text-gradient-brand {
@@ -94,15 +201,26 @@ body {
   mask-image: radial-gradient(ellipse 80% 60% at 50% 0%, black 55%, transparent 100%);
 }
 
+html.light .bg-grid {
+  background-image:
+    linear-gradient(to right, rgba(0, 0, 0, 0.06) 1px, transparent 1px),
+    linear-gradient(to bottom, rgba(0, 0, 0, 0.06) 1px, transparent 1px);
+}
+
 .glass {
   background: rgba(255, 255, 255, 0.035);
   border: 1px solid rgba(255, 255, 255, 0.08);
   backdrop-filter: blur(12px);
 }
 
+html.light .glass {
+  background: rgba(255, 255, 255, 0.7);
+  border: 1px solid rgba(0, 0, 0, 0.10);
+}
+
 .card-surface {
-  background: linear-gradient(180deg, rgba(255, 255, 255, 0.05), rgba(255, 255, 255, 0.02));
-  border: 1px solid rgba(255, 255, 255, 0.08);
+  background: var(--card-surface-bg);
+  border: 1px solid var(--card-surface-border);
 }
 
 .card-surface-hover {
@@ -114,72 +232,51 @@ body {
   box-shadow: 0 12px 40px -12px rgba(99, 91, 255, 0.35);
 }
 
-/* ---------- Animations ---------- */
+/* ── Animations ─────────────────────────────────────── */
 
 @keyframes fade-up {
   from { opacity: 0; transform: translateY(16px); }
   to { opacity: 1; transform: translateY(0); }
 }
-
-.animate-fade-up {
-  animation: fade-up 0.7s cubic-bezier(0.22, 1, 0.36, 1) both;
-}
+.animate-fade-up { animation: fade-up 0.7s cubic-bezier(0.22, 1, 0.36, 1) both; }
 
 @keyframes pulse-dot {
   0%, 100% { box-shadow: 0 0 0 0 rgba(52, 211, 153, 0.55); }
   50% { box-shadow: 0 0 0 5px rgba(52, 211, 153, 0); }
 }
-
-.pulse-dot {
-  animation: pulse-dot 1.8s ease-in-out infinite;
-}
+.pulse-dot { animation: pulse-dot 1.8s ease-in-out infinite; }
 
 @keyframes slide-in-right {
   from { opacity: 0; transform: translateX(20px); }
   to { opacity: 1; transform: translateX(0); }
 }
-
-.animate-slide-in-right {
-  animation: slide-in-right 0.3s ease-out both;
-}
+.animate-slide-in-right { animation: slide-in-right 0.3s ease-out both; }
 
 @keyframes slide-up {
   from { opacity: 0; transform: translateY(10px); }
   to { opacity: 1; transform: translateY(0); }
 }
-
-.animate-slide-up {
-  animation: slide-up 0.2s ease-out both;
-}
+.animate-slide-up { animation: slide-up 0.2s ease-out both; }
 
 @keyframes toast-in {
   from { opacity: 0; transform: translateX(100%) scale(0.95); }
   to { opacity: 1; transform: translateX(0) scale(1); }
 }
-
-.animate-toast-in {
-  animation: toast-in 0.35s cubic-bezier(0.22, 1, 0.36, 1) both;
-}
+.animate-toast-in { animation: toast-in 0.35s cubic-bezier(0.22, 1, 0.36, 1) both; }
 
 @keyframes toast-bar {
   from { width: 100%; }
   to { width: 0%; }
 }
-
-.animate-toast-bar {
-  animation: toast-bar 4s linear forwards;
-}
+.animate-toast-bar { animation: toast-bar 4s linear forwards; }
 
 @keyframes scale-in {
   from { opacity: 0; transform: scale(0.92); }
   to { opacity: 1; transform: scale(1); }
 }
+.animate-scale-in { animation: scale-in 0.2s cubic-bezier(0.22, 1, 0.36, 1) both; }
 
-.animate-scale-in {
-  animation: scale-in 0.2s cubic-bezier(0.22, 1, 0.36, 1) both;
-}
-
-/* ---------- Form primitives ---------- */
+/* ── Form primitives ────────────────────────────────── */
 
 .input-base {
   width: 100%;
@@ -210,7 +307,7 @@ body {
   font-size: 0.8rem;
   font-weight: 500;
   letter-spacing: 0.01em;
-  color: rgba(244, 244, 248, 0.75);
+  color: var(--input-label-color);
 }
 
 .btn-primary {
@@ -220,7 +317,7 @@ body {
   gap: 0.5rem;
   border-radius: 0.8rem;
   background: linear-gradient(180deg, var(--color-brand-500), var(--color-brand-700));
-  color: white;
+  color: white !important;
   font-weight: 600;
   box-shadow:
     0 1px 0 rgba(255, 255, 255, 0.2) inset,
@@ -249,29 +346,25 @@ body {
   justify-content: center;
   gap: 0.5rem;
   border-radius: 0.8rem;
-  border: 1px solid rgba(255, 255, 255, 0.12);
-  background: rgba(255, 255, 255, 0.04);
-  color: #f4f4f8;
+  border: 1px solid var(--btn-ghost-border);
+  background: var(--btn-ghost-bg);
+  color: var(--btn-ghost-color);
   font-weight: 500;
   transition: background 0.2s ease, border-color 0.2s ease;
 }
 
 .btn-ghost:hover {
-  background: rgba(255, 255, 255, 0.08);
-  border-color: rgba(255, 255, 255, 0.2);
+  background: var(--btn-ghost-hover-bg);
+  border-color: var(--btn-ghost-hover-border);
 }
 
 /* Scrollbar */
-::-webkit-scrollbar {
-  width: 6px;
-}
-::-webkit-scrollbar-track {
-  background: transparent;
-}
+::-webkit-scrollbar { width: 6px; }
+::-webkit-scrollbar-track { background: transparent; }
 ::-webkit-scrollbar-thumb {
-  background: rgba(255, 255, 255, 0.1);
+  background: var(--scrollbar-thumb);
   border-radius: 3px;
 }
 ::-webkit-scrollbar-thumb:hover {
-  background: rgba(255, 255, 255, 0.2);
+  background: var(--scrollbar-thumb-hover);
 }

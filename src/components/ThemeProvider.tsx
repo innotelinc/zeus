@@ -46,31 +46,8 @@ export function ThemeProvider({ children }: { children: ReactNode }) {
       setResolved(r);
       root.classList.remove("light", "dark");
       root.classList.add(r);
-
-      // Set CSS custom properties for theme-aware colors
-      if (r === "light") {
-        root.style.setProperty("--background", "#f8f9fa");
-        root.style.setProperty("--foreground", "#1a1a2e");
-        root.style.setProperty("--surface-bg", "rgba(0,0,0,0.02)");
-        root.style.setProperty("--surface-border", "rgba(0,0,0,0.08)");
-        root.style.setProperty("--text-primary", "#1a1a2e");
-        root.style.setProperty("--text-secondary", "rgba(0,0,0,0.55)");
-        root.style.setProperty("--text-muted", "rgba(0,0,0,0.35)");
-        root.style.setProperty("--input-bg", "rgba(0,0,0,0.04)");
-        root.style.setProperty("--input-border", "rgba(0,0,0,0.12)");
-        root.style.setProperty("--input-focus-border", "rgba(99,91,255,0.6)");
-      } else {
-        root.style.setProperty("--background", "#07070d");
-        root.style.setProperty("--foreground", "#f4f4f8");
-        root.style.setProperty("--surface-bg", "rgba(255,255,255,0.02)");
-        root.style.setProperty("--surface-border", "rgba(255,255,255,0.06)");
-        root.style.setProperty("--text-primary", "#f4f4f8");
-        root.style.setProperty("--text-secondary", "rgba(255,255,255,0.45)");
-        root.style.setProperty("--text-muted", "rgba(255,255,255,0.25)");
-        root.style.setProperty("--input-bg", "rgba(255,255,255,0.04)");
-        root.style.setProperty("--input-border", "rgba(255,255,255,0.10)");
-        root.style.setProperty("--input-focus-border", "rgba(139,133,255,0.7)");
-      }
+      // All theme color overrides are now in globals.css via
+      // html.light {} rules — no inline style injection needed.
     };
 
     apply(theme);
