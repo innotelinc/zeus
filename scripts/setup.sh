@@ -888,6 +888,17 @@ if command -v curl &>/dev/null; then
   fi
 fi
 
+# ─── Fix HTTPS bind address for WebRTC WebSocket ──────────────
+# FreePBX generates http_additional.conf with tlsbindaddr=127.0.0.1:8089
+# which prevents external browsers from connecting to the WSS endpoint.
+# Override to 0.0.0.0 so WebRTC softphones work from any network.
+info "Fixing HTTPS bind address for WebRTC WebSocket (0.0.0.0:8089)"
+if [ -f /etc/asterisk/http_additional.conf ]; then
+  sed -i 's/tlsbindaddr=127.0.0.1:8089/tlsbindaddr=0.0.0.0:8089/' /etc/asterisk/http_additional.conf 2>/dev/null || true
+  asterisk -rx 'core restart now' 2>/dev/null || true
+  log "HTTPS server now bound to 0.0.0.0:8089 for WebRTC WebSocket"
+fi
+
 # ═══════════════════════════════════════════════════════════════
 # PHASE 10 — FAX STACK (IAXModem + HylaFAX + AvantFAX)
 # ═══════════════════════════════════════════════════════════════
