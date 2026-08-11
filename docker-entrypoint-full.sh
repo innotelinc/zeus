@@ -287,9 +287,14 @@ if [ "$START_WEB_UI" = "1" ]; then
   echo ">>> Asterisk is ready — starting web UI..."
 
   # ── WebRTC WSS Transport Setup ─────────────────────────────
-  # FreePBX generates http_additional.conf with tlsbindaddr=127.0.0.1:8089
-  # which blocks external WebRTC connections. Fix bind to 0.0.0.0.
+  # FreePBX generates http_additional.conf with bindaddr=127.0.0.1:8088
+  # and tlsbindaddr=127.0.0.1:8089. Fix both to 0.0.0.0 for external access.
+  # Port 8088 (plain HTTP) is used when Nginx Proxy Manager terminates TLS
+  # and forwards WebSocket connections. Port 8089 (HTTPS) is used for
+  # direct WSS connections (self-signed cert).
   if [ -f /etc/asterisk/http_additional.conf ]; then
+    sed -i 's/^bindaddr=127.0.0.1/bindaddr=0.0.0.0/' \
+      /etc/asterisk/http_additional.conf 2>/dev/null || true
     sed -i 's/tlsbindaddr=127.0.0.1:8089/tlsbindaddr=0.0.0.0:8089/' \
       /etc/asterisk/http_additional.conf 2>/dev/null || true
   fi

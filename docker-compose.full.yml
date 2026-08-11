@@ -37,7 +37,7 @@ services:
       - "80:80"           # FreePBX web UI
       - "5060:5060/udp"   # SIP
       - "5061:5061/tcp"   # SIP TLS
-      - "8088:8088"       # Asterisk HTTP (ARI)
+      - "8088:8088"       # Asterisk HTTP (plain WebSocket for NPM)
       - "8089:8089"       # PJSIP WebSocket (WSS)
       - "5038:5038"       # Asterisk AMI
       - "10000:20000/udp" # RTP
