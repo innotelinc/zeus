@@ -4,7 +4,7 @@ import { useState } from "react";
 import { api } from "@/lib/client-api";
 import type { PhoneNumber, FreePBXExtension } from "@/lib/types";
 import { useToast } from "@/components/ToastProvider";
-import { PlusIcon, RefreshIcon, CheckCircleIcon, SearchIcon, PhoneIcon, XIcon } from "@/components/icons";
+import { PlusIcon, RefreshIcon, CheckCircleIcon, SearchIcon, PhoneIcon, XIcon, TrashIcon, AlertCircleIcon } from "@/components/icons";
 
 interface Props {
   numbers: PhoneNumber[];
@@ -17,6 +17,8 @@ export default function PhoneSection({ numbers: initialNumbers, extensions: init
   const [numbers, setNumbers] = useState(initialNumbers);
   const [extensions, setExtensions] = useState(initialExtensions);
   const [loading, setLoading] = useState(false);
+  const [releasing, setReleasing] = useState<string | null>(null);
+  const [confirmRelease, setConfirmRelease] = useState<string | null>(null);
 
   // DID search
   const [searchMode, setSearchMode] = useState(false);
@@ -57,6 +59,18 @@ export default function PhoneSection({ numbers: initialNumbers, extensions: init
     } catch (e) {
       toast.error(e instanceof Error ? e.message : "Order failed");
     } finally { setLoading(false); }
+  }
+
+  async function releaseNumber(did: string) {
+    setReleasing(did);
+    try {
+      await api(`/api/phone/numbers?did=${encodeURIComponent(did)}`, { method: "DELETE" });
+      setNumbers(prev => prev.filter(n => n.did !== did));
+      setConfirmRelease(null);
+      toast.success(`Number ${did} released.`);
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : "Release failed");
+    } finally { setReleasing(null); }
   }
 
   async function provisionExtension() {
@@ -104,12 +118,40 @@ export default function PhoneSection({ numbers: initialNumbers, extensions: init
     return map[s] ?? map.unknown;
   };
 
+  function numberStatus(n: PhoneNumber) {
+    if (n.status === "active") {
+      const features: string[] = [];
+      if (n.sms_enabled) features.push("SMS");
+      if (n.fax_enabled) features.push("Fax");
+      return { label: "Active", color: "bg-mint-500/10 text-mint-400 border-mint-500/20", features };
+    }
+    if (n.status === "pending") return { label: "Provisioning", color: "bg-sun-400/10 text-sun-400 border-sun-400/20", features: [] };
+    if (n.status === "failed") return { label: "Failed", color: "bg-rose-500/10 text-rose-300 border-rose-500/20", features: [] };
+    return { label: n.status, color: "bg-white/[0.04] text-white/40 border-white/[0.08]", features: [] };
+  }
+
   return (
     <div className="space-y-6">
       <div>
         <h1 className="text-2xl font-semibold tracking-tight text-white">Phone Numbers</h1>
         <p className="mt-1 text-sm text-white/45">Manage your DIDs and FreePBX extensions.</p>
       </div>
+
+      {/* Release confirm */}
+      {confirmRelease && (
+        <div className="rounded-2xl border border-rose-500/20 bg-rose-500/5 p-6 text-center">
+          <div className="flex justify-center mb-3"><AlertCircleIcon size={28} className="text-rose-400" /></div>
+          <p className="font-medium text-white">Release {confirmRelease}?</p>
+          <p className="mt-1 text-sm text-white/40">This number will be removed from your account and returned to the pool. This cannot be undone.</p>
+          <div className="mt-4 flex justify-center gap-3">
+            <button type="button" onClick={() => releaseNumber(confirmRelease)} disabled={releasing === confirmRelease}
+              className="rounded-xl bg-rose-500 px-6 py-2 text-sm font-medium text-white transition hover:bg-rose-600 disabled:opacity-50">
+              {releasing === confirmRelease ? "Releasing..." : "Yes, release it"}
+            </button>
+            <button type="button" onClick={() => setConfirmRelease(null)} className="btn-ghost px-6 py-2 text-sm">Cancel</button>
+          </div>
+        </div>
+      )}
 
       {/* Numbers card */}
       <div className="rounded-2xl border border-white/[0.06] bg-white/[0.02] p-6">
@@ -143,22 +185,33 @@ export default function PhoneSection({ numbers: initialNumbers, extensions: init
           </div>
         ) : (
           <div className="space-y-3">
-            {numbers.map(n => (
-              <div key={n.id} className="flex items-center justify-between rounded-xl border border-white/[0.06] bg-white/[0.02] px-5 py-4">
-                <div className="flex items-center gap-3">
-                  <CheckCircleIcon size={18} className="text-mint-400" />
-                  <div>
-                    <div className="font-mono text-lg font-semibold text-white">{n.did}</div>
-                    <div className="mt-0.5 flex items-center gap-3 text-xs text-white/40">
-                      {n.location && <span>{n.location}</span>}
-                      {n.sms_enabled ? <span className="rounded-full bg-brand-500/10 px-2 py-0.5 text-brand-300">SMS</span> : null}
-                      {n.fax_enabled ? <span className="rounded-full bg-sun-400/10 px-2 py-0.5 text-sun-400">Fax</span> : null}
+            {numbers.map(n => {
+              const st = numberStatus(n);
+              return (
+                <div key={n.id} className="flex items-center justify-between rounded-xl border border-white/[0.06] bg-white/[0.02] px-5 py-4 group">
+                  <div className="flex items-center gap-3 min-w-0">
+                    <CheckCircleIcon size={18} className={n.status === "active" ? "text-mint-400 shrink-0" : "text-white/25 shrink-0"} />
+                    <div className="min-w-0">
+                      <div className="font-mono text-lg font-semibold text-white truncate">{n.did}</div>
+                      <div className="mt-0.5 flex items-center gap-2 text-xs text-white/40 flex-wrap">
+                        {n.location && <span>{n.location}</span>}
+                        {st.features.map(f => (
+                          <span key={f} className={`rounded-full px-2 py-0.5 ${f === "SMS" ? "bg-brand-500/10 text-brand-300" : "bg-sun-400/10 text-sun-400"}`}>{f}</span>
+                        ))}
+                      </div>
                     </div>
                   </div>
+                  <div className="flex items-center gap-2 shrink-0">
+                    <span className={`rounded-full border px-2.5 py-0.5 text-[11px] font-medium ${st.color}`}>{st.label}</span>
+                    <button type="button" onClick={() => setConfirmRelease(n.did)}
+                      className="rounded-lg p-1.5 text-white/20 transition hover:text-rose-400 hover:bg-rose-500/10 opacity-0 group-hover:opacity-100"
+                      title={`Release ${n.did}`}>
+                      <TrashIcon size={15} />
+                    </button>
+                  </div>
                 </div>
-                <span className="rounded-full bg-mint-500/10 px-2.5 py-0.5 text-[11px] font-medium text-mint-400">Active</span>
-              </div>
-            ))}
+              );
+            })}
           </div>
         )}
       </div>

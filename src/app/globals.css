@@ -31,6 +31,27 @@
 :root {
   --background: #07070d;
   --foreground: #f4f4f8;
+  --surface-bg: rgba(255, 255, 255, 0.02);
+  --surface-border: rgba(255, 255, 255, 0.06);
+  --text-primary: #f4f4f8;
+  --text-secondary: rgba(255, 255, 255, 0.45);
+  --text-muted: rgba(255, 255, 255, 0.25);
+  --input-bg: rgba(255, 255, 255, 0.04);
+  --input-border: rgba(255, 255, 255, 0.10);
+  --input-focus-border: rgba(139, 133, 255, 0.7);
+}
+
+html.light {
+  --background: #f8f9fa;
+  --foreground: #1a1a2e;
+  --surface-bg: rgba(0, 0, 0, 0.02);
+  --surface-border: rgba(0, 0, 0, 0.08);
+  --text-primary: #1a1a2e;
+  --text-secondary: rgba(0, 0, 0, 0.55);
+  --text-muted: rgba(0, 0, 0, 0.35);
+  --input-bg: rgba(0, 0, 0, 0.04);
+  --input-border: rgba(0, 0, 0, 0.12);
+  --input-focus-border: rgba(99, 91, 255, 0.6);
 }
 
 html {
@@ -163,23 +184,24 @@ body {
 .input-base {
   width: 100%;
   border-radius: 0.75rem;
-  border: 1px solid rgba(255, 255, 255, 0.1);
-  background: rgba(255, 255, 255, 0.04);
+  border: 1px solid var(--input-border);
+  background: var(--input-bg);
   padding: 0.7rem 0.9rem;
   font-size: 0.925rem;
-  color: #f4f4f8;
+  color: var(--foreground);
   outline: none;
   transition: border-color 0.2s ease, box-shadow 0.2s ease, background 0.2s ease;
 }
 
 .input-base::placeholder {
-  color: rgba(255, 255, 255, 0.32);
+  color: var(--text-muted);
 }
 
 .input-base:focus {
-  border-color: rgba(139, 133, 255, 0.7);
+  border-color: var(--input-focus-border);
   box-shadow: 0 0 0 3px rgba(99, 91, 255, 0.18);
-  background: rgba(255, 255, 255, 0.055);
+  background: var(--input-bg);
+  filter: brightness(1.1);
 }
 
 .input-label {

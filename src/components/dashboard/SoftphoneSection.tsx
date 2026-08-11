@@ -515,7 +515,7 @@ export default function SoftphoneSection({ extensions }: Props) {
                     ) : (
                       <div className="space-y-3">
                         <select
-                          className="input-base"
+                          className="input-base bg-ink-900 text-white"
                           value={selectedExtId}
                           onChange={(e) => setSelectedExtId(e.target.value)}
                         >

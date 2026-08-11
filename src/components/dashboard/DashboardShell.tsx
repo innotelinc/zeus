@@ -20,6 +20,7 @@ import {
 import type { User, FreePBXExtension } from "@/lib/types";
 import { planLabel } from "@/lib/client-api";
 import { ToastProvider } from "@/components/ToastProvider";
+import { ThemeProvider, useTheme } from "@/components/ThemeProvider";
 
 // Lazy-load SoftphoneSection (sip.js) — browser-only WebRTC, must not SSR
 const SoftphoneSection = dynamic(
@@ -44,6 +45,33 @@ const navItems = [
   { href: "/dashboard/settings", label: "Settings", icon: CogIcon },
   { href: "/dashboard/health", label: "Health", icon: HeartPulseIcon },
 ];
+
+function ThemeToggle() {
+  const { theme, setTheme, resolved } = useTheme();
+
+  function cycle() {
+    if (theme === "dark") setTheme("light");
+    else if (theme === "light") setTheme("system");
+    else setTheme("dark");
+  }
+
+  const icons: Record<string, string> = {
+    dark: "🌙",
+    light: "☀️",
+    system: "💻",
+  };
+
+  return (
+    <button
+      type="button"
+      onClick={cycle}
+      className="rounded-lg border border-white/[0.08] bg-white/[0.03] p-2 text-sm transition hover:bg-white/[0.06]"
+      title={`Theme: ${theme} (${resolved})`}
+    >
+      {icons[theme]}
+    </button>
+  );
+}
 
 export function DashboardShell({ user, extensions, children }: Props) {
   const pathname = usePathname();
@@ -76,8 +104,9 @@ export function DashboardShell({ user, extensions, children }: Props) {
       : (pathname?.startsWith(href) ?? false);
 
   return (
+    <ThemeProvider>
     <ToastProvider>
-    <div className="min-h-screen bg-ink-950">
+    <div className="min-h-screen bg-[var(--background)] text-[var(--foreground)]">
       {/* Top bar */}
       <header className="sticky top-0 z-40 border-b border-white/[0.06] bg-ink-950/85 backdrop-blur-xl">
         <div className="mx-auto flex h-16 max-w-7xl items-center justify-between px-5 sm:px-8">
@@ -117,6 +146,8 @@ export function DashboardShell({ user, extensions, children }: Props) {
                 )}
               </svg>
             </button>
+
+            <ThemeToggle />
 
             <div className="flex items-center gap-3">
               <UserIcon size={18} className="text-white/40" />
@@ -193,5 +224,6 @@ export function DashboardShell({ user, extensions, children }: Props) {
       <SoftphoneSection extensions={extensions} />
     </div>
     </ToastProvider>
+    </ThemeProvider>
   );
 }

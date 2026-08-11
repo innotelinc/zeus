@@ -7,6 +7,38 @@ import type { PhoneNumber } from "@/lib/types";
 
 export const dynamic = "force-dynamic";
 
+export async function DELETE(req: Request) {
+  const { user, error } = await requireUser();
+  if (error) return error;
+
+  const { searchParams } = new URL(req.url);
+  const did = searchParams.get("did");
+  if (!did) return badRequest("did query parameter is required");
+
+  // Verify ownership
+  const owned = db
+    .prepare("SELECT id FROM phone_numbers WHERE user_id = ? AND did = ?")
+    .get(user.id, did);
+  if (!owned) {
+    return NextResponse.json({ error: "Number not found" }, { status: 404 });
+  }
+
+  // Release from VoIP.ms
+  try {
+    await voipms.cancelDID(did);
+  } catch (e) {
+    return NextResponse.json(
+      { error: e instanceof Error ? e.message : "VoIP.ms release failed" },
+      { status: 502 },
+    );
+  }
+
+  // Delete from local DB
+  db.prepare("DELETE FROM phone_numbers WHERE user_id = ? AND did = ?").run(user.id, did);
+
+  return NextResponse.json({ success: true });
+}
+
 export async function POST(req: Request) {
   const { user, error } = await requireUser();
   if (error) return error;

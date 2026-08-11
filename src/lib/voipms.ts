@@ -152,6 +152,11 @@ export async function getSMS(params: {
   });
 }
 
+/** Cancel (release) a DID from the account. */
+export async function cancelDID(did: string): Promise<{ status: string }> {
+  return call("cancelDID", { did });
+}
+
 /** Get CDRs (Call Detail Records). */
 export async function getCDR(params: {
   date_from?: string;
