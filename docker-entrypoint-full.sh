@@ -285,6 +285,80 @@ done
 
 if [ "$START_WEB_UI" = "1" ]; then
   echo ">>> Asterisk is ready — starting web UI..."
+
+  # ── WebRTC WSS Transport Setup ─────────────────────────────
+  # FreePBX generates http_additional.conf with tlsbindaddr=127.0.0.1:8089
+  # which blocks external WebRTC connections. Fix bind to 0.0.0.0.
+  if [ -f /etc/asterisk/http_additional.conf ]; then
+    sed -i 's/tlsbindaddr=127.0.0.1:8089/tlsbindaddr=0.0.0.0:8089/' \
+      /etc/asterisk/http_additional.conf 2>/dev/null || true
+  fi
+
+  # Ensure PJSIP WSS transport config exists for WebRTC softphone
+  if [ ! -f /etc/asterisk/pjsip_wss.conf ]; then
+    cat > /etc/asterisk/pjsip_wss.conf <<'WSSEOF'
+[transport-wss]
+type = transport
+protocol = wss
+bind = 0.0.0.0:8089
+
+[webrtc-template](!)
+type = endpoint
+transport = transport-wss
+context = from-internal
+disallow = all
+allow = ulaw,alaw,opus,gsm,g722
+webrtc = yes
+dtls_auto_generate_cert = yes
+use_avpf = yes
+media_encryption = dtls
+ice_support = yes
+direct_media = no
+dtmf_mode = rfc4733
+force_rport = yes
+rewrite_contact = yes
+rtp_symmetric = yes
+WSSEOF
+    grep -q 'pjsip_wss.conf' /etc/asterisk/pjsip.conf 2>/dev/null || \
+      echo '#include pjsip_wss.conf' >> /etc/asterisk/pjsip.conf
+  fi
+
+  # Restart Asterisk to pick up HTTP bind change + WSS transport
+  asterisk -rx 'core restart now' 2>/dev/null || true
+  sleep 3
+
+  # Create PJSIP WebRTC endpoints for all extensions in the portal DB
+  if [ -f /var/data/pbx/db.sqlite ]; then
+    sqlite3 /var/data/pbx/db.sqlite \
+      "SELECT extension_id, COALESCE(extension_secret, 'webrtc') FROM freepbx_extensions" 2>/dev/null | \
+    while IFS='|' read -r ext secret; do
+      # Skip empty lines
+      [ -z "$ext" ] && continue
+      echo ">>> Creating PJSIP WebRTC endpoint for extension $ext"
+      cat > "/etc/asterisk/pjsip_ext_${ext}.conf" <<WRTCEOF
+[$ext](webrtc-template)
+auth = ${ext}-auth
+aors = ${ext}-aor
+
+[${ext}-auth]
+type = auth
+auth_type = userpass
+password = ${secret}
+username = ${ext}
+
+[${ext}-aor]
+type = aor
+max_contacts = 5
+WRTCEOF
+      grep -q "pjsip_ext_${ext}.conf" /etc/asterisk/pjsip.conf 2>/dev/null || \
+        echo "#include pjsip_ext_${ext}.conf" >> /etc/asterisk/pjsip.conf
+    done
+
+    # Reload PJSIP to pick up new endpoints
+    asterisk -rx 'module reload res_pjsip.so' 2>/dev/null || true
+    echo ">>> WebRTC endpoints provisioned"
+  fi
+
   # Start Apache in background (web UI is now safe to trigger reloads)
   apache2ctl -D FOREGROUND &
 fi
