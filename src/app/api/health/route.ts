@@ -16,7 +16,6 @@ interface HealthResponse {
   timestamp: string;
   services: {
     database: ProbeResult;
-    voipms_api: ProbeResult;
     freepbx_api: ProbeResult;
     asterisk_ami: ProbeResult;
     stripe: ProbeResult;
@@ -46,40 +45,12 @@ export async function GET() {
   // ── Run all probes concurrently (avoids sequential timeouts
   //    exceeding the Docker healthcheck timeout when external
   //    services are unreachable). ─────────────────────────────
-  const [dbResult, voipmsResult, freepbxResult, amiResult, stripeResult] =
+  const [dbResult, freepbxResult, amiResult, stripeResult] =
     await Promise.all([
       // ── Database (SQLite) ──────────────────────────────────
       probe("database", async () => {
         const row = db.prepare("SELECT 1 as ok").get() as { ok: number };
         if (row.ok !== 1) throw new Error("Unexpected query result");
-      }),
-
-      // ── VoIP.ms API ────────────────────────────────────────
-      probe("voipms_api", async () => {
-        const user = process.env.VOIPMS_API_USERNAME;
-        const pass = process.env.VOIPMS_API_PASSWORD;
-        if (!user || !pass) throw new Error("VOIPMS_API_USERNAME or VOIPMS_API_PASSWORD not set");
-
-        const url = new URL("https://voip.ms/api/v1/rest.php");
-        url.searchParams.set("api_username", user);
-        url.searchParams.set("api_password", pass);
-        url.searchParams.set("method", "getBalance");
-
-        const controller = new AbortController();
-        const timeout = setTimeout(() => controller.abort(), 5_000);
-
-        try {
-          const res = await fetch(url.toString(), {
-            signal: controller.signal,
-          });
-          if (!res.ok)
-            throw new Error(`VoIP.ms API returned ${res.status}`);
-          const data = (await res.json()) as { status?: string };
-          if (data.status !== "success")
-            throw new Error(`VoIP.ms API: ${data.status ?? "unknown"}`);
-        } finally {
-          clearTimeout(timeout);
-        }
       }),
 
       // ── FreePBX API ────────────────────────────────────────
@@ -135,7 +106,6 @@ export async function GET() {
   // ── Aggregate status ───────────────────────────────────────
   const services: HealthResponse["services"] = {
     database: dbResult,
-    voipms_api: voipmsResult,
     freepbx_api: freepbxResult,
     asterisk_ami: amiResult,
     stripe: stripeResult,

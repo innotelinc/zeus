@@ -15,6 +15,7 @@ import {
   CogIcon,
   LogoutIcon,
   UserIcon,
+  HeartPulseIcon,
 } from "@/components/icons";
 import type { User, FreePBXExtension } from "@/lib/types";
 import { planLabel } from "@/lib/client-api";
@@ -41,6 +42,7 @@ const navItems = [
   { href: "/dashboard/history", label: "Call History", icon: HistoryIcon },
   { href: "/dashboard/billing", label: "Billing", icon: CreditCardIcon },
   { href: "/dashboard/settings", label: "Settings", icon: CogIcon },
+  { href: "/dashboard/health", label: "Health", icon: HeartPulseIcon },
 ];
 
 export function DashboardShell({ user, extensions, children }: Props) {
