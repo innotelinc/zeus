@@ -315,21 +315,44 @@ export async function queryExtensionState(
   }
 }
 
-/** Query PJSIP endpoint status via AMI for extensions not covered by hints. */
+/** Query PJSIP endpoint status via AMI for extensions not covered by hints.
+ *  PJSIPShowEndpoint returns data as EndpointDetail events, not key-value pairs. */
 async function queryPjsipEndpointState(
   client: AmiClient,
   extensionId: string,
 ): Promise<string | null> {
   try {
-    const result = await client.sendAction({
+    let deviceState: string | null = null;
+    let complete = false;
+
+    const unsubscribe = client.onEvent((event) => {
+      if (event.Event === "EndpointDetail" && event.ObjectName === extensionId) {
+        if (event.DeviceState) {
+          deviceState = mapAmiExtensionStatus(event.DeviceState);
+        }
+      }
+      if (event.Event === "EndpointDetailComplete") {
+        complete = true;
+        unsubscribe();
+      }
+    });
+
+    await client.sendAction({
       Action: "PJSIPShowEndpoint",
       Endpoint: extensionId,
     });
-    // DeviceState is a direct key in the parsed AMI response
-    if (result.DeviceState) {
-      return mapAmiExtensionStatus(result.DeviceState);
+
+    // Wait up to 5s for EndpointDetailComplete
+    const start = Date.now();
+    while (!complete && Date.now() - start < 5_000) {
+      await new Promise((r) => setTimeout(r, 50));
     }
-    return null;
+
+    if (!complete) {
+      unsubscribe();
+    }
+
+    return deviceState;
   } catch {
     return null;
   }
