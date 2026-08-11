@@ -4,7 +4,7 @@ import bcrypt from "bcryptjs";
 import { randomUUID } from "node:crypto";
 import db from "@/lib/db";
 import { registerSchema } from "@/lib/validators";
-import { createSessionToken, SESSION_COOKIE } from "@/lib/auth";
+import { createSessionToken, SESSION_COOKIE, getSessionCookieOptions } from "@/lib/auth";
 import { rateLimitByIp } from "@/lib/rate-limit";
 import { notifyAtlasSignup } from "@/lib/atlas-api";
 import { buildWelcomeEmail } from "@/lib/mail-templates";
@@ -60,13 +60,11 @@ export async function POST(req: Request) {
   ).run(id, email.toLowerCase(), name, passwordHash, plan, phone ?? null);
 
   const store = await cookies();
-  store.set(SESSION_COOKIE, createSessionToken(id), {
-    httpOnly: true,
-    sameSite: "lax",
-    secure: process.env.SESSION_SECURE === "true",
-    path: "/",
-    maxAge: 60 * 60 * 24 * 7,
-  });
+  store.set(
+    SESSION_COOKIE,
+    createSessionToken(id),
+    getSessionCookieOptions(headersList.get("host")),
+  );
 
   // Send welcome email (async, non-blocking)
   buildWelcomeEmail({ name, email: email.toLowerCase(), plan }).catch(() => {});

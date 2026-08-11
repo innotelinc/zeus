@@ -3,7 +3,7 @@ import { cookies, headers } from "next/headers";
 import bcrypt from "bcryptjs";
 import db from "@/lib/db";
 import { loginSchema } from "@/lib/validators";
-import { createSessionToken, SESSION_COOKIE } from "@/lib/auth";
+import { createSessionToken, SESSION_COOKIE, getSessionCookieOptions } from "@/lib/auth";
 import { rateLimitByIp } from "@/lib/rate-limit";
 
 export const dynamic = "force-dynamic";
@@ -51,13 +51,11 @@ export async function POST(req: Request) {
   }
 
   const store = await cookies();
-  store.set(SESSION_COOKIE, createSessionToken(user.id), {
-    httpOnly: true,
-    sameSite: "lax",
-    secure: process.env.SESSION_SECURE === "true",
-    path: "/",
-    maxAge: 60 * 60 * 24 * 7,
-  });
+  store.set(
+    SESSION_COOKIE,
+    createSessionToken(user.id),
+    getSessionCookieOptions(headersList.get("host")),
+  );
 
   return NextResponse.json({ success: true });
 }

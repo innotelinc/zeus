@@ -45,7 +45,62 @@ function getSecret(): string {
 }
 
 export const SESSION_COOKIE = "pbx_session";
-const TTL_MS = 1000 * 60 * 60 * 24 * 7; // 7 days
+export const SESSION_MAX_AGE = 60 * 60 * 24 * 7; // 7 days
+const TTL_MS = SESSION_MAX_AGE * 1000;
+
+/** Detect the best cookie domain from the request Host header. */
+function detectDomain(host: string): string | undefined {
+  // Strip port if present
+  const hostname = host.replace(/:\d+$/, "");
+
+  // Don't set domain for localhost or IP addresses
+  if (
+    hostname === "localhost" ||
+    /^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}$/.test(hostname) ||
+    hostname.startsWith("[")
+  ) {
+    return undefined;
+  }
+
+  // Prepend dot for subdomain portability (e.g. voice.innotel.us → .innotel.us)
+  return `.${hostname}`;
+}
+
+/** Shared cookie options for session cookies across all routes. */
+export function getSessionCookieOptions(host?: string | null): {
+  httpOnly: true;
+  sameSite: "lax" | "strict" | "none";
+  secure: boolean;
+  domain?: string;
+  path: string;
+  maxAge: number;
+} {
+  const secure = process.env.SESSION_SECURE === "true";
+  const sameSiteRaw = (process.env.SESSION_SAMESITE ?? "lax").toLowerCase();
+  const sameSite =
+    sameSiteRaw === "strict" || sameSiteRaw === "none"
+      ? sameSiteRaw
+      : "lax";
+
+  const opts: ReturnType<typeof getSessionCookieOptions> = {
+    httpOnly: true,
+    sameSite,
+    secure: secure || sameSite === "none",
+    path: "/",
+    maxAge: SESSION_MAX_AGE,
+  };
+
+  // 1. Explicit SESSION_DOMAIN env var (highest priority)
+  const envDomain = process.env.SESSION_DOMAIN?.trim();
+  if (envDomain) {
+    opts.domain = envDomain.startsWith(".") ? envDomain : `.${envDomain}`;
+  } else if (host) {
+    // 2. Auto-detect from request Host header
+    opts.domain = detectDomain(host);
+  }
+
+  return opts;
+}
 
 function sign(payload: string): string {
   return crypto
