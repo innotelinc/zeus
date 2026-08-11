@@ -1,7 +1,10 @@
 #!/bin/bash
 # ═══════════════════════════════════════════════════════════════
 # Innotel PBX Full Stack — Docker Entrypoint
-# Starts Apache, PHP-FPM, and Asterisk in foreground.
+# Starts MariaDB/helpers, then Asterisk in the background, waits for it to
+# become ready, and only then starts the web stack (PHP-FPM + Apache) so the
+# FreePBX UI can never trigger a reload before Asterisk is up. Asterisk runs
+# as the foreground process keeping the container alive.
 # ═══════════════════════════════════════════════════════════════
 set -e
 
@@ -235,8 +238,57 @@ if [ -f /var/www/html/admin/modules/ucp/node/node_modules/.package-lock.json ] 2
   echo ">>> UCP Node started"
 fi
 
-# Start Apache in background
-apache2ctl -D FOREGROUND &
+# ── Start Asterisk BEFORE the web UI ────────────────────────
+# The FreePBX web UI (Apache) must not come up until Asterisk is
+# ready. Otherwise an "Apply Config" click during the first seconds
+# after boot triggers a reload against a dead Asterisk control socket
+# and fails with "Unable to connect to remote asterisk (does
+# /var/run/asterisk/asterisk.ctl exist?)" — surfaced by the GUI as
+# "Unknown Error. Please Run: fwconsole reload --verbose".
+#
+# Start Asterisk in the background, wait for its CLI to answer, and
+# only then expose the web UI.
+echo ">>> Starting Asterisk (before web UI)..."
+asterisk -f &
+ASTERISK_PID=$!
 
-# Start Asterisk in foreground (keep container alive)
-exec asterisk -f
+# Forward SIGTERM/SIGINT to Asterisk and block until it has finished
+# shutting down. Asterisk is no longer PID 1, so `docker stop` would
+# otherwise tear the container down (SIGKILL) before Asterisk can
+# gracefully hang up channels.
+trap 'kill -TERM "$ASTERISK_PID" 2>/dev/null; wait "$ASTERISK_PID" 2>/dev/null' TERM INT
+
+# Guard against a non-numeric override killing the deadline arithmetic.
+ASTERISK_READY_TIMEOUT="${ASTERISK_READY_TIMEOUT:-120}"
+case "$ASTERISK_READY_TIMEOUT" in
+  ''|*[!0-9]*) ASTERISK_READY_TIMEOUT=120 ;;
+esac
+ASTERISK_READY_DEADLINE=$(( $(date +%s) + ASTERISK_READY_TIMEOUT ))
+
+# Wait until `asterisk -rx` answers (asterisk.ctl exists). Bail early
+# if Asterisk dies outright; otherwise fail open after the timeout so
+# a hung boot doesn't take the web UI down too.
+START_WEB_UI=1
+until asterisk -rx 'core show version' >/dev/null 2>&1; do
+  if ! kill -0 "$ASTERISK_PID" 2>/dev/null; then
+    echo ">>> ERROR: Asterisk exited before becoming ready — skipping web UI start"
+    START_WEB_UI=0
+    break
+  fi
+  if [ "$(date +%s)" -ge "$ASTERISK_READY_DEADLINE" ]; then
+    echo ">>> WARNING: Asterisk not ready after ${ASTERISK_READY_TIMEOUT}s — starting web UI anyway"
+    echo ">>>          Check: docker logs pbx-freepbx | tail -100  (or /var/log/asterisk/full)"
+    break
+  fi
+  sleep 2
+done
+
+if [ "$START_WEB_UI" = "1" ]; then
+  echo ">>> Asterisk is ready — starting web UI..."
+  # Start Apache in background (web UI is now safe to trigger reloads)
+  apache2ctl -D FOREGROUND &
+fi
+
+# Keep the container alive as long as Asterisk runs (matches the old
+# `exec asterisk -f` behavior — the container exits if Asterisk dies).
+wait "$ASTERISK_PID"

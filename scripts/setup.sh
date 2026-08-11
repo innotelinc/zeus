@@ -660,10 +660,16 @@ fwconsole reload
 fwconsole restart
 
 # ─── Systemd unit ─────────────────────────────────────────────
+# FreePBX must start AFTER Asterisk is up — `fwconsole start/reload`
+# talk to the Asterisk control socket, and without this ordering a
+# reload triggered from the web UI during boot fails with
+# "Unable to connect to remote asterisk (does
+# /var/run/asterisk/asterisk.ctl exist?)", surfaced by the GUI as
+# "Unknown Error. Please Run: fwconsole reload --verbose".
 cat > /etc/systemd/system/freepbx.service <<EOF
 [Unit]
 Description=FreePBX VoIP Server
-After=mariadb.service
+After=mariadb.service asterisk.service
 
 [Service]
 Type=oneshot
@@ -674,6 +680,16 @@ ExecStop=/usr/sbin/fwconsole stop -q
 [Install]
 WantedBy=multi-user.target
 EOF
+
+# Order the FreePBX web UI (Apache) AFTER Asterisk + FreePBX are up,
+# so the GUI can never trigger a config reload against a still-booting
+# Asterisk. (This is the systemd equivalent of the Docker entrypoint
+# waiting for `asterisk -rx` to answer before starting Apache.)
+mkdir -p /etc/systemd/system/apache2.service.d
+cat > /etc/systemd/system/apache2.service.d/zz-after-asterisk.conf <<'A2EOF'
+[Unit]
+After=asterisk.service freepbx.service
+A2EOF
 
 systemctl daemon-reload
 systemctl enable freepbx
