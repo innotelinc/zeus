@@ -294,6 +294,34 @@ if [ "$START_WEB_UI" = "1" ]; then
       /etc/asterisk/http_additional.conf 2>/dev/null || true
   fi
 
+  # ── Regenerate self-signed TLS cert with correct SANs ──────
+  # The default cert from the base image has CN=buildkitsandbox — browsers
+  # reject it for WebRTC WebSocket connections. Regenerate with the actual
+  # hostname and LAN IP so `wss://` works from local browsers.
+  CERT_FILE=/etc/asterisk/keys/integration/certificate.pem
+  CERT_SUBJECT=$(openssl x509 -in "$CERT_FILE" -noout -subject 2>/dev/null | grep -o 'CN = [^,\n]*' | cut -d' ' -f3-)
+  if [ "$CERT_SUBJECT" = "buildkitsandbox" ] || [ ! -f "$CERT_FILE" ]; then
+    echo ">>> Regenerating self-signed TLS cert with proper SANs..."
+    HOSTNAME_VAL="${HOSTNAME:-voice.innotel.us}"
+    # Extract LAN IP (first non-loopback IPv4)
+    LAN_IP=$(ip -4 addr show scope global 2>/dev/null | grep -oP '(?<=inet\s)\d+(\.\d+){3}' | head -1)
+    SAN_LIST="DNS:${HOSTNAME_VAL},DNS:freepbx"
+    [ -n "$LAN_IP" ] && SAN_LIST="${SAN_LIST},IP:${LAN_IP}"
+    SAN_LIST="${SAN_LIST},IP:127.0.0.1"
+
+    mkdir -p /etc/asterisk/keys/integration
+    openssl req -x509 -newkey rsa:2048 \
+      -keyout /etc/asterisk/keys/integration/webserver.key \
+      -out /etc/asterisk/keys/integration/webserver.crt \
+      -days 3650 -nodes \
+      -subj "/CN=${HOSTNAME_VAL}" \
+      -addext "subjectAltName=${SAN_LIST}" 2>/dev/null
+    cp /etc/asterisk/keys/integration/webserver.crt "$CERT_FILE"
+    chown asterisk:asterisk /etc/asterisk/keys/integration/*
+    chmod 600 /etc/asterisk/keys/integration/webserver.key
+    echo ">>> TLS cert regenerated for CN=${HOSTNAME_VAL} SANs=${SAN_LIST}"
+  fi
+
   # Ensure PJSIP WSS transport config exists for WebRTC softphone
   if [ ! -f /etc/asterisk/pjsip_wss.conf ]; then
     cat > /etc/asterisk/pjsip_wss.conf <<'WSSEOF'
@@ -323,41 +351,11 @@ WSSEOF
       echo '#include pjsip_wss.conf' >> /etc/asterisk/pjsip.conf
   fi
 
-  # Restart Asterisk to pick up HTTP bind change + WSS transport
+  # WSS endpoints are provisioned by the portal container via its
+  # /api/phone/extensions API (writes PJSIP configs to shared volume).
+  # Asterisk restart picks up HTTP bind + WSS transport + new cert.
   asterisk -rx 'core restart now' 2>/dev/null || true
   sleep 3
-
-  # Create PJSIP WebRTC endpoints for all extensions in the portal DB
-  if [ -f /var/data/pbx/db.sqlite ]; then
-    sqlite3 /var/data/pbx/db.sqlite \
-      "SELECT extension_id, COALESCE(extension_secret, 'webrtc') FROM freepbx_extensions" 2>/dev/null | \
-    while IFS='|' read -r ext secret; do
-      # Skip empty lines
-      [ -z "$ext" ] && continue
-      echo ">>> Creating PJSIP WebRTC endpoint for extension $ext"
-      cat > "/etc/asterisk/pjsip_ext_${ext}.conf" <<WRTCEOF
-[$ext](webrtc-template)
-auth = ${ext}-auth
-aors = ${ext}-aor
-
-[${ext}-auth]
-type = auth
-auth_type = userpass
-password = ${secret}
-username = ${ext}
-
-[${ext}-aor]
-type = aor
-max_contacts = 5
-WRTCEOF
-      grep -q "pjsip_ext_${ext}.conf" /etc/asterisk/pjsip.conf 2>/dev/null || \
-        echo "#include pjsip_ext_${ext}.conf" >> /etc/asterisk/pjsip.conf
-    done
-
-    # Reload PJSIP to pick up new endpoints
-    asterisk -rx 'module reload res_pjsip.so' 2>/dev/null || true
-    echo ">>> WebRTC endpoints provisioned"
-  fi
 
   # Start Apache in background (web UI is now safe to trigger reloads)
   apache2ctl -D FOREGROUND &
