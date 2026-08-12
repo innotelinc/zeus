@@ -360,6 +360,15 @@ WSSEOF
   asterisk -rx 'core restart now' 2>/dev/null || true
   sleep 3
 
+  # ── FreePBX module persistence ────────────────────────────
+  # After Asterisk restarts, FreePBX may detect version mismatches and
+  # disable critical modules. Refresh signatures and reload to keep all
+  # modules enabled across reboots/rebuilds.
+  echo ">>> Refreshing FreePBX module signatures..."
+  fwconsole ma refreshsignatures 2>/dev/null || true
+  fwconsole reload 2>/dev/null || true
+  echo ">>> FreePBX modules refreshed"
+
   # Start Apache in background (web UI is now safe to trigger reloads)
   apache2ctl -D FOREGROUND &
 fi
