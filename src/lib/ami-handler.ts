@@ -33,8 +33,9 @@ const activeCalls = new Map<string, TrackedCall>();
 // ─── Extension helper ───
 
 function findExtensionByChannel(channel: string): string | null {
-  // Channel format: PJSIP/101-0000001a or SIP/101-0000001a
-  const match = channel.match(/\/(\d+)[-/]/);
+  // Channel formats: PJSIP/101-0000001a, SIP/101-0000001a, or
+  // Local/101@from-internal-0000001a (the '@' precedes the context)
+  const match = channel.match(/\/(\d+)[@\/-]/);
   if (!match) return null;
 
   const ext = db
@@ -82,22 +83,27 @@ function handleNewchannel(event: AmiEvent): void {
 
   const direction = determineDirection(channel, context);
 
-  // Create a tentative call_history record immediately
-  const dbId = randomUUID();
+  // Create a tentative call_history record immediately — but only when the
+  // call maps to a portal user (call_history.user_id is NOT NULL). Calls on
+  // channels that don't resolve to a known extension are still tracked
+  // in-memory so Hangup/CDR events can update state, just not persisted.
   const userId = ext ? findUserByExtension(ext) : null;
+  const dbId = userId ? randomUUID() : null;
 
-  db.prepare(
-    `INSERT INTO call_history (id, user_id, extension_id, direction, caller_number, callee_number, caller_name, status)
-     VALUES (?, ?, ?, ?, ?, ?, ?, 'ringing')`,
-  ).run(
-    dbId,
-    userId,
-    ext,
-    direction,
-    callerIdNum || "unknown",
-    connectedLineNum || "unknown",
-    callerIdName || null,
-  );
+  if (dbId) {
+    db.prepare(
+      `INSERT INTO call_history (id, user_id, extension_id, direction, caller_number, callee_number, caller_name, status)
+       VALUES (?, ?, ?, ?, ?, ?, ?, 'ringing')`,
+    ).run(
+      dbId,
+      userId,
+      ext,
+      direction,
+      callerIdNum || "unknown",
+      connectedLineNum || "unknown",
+      callerIdName || null,
+    );
+  }
 
   activeCalls.set(uniqueId, {
     uniqueId,
