@@ -1,0 +1,21 @@
+# ═══════════════════════════════════════════════════════════════
+# Innotel PBX — Full Stack Build Override
+# ═══════════════════════════════════════════════════════════════
+# Use this override to build the Asterisk/FreePBX image locally from
+# Dockerfile.full instead of pulling the pre-built image from GHCR.
+# Handy for development, offline servers, or testing changes to
+# Dockerfile.full before they get published by CI.
+#
+# Usage:
+#   docker compose -f docker-compose.full.yml -f docker-compose.full.build.yml up -d
+#
+# The local build takes 45-90 minutes and is tagged with the same image name
+# (ghcr.io/innotelinc/pbx-portal:latest-fullstack), so a later plain
+# `docker compose up` reuses it without re-pulling.
+# ═══════════════════════════════════════════════════════════════
+
+services:
+  freepbx:
+    build:
+      context: .
+      dockerfile: Dockerfile.full

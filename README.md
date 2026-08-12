@@ -127,14 +127,34 @@ Provisions **everything**: Asterisk 22.9 + FreePBX 17 + AvantFax + PBX Portal.  
 git clone https://github.com/innotelinc/pbx-portal.git
 cd pbx-portal
 
-# 1. Build the Asterisk+FreePBX image (45-90 min, one-time)
-docker build -f Dockerfile.full -t innotel/freepbx .
-
-# 2. Configure
+# 1. Configure
 cp .env.docker.example .env   # edit with your credentials
 
-# 3. Start everything
+# 2. Start everything
+#    The Asterisk+FreePBX image is pulled from GHCR
+#    (ghcr.io/innotelinc/pbx-portal:latest-fullstack), which the GitHub
+#    Actions release workflow publishes automatically on every push to
+#    master. A fresh server starts in minutes — no 45-90 min local build:
 docker compose -f docker-compose.full.yml up -d
+```
+
+> **First deployment before CI has run?** `latest-fullstack` is only published
+> after the first successful push/release of this workflow. If `up` fails with
+> a pull error, the image doesn't exist in GHCR yet — use the build override
+> below once instead, and plain `up` afterwards.
+
+To build the image locally instead (development, offline servers, or testing
+changes to `Dockerfile.full` before they get published):
+
+```bash
+# 45-90 min, one-time — then compose reuses the local image
+docker compose -f docker-compose.full.yml -f docker-compose.full.build.yml up -d
+```
+
+To refresh the pre-built image after a newer push/release:
+
+```bash
+docker compose -f docker-compose.full.yml pull
 ```
 
 **MariaDB data volume:** the `freepbx` service persists its database in the
@@ -164,11 +184,11 @@ The entrypoint automatically:
 | Service | Image | Ports |
 |---|---|---|
 | MariaDB | `mariadb:10.11` | 3306 (internal) |
-| Asterisk + FreePBX | `innotel/freepbx` | 80, 5060/udp, 8088, 8089, 5038, 10000-20000/udp |
+| Asterisk + FreePBX | `ghcr.io/innotelinc/pbx-portal:latest-fullstack` | 80, 5060/udp, 8088, 8089, 5038, 10000-20000/udp |
 | AvantFax | `innotel/avantfax` | 8080 |
 | PBX Portal | `innotel/pbx-portal` | 3000 |
 
-Pre-built full-stack images (release only):
+Pre-built full-stack images (pushed on every push to master and on releases):
 
 ```bash
 docker pull ghcr.io/innotelinc/pbx-portal:latest-fullstack
@@ -431,11 +451,12 @@ GitHub Actions builds and publishes Docker images on push:
 
 | Trigger | Image | Tag |
 |---|---|---|
-| Push to `master` | `ghcr.io/innotelinc/pbx-portal` | `latest`, `sha-xxxxx`, `master` |
-| Release `v*` | `ghcr.io/innotelinc/pbx-portal` | semver (`1.0.0`, `1.0`) |
-| Release `v*` | `ghcr.io/innotelinc/pbx-portal` | `latest-fullstack`, `1.0.0-fullstack` |
+| Push to `master` | `ghcr.io/innotelinc/pbx-portal` | `latest`, `sha-xxxxx`, `master` (portal) |
+| Push to `master` | `ghcr.io/innotelinc/pbx-portal` | `latest-fullstack`, `master-fullstack`, `sha-xxxxx-fullstack` |
+| Release `v*` | `ghcr.io/innotelinc/pbx-portal` | semver (`1.0.0`, `1.0`), `latest` (portal) |
+| Release `v*` | `ghcr.io/innotelinc/pbx-portal` | `1.0.0-fullstack`, `1.0-fullstack`, `latest-fullstack` |
 
-On every PR the portal image is built and smoke-tested (starts up, responds to `/` and `/api/health`), and the full-stack compose file is validated. The full-stack image (Asterisk + FreePBX, 45-90 min build) is **not** built on every PR — it is built on release and can be triggered manually or on a schedule via the `build-fullstack-check` job (no push).
+On every PR the portal image is built and smoke-tested (starts up, responds to `/` and `/api/health`), and both full-stack compose files are validated. The full-stack image (Asterisk + FreePBX, 45-90 min build) is **not** built on PRs — it is built and pushed on every push to `master` and on `v*` releases, and the weekly `build-fullstack-check` job verifies it still builds (no push).
 
 **Workflow:** `.github/workflows/docker-publish.yml`
 

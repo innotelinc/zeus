@@ -1,7 +1,9 @@
 # ═══════════════════════════════════════════════════════════════
 # Innotel PBX — Asterisk + FreePBX Full Stack Image
 # ═══════════════════════════════════════════════════════════════
-# Build:  docker build -f Dockerfile.full -t innotel/freepbx .
+# Build:  docker compose -f docker-compose.full.yml -f docker-compose.full.build.yml build
+#         (tags the image as ghcr.io/innotelinc/pbx-portal:latest-fullstack,
+#          the same name compose pulls from GHCR once CI publishes it)
 # Run:    docker run -d --name freepbx -p 80:80 -p 5060:5060/udp \
 #           -p 8089:8089 -p 5038:5038 innotel/freepbx
 #
