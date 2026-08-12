@@ -169,7 +169,8 @@ export default function MessagesSection({ conversations: initialConvs, numbers, 
               {numbers.length > 1 && (
                 <label className="block space-y-1.5">
                   <span className="text-xs font-medium text-white/50">From</span>
-                  <select className="w-full rounded-xl border border-white/[0.08] bg-white/[0.04] px-4 py-2.5 text-sm text-white focus:border-brand-500/50 focus:outline-none"
+                  <select className="w-full rounded-xl border px-4 py-2.5 text-sm outline-none transition focus:border-brand-500/50"
+                    style={{ background: 'var(--input-bg)', borderColor: 'var(--input-border)', color: 'var(--foreground)' }}
                     value={toDid} onChange={e => setToDid(e.target.value)}>
                     {numbers.map(n => <option key={n.id} value={n.id}>{n.did}</option>)}
                   </select>

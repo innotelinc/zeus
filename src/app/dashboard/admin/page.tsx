@@ -4,6 +4,7 @@ import { useState, useEffect } from "react";
 import { api } from "@/lib/client-api";
 import type { User, PlanInfo } from "@/lib/types";
 import { useToast } from "@/components/ToastProvider";
+import { PlusIcon, XIcon, TrashIcon } from "@/components/icons";
 
 export default function AdminPage() {
   const { toast } = useToast();
@@ -14,6 +15,15 @@ export default function AdminPage() {
   const [updating, setUpdating] = useState<string | null>(null);
   const [editingPlan, setEditingPlan] = useState<string | null>(null);
   const [planForm, setPlanForm] = useState({ name: "", amount: "", max_numbers: "" });
+
+  // Create user form
+  const [showCreate, setShowCreate] = useState(false);
+  const [createForm, setCreateForm] = useState({ email: "", password: "", name: "", plan: "consumer", role: "" });
+  const [creating, setCreating] = useState(false);
+
+  // Delete confirmation
+  const [deleteConfirm, setDeleteConfirm] = useState<string | null>(null);
+  const [deleting, setDeleting] = useState(false);
 
   useEffect(() => {
     loadAll();
@@ -45,6 +55,42 @@ export default function AdminPage() {
       toast.error(e instanceof Error ? e.message : "Update failed");
     } finally {
       setUpdating(null);
+    }
+  }
+
+  async function createUser() {
+    if (!createForm.email || !createForm.password) {
+      toast.error("Email and password are required");
+      return;
+    }
+    setCreating(true);
+    try {
+      await api("/api/admin/users", {
+        method: "POST",
+        body: JSON.stringify(createForm),
+      });
+      toast.success("User created");
+      setShowCreate(false);
+      setCreateForm({ email: "", password: "", name: "", plan: "consumer", role: "" });
+      loadAll();
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : "Failed to create user");
+    } finally {
+      setCreating(false);
+    }
+  }
+
+  async function deleteUser(userId: string) {
+    setDeleting(true);
+    try {
+      await api(`/api/admin/users?userId=${encodeURIComponent(userId)}`, { method: "DELETE" });
+      toast.success("User deleted");
+      setDeleteConfirm(null);
+      loadAll();
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : "Failed to delete user");
+    } finally {
+      setDeleting(false);
     }
   }
 
@@ -169,8 +215,64 @@ export default function AdminPage() {
       <div className="rounded-2xl border border-white/[0.06] bg-white/[0.02] p-6">
         <div className="flex items-center justify-between mb-4">
           <h2 className="text-lg font-semibold text-white">Users</h2>
-          <button type="button" onClick={loadAll} className="btn-ghost px-3 py-1.5 text-xs">Refresh</button>
+          <div className="flex items-center gap-2">
+            <button type="button" onClick={() => { setShowCreate(!showCreate); setDeleteConfirm(null); }} className="btn-primary px-3 py-1.5 text-xs flex items-center gap-1">
+              <PlusIcon size={13} /> {showCreate ? "Cancel" : "Add User"}
+            </button>
+            <button type="button" onClick={loadAll} className="btn-ghost px-3 py-1.5 text-xs">Refresh</button>
+          </div>
         </div>
+
+        {/* Create user form */}
+        {showCreate && (
+          <div className="mb-6 rounded-xl border border-brand-500/20 bg-brand-500/[0.04] p-5 animate-slide-up">
+            <h3 className="text-sm font-semibold text-white mb-4">Create New User</h3>
+            <div className="grid gap-4 sm:grid-cols-2">
+              <label className="block space-y-1.5">
+                <span className="text-xs font-medium text-white/50">Email *</span>
+                <input className="w-full rounded-xl border px-4 py-2.5 text-sm outline-none transition focus:border-brand-500/50"
+                  style={{ background: 'var(--input-bg)', borderColor: 'var(--input-border)', color: 'var(--foreground)' }}
+                  type="email" placeholder="user@example.com" value={createForm.email}
+                  onChange={(e) => setCreateForm({ ...createForm, email: e.target.value })} />
+              </label>
+              <label className="block space-y-1.5">
+                <span className="text-xs font-medium text-white/50">Password *</span>
+                <input className="w-full rounded-xl border px-4 py-2.5 text-sm outline-none transition focus:border-brand-500/50"
+                  style={{ background: 'var(--input-bg)', borderColor: 'var(--input-border)', color: 'var(--foreground)' }}
+                  type="password" placeholder="Min 8 characters" value={createForm.password}
+                  onChange={(e) => setCreateForm({ ...createForm, password: e.target.value })} />
+              </label>
+              <label className="block space-y-1.5">
+                <span className="text-xs font-medium text-white/50">Name</span>
+                <input className="w-full rounded-xl border px-4 py-2.5 text-sm outline-none transition focus:border-brand-500/50"
+                  style={{ background: 'var(--input-bg)', borderColor: 'var(--input-border)', color: 'var(--foreground)' }}
+                  placeholder="John Doe" value={createForm.name}
+                  onChange={(e) => setCreateForm({ ...createForm, name: e.target.value })} />
+              </label>
+              <label className="block space-y-1.5">
+                <span className="text-xs font-medium text-white/50">Plan</span>
+                <select className="w-full rounded-xl border px-4 py-2.5 text-sm outline-none transition focus:border-brand-500/50"
+                  style={{ background: 'var(--input-bg)', borderColor: 'var(--input-border)', color: 'var(--foreground)' }}
+                  value={createForm.plan} onChange={(e) => setCreateForm({ ...createForm, plan: e.target.value })}>
+                  {plans.map((p) => (<option key={p.id} value={p.id}>{p.name}</option>))}
+                </select>
+              </label>
+              <label className="block space-y-1.5">
+                <span className="text-xs font-medium text-white/50">Role</span>
+                <select className="w-full rounded-xl border px-4 py-2.5 text-sm outline-none transition focus:border-brand-500/50"
+                  style={{ background: 'var(--input-bg)', borderColor: 'var(--input-border)', color: 'var(--foreground)' }}
+                  value={createForm.role} onChange={(e) => setCreateForm({ ...createForm, role: e.target.value })}>
+                  <option value="">User</option>
+                  <option value="admin">Admin</option>
+                </select>
+              </label>
+            </div>
+            <button type="button" onClick={createUser} disabled={creating}
+              className="btn-primary mt-4 px-5 py-2 text-sm">
+              {creating ? "Creating..." : "Create User"}
+            </button>
+          </div>
+        )}
 
         <div className="overflow-x-auto">
           <table className="w-full text-left text-sm">
@@ -191,7 +293,8 @@ export default function AdminPage() {
                   <td className="py-3 px-3 text-white/80">{u.name}</td>
                   <td className="py-3 px-3">
                     <select
-                      className="rounded-lg border border-white/[0.08] bg-white/[0.04] px-2 py-1 text-xs text-white outline-none"
+                      className="rounded-lg border px-2 py-1 text-xs outline-none transition focus:border-brand-500/50"
+                      style={{ background: 'var(--input-bg)', borderColor: 'var(--input-border)', color: 'var(--foreground)' }}
                       value={u.plan}
                       onChange={(e) => updateUser(u.id, { plan: e.target.value })}
                       disabled={updating === u.id}
@@ -203,7 +306,8 @@ export default function AdminPage() {
                   </td>
                   <td className="py-3 px-3">
                     <select
-                      className="rounded-lg border border-white/[0.08] bg-white/[0.04] px-2 py-1 text-xs text-white outline-none"
+                      className="rounded-lg border px-2 py-1 text-xs outline-none transition focus:border-brand-500/50"
+                      style={{ background: 'var(--input-bg)', borderColor: 'var(--input-border)', color: 'var(--foreground)' }}
                       value={u.role ?? ""}
                       onChange={(e) => updateUser(u.id, { role: e.target.value || null })}
                       disabled={updating === u.id}
@@ -216,7 +320,28 @@ export default function AdminPage() {
                     {new Date(u.created_at).toLocaleDateString()}
                   </td>
                   <td className="py-3 px-3 text-right">
-                    {updating === u.id && <span className="text-xs text-white/40">Saving...</span>}
+                    {updating === u.id ? (
+                      <span className="text-xs text-white/40">Saving...</span>
+                    ) : (
+                      <>
+                        {deleteConfirm === u.id ? (
+                          <span className="flex items-center justify-end gap-2 text-xs">
+                            <span className="text-rose-300">Delete?</span>
+                            <button type="button" onClick={() => deleteUser(u.id)} disabled={deleting}
+                              className="rounded bg-rose-500 px-2 py-0.5 text-white hover:bg-rose-600 transition">Yes</button>
+                            <button type="button" onClick={() => setDeleteConfirm(null)}
+                              className="rounded border px-2 py-0.5 transition"
+                              style={{ borderColor: 'var(--input-border)', color: 'var(--foreground)' }}>No</button>
+                          </span>
+                        ) : (
+                          <button type="button" onClick={() => { setDeleteConfirm(u.id); setShowCreate(false); }}
+                            className="rounded-lg p-1.5 text-white/25 hover:text-rose-400 hover:bg-rose-500/10 transition"
+                            title="Delete user">
+                            <TrashIcon size={14} />
+                          </button>
+                        )}
+                      </>
+                    )}
                   </td>
                 </tr>
               ))}
