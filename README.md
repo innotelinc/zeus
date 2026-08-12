@@ -137,6 +137,22 @@ cp .env.docker.example .env   # edit with your credentials
 docker compose -f docker-compose.full.yml up -d
 ```
 
+**MariaDB data volume:** the `freepbx` service persists its database in the
+`pbx-mariadb-data` volume (mounted at `/var/lib/mysql`) so FreePBX's module
+registry can't drift from the `freepbx-www` volume across container recreates
+(a drifted registry is what disabled the core modules and surfaced as
+"Unknown Error. Please Run: fwconsole reload --verbose"). This volume shadows
+the MariaDB datadir baked into the image at build time.
+
+- **Existing deployments:** migrate the live datadir into the volume once,
+  before the first `up` with this compose file: gracefully stop MariaDB
+  (`mysqladmin -u root shutdown`), `docker cp` the container's `/var/lib/mysql`
+  to a staging dir, `docker volume create pbx-mariadb-data`, and pre-populate it
+  with `cp -a` (keeping `mysql:mysql` ownership).
+- **Fresh deployments:** an empty volume starts with a blank FreePBX database —
+  either seed it from the image's baked datadir the same way, or run the
+  FreePBX installer against it on first boot.
+
 **Files used:** `Dockerfile.full`, `docker-compose.full.yml`, `docker-entrypoint-full.sh`
 
 The entrypoint automatically:

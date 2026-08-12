@@ -61,11 +61,20 @@ services:
       SMTP_PASS: ${SMTP_PASS:-}
       SMTP_FROM: ${SMTP_FROM:-pbx@innotel.us}
       SMTP_SECURE: ${SMTP_SECURE:-false}
+      # Asterisk watchdog (see docker-entrypoint-full.sh) — self-heals
+      # a dropped control socket by running `fwconsole reload`.
+      ASTERISK_WATCHDOG_INTERVAL: ${ASTERISK_WATCHDOG_INTERVAL:-30}
+      ASTERISK_WATCHDOG_COOLDOWN: ${ASTERISK_WATCHDOG_COOLDOWN:-60}
     volumes:
       - asterisk-config:/etc/asterisk
       - asterisk-sounds:/var/lib/asterisk/sounds
       - asterisk-spool:/var/spool/asterisk
       - freepbx-www:/var/www/html
+      # Persist MariaDB so the FreePBX module registry can't drift from the
+      # freepbx-www volume across container recreates (a fresh DB would reset
+      # module versions and re-trigger the disabled-module / "Unknown Error"
+      # failure after the boot-time `fwconsole ma refreshsignatures`).
+      - mariadb-data:/var/lib/mysql
     healthcheck:
       test: ["CMD", "asterisk", "-rx", "core show version"]
       interval: 30s
@@ -207,6 +216,8 @@ volumes:
     name: pbx-asterisk-spool
   freepbx-www:
     name: pbx-freepbx-www
+  mariadb-data:
+    name: pbx-mariadb-data
   portal-data:
     name: pbx-portal-data
 

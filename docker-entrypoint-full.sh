@@ -283,6 +283,99 @@ until asterisk -rx 'core show version' >/dev/null 2>&1; do
   sleep 2
 done
 
+# ── Asterisk watchdog ─────────────────────────────────────────
+# If the Asterisk control socket disappears while the container is
+# still up (crash, hang, or a stuck Apply Config), every FreePBX
+# operation fails with "Unknown Error. Please Run: fwconsole
+# reload --verbose". Poll for the control socket and run
+# `fwconsole reload` to self-heal. Tune with:
+#   ASTERISK_WATCHDOG_INTERVAL  (default 30s)  poll cadence
+#   ASTERISK_WATCHDOG_COOLDOWN  (default 60s)  pause after a reload
+asterisk_watchdog() {
+  # ASTERISK_CTL_FILE overrides the socket path (test hook)
+  local ctl_file="${ASTERISK_CTL_FILE:-/var/run/asterisk/asterisk.ctl}"
+  local interval="${ASTERISK_WATCHDOG_INTERVAL:-30}"
+  local cooldown="${ASTERISK_WATCHDOG_COOLDOWN:-60}"
+  # Guard against non-numeric or too-small overrides: a 0 would busy-loop
+  case "$interval" in ''|*[!0-9]*) interval=30 ;; esac
+  case "$cooldown" in ''|*[!0-9]*) cooldown=60 ;; esac
+  if [ "$interval" -lt 5 ]; then interval=5; fi
+  if [ "$cooldown" -lt 10 ]; then cooldown=10; fi
+  while true; do
+    sleep "$interval"
+    # If the main Asterisk process is gone the entrypoint's `wait` is
+    # about to return and Docker will restart the container — nothing
+    # for the watchdog to do.
+    if ! kill -0 "$ASTERISK_PID" 2>/dev/null; then exit 0; fi
+    if [ ! -S "$ctl_file" ]; then
+      echo ">>> [watchdog] $(date -u +'%Y-%m-%dT%H:%M:%SZ') Asterisk control socket missing — running 'fwconsole reload'"
+      if fwconsole reload >/tmp/fwconsole-watchdog-reload.log 2>&1; then
+        echo ">>> [watchdog] fwconsole reload completed"
+      else
+        echo ">>> [watchdog] fwconsole reload FAILED — see /tmp/fwconsole-watchdog-reload.log"
+      fi
+      sleep "$cooldown"
+    fi
+  done
+}
+
+# ── FreePBX module repair ────────────────────────────────────
+# After Asterisk restarts, FreePBX can detect version mismatches and
+# disable critical modules (surfacing in the UI as "Unknown Error.
+# Please Run: fwconsole reload --verbose"). Refreshing signatures
+# can itself trigger that disable when the module registry drifts
+# from the files on disk, so instead we detect disabled modules and
+# reinstall them — `--force` re-registers the DB at the version the
+# files are actually at. Healthy boots skip this entirely. Needs
+# internet to re-download; on failure it logs a warning and boot
+# continues (fail open).
+repair_disabled_modules() {
+  echo ">>> Checking for disabled FreePBX modules..."
+  local pass=1 mod list_output disabled remaining format_mismatch=0
+  while [ "$pass" -le 2 ]; do
+    # `timeout` bounds the boot delay when the module server is unreachable
+    # (fail open). `|| true` keeps the assignment from tripping `set -e`.
+    list_output=$(timeout 30 fwconsole ma list 2>/dev/null || true)
+    # A real `ma list` always prints the full table, so empty output means
+    # the command failed/timed out — don't claim the system is healthy.
+    if [ -z "$list_output" ]; then
+      echo ">>> [modules] module check skipped — fwconsole ma list unreachable (offline?)"
+      return
+    fi
+    disabled=$(printf '%s\n' "$list_output" | awk -F'|' '/Disabled/{gsub(/[[:space:]]/,"",$2); if ($2 != "") print $2}')
+    if printf '%s\n' "$list_output" | grep -q 'Disabled' && [ -z "$(printf '%s' "$disabled" | tr -d '[:space:]')" ]; then
+      echo ">>> [modules] WARNING: disabled modules listed but none parsed — fwconsole ma list format changed?"
+      format_mismatch=1
+      break
+    fi
+    if [ -z "$disabled" ]; then
+      break
+    fi
+    echo ">>> [modules] pass $pass: $(echo "$disabled" | wc -l) disabled — $(echo "$disabled" | tr '\n' ' ')"
+    # while-read avoids `for $disabled` glob-expanding module names
+    printf '%s\n' "$disabled" | while IFS= read -r mod; do
+      [ -z "$mod" ] && continue
+      if timeout 180 fwconsole ma install "$mod" --force >/tmp/fwconsole-module-repair.log 2>&1 \
+        && grep -q 'successfully installed' /tmp/fwconsole-module-repair.log; then
+        echo ">>> [modules] $mod repaired"
+      else
+        echo ">>> [modules] $mod not repaired — see /tmp/fwconsole-module-repair.log"
+      fi
+    done
+    pass=$((pass + 1))
+  done
+  if [ "$format_mismatch" = "1" ]; then
+    return
+  fi
+  remaining=$(timeout 30 fwconsole ma list 2>/dev/null | awk -F'|' '/Disabled/{gsub(/[[:space:]]/,"",$2); if ($2 != "") print $2}')
+  if [ -n "$remaining" ]; then
+    echo ">>> [modules] WARNING: still disabled after repair: $(echo "$remaining" | tr '\n' ' ')"
+    echo ">>> [modules] fix manually: fwconsole ma install <module> --force (needs internet)"
+  else
+    echo ">>> [modules] all modules enabled"
+  fi
+}
+
 if [ "$START_WEB_UI" = "1" ]; then
   echo ">>> Asterisk is ready — starting web UI..."
 
@@ -361,16 +454,21 @@ WSSEOF
   sleep 3
 
   # ── FreePBX module persistence ────────────────────────────
-  # After Asterisk restarts, FreePBX may detect version mismatches and
-  # disable critical modules. Refresh signatures and reload to keep all
-  # modules enabled across reboots/rebuilds.
-  echo ">>> Refreshing FreePBX module signatures..."
-  fwconsole ma refreshsignatures 2>/dev/null || true
-  fwconsole reload 2>/dev/null || true
+  # Repair any modules FreePBX disabled due to version drift, then
+  # reload so the web UI comes up in a clean state.
+  repair_disabled_modules
+  if ! fwconsole reload >/tmp/fwconsole-boot-reload.log 2>&1; then
+    echo ">>> [modules] boot reload failed — see /tmp/fwconsole-boot-reload.log"
+  fi
   echo ">>> FreePBX modules refreshed"
 
   # Start Apache in background (web UI is now safe to trigger reloads)
   apache2ctl -D FOREGROUND &
+
+  # Start the Asterisk watchdog — it only matters once the web UI is
+  # up, since that's when a dropped control socket surfaces as Apply
+  # Config "Unknown Error" failures.
+  asterisk_watchdog &
 fi
 
 # Keep the container alive as long as Asterisk runs (matches the old
