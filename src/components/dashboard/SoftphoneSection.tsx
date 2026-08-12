@@ -194,6 +194,8 @@ export default function SoftphoneSection({ extensions }: Props) {
       userAgentRef.current = userAgent;
       registererRef.current = registerer;
       setCallState("idle");
+      // Notify PhoneSection to refresh device states immediately
+      window.dispatchEvent(new CustomEvent("pbx:extension-state-changed"));
     } catch (e) {
       toast.error(e instanceof Error ? e.message : "Failed to connect extension");
       setCallState("disconnected");
@@ -206,6 +208,8 @@ export default function SoftphoneSection({ extensions }: Props) {
     setSelectedExtId("");
     setDialNumber("");
     setIncomingCaller("");
+    // Notify PhoneSection to refresh device states immediately
+    window.dispatchEvent(new CustomEvent("pbx:extension-state-changed"));
   }
 
   function appendDigit(d: string) {

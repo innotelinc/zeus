@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useState, useEffect, useRef } from "react";
 import { api } from "@/lib/client-api";
 import type { PhoneNumber, FreePBXExtension } from "@/lib/types";
 import { useToast } from "@/components/ToastProvider";
@@ -12,6 +12,8 @@ interface Props {
   plan: string;
 }
 
+const POLL_MS = 5000;
+
 export default function PhoneSection({ numbers: initialNumbers, extensions: initialExtensions, plan }: Props) {
   const { toast } = useToast();
   const [numbers, setNumbers] = useState(initialNumbers);
@@ -19,6 +21,7 @@ export default function PhoneSection({ numbers: initialNumbers, extensions: init
   const [loading, setLoading] = useState(false);
   const [releasing, setReleasing] = useState<string | null>(null);
   const [confirmRelease, setConfirmRelease] = useState<string | null>(null);
+  const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   // DID search
   const [searchMode, setSearchMode] = useState(false);
@@ -34,6 +37,49 @@ export default function PhoneSection({ numbers: initialNumbers, extensions: init
   const [confirmDeleteExt, setConfirmDeleteExt] = useState<string | null>(null);
 
   const maxNumbers = plan === "business" ? 5 : 1;
+
+  // ── Live device-state polling ────────────────────────────
+  // Polls the AMI status endpoint every 5s and syncs
+  // extension device states so the dashboard updates when a
+  // softphone connects or disconnects.
+  // Also listens for immediate sync events from SoftphoneSection.
+  useEffect(() => {
+    async function syncStates() {
+      try {
+        const data = await api<{
+          extensions: Array<{ extension_id: string; device_state: string }>;
+        }>("/api/ami/status");
+        if (data.extensions) {
+          setExtensions((prev) =>
+            prev.map((ext) => {
+              const live = data.extensions.find(
+                (e) => e.extension_id === ext.extension_id,
+              );
+              return live && live.device_state !== ext.device_state
+                ? { ...ext, device_state: live.device_state }
+                : ext;
+            }),
+          );
+        }
+      } catch {
+        /* polling is best-effort */
+      }
+    }
+
+    // Immediate sync when softphone connects/disconnects
+    const handleEvent = () => syncStates();
+    window.addEventListener("pbx:extension-state-changed", handleEvent);
+
+    // Fire immediately on mount so already-registered extensions show correct state
+    syncStates();
+    pollRef.current = setInterval(syncStates, POLL_MS);
+    return () => {
+      if (pollRef.current) clearInterval(pollRef.current);
+      window.removeEventListener("pbx:extension-state-changed", handleEvent);
+    };
+  }, []);
+
+  // ── Actions ─────────────────────────────────────────────
 
   async function searchDIDs() {
     setSearching(true);
