@@ -1,5 +1,15 @@
 export type Plan = "consumer" | "business";
 
+export interface PlanInfo {
+  id: string;
+  name: string;
+  stripe_price_id: string | null;
+  amount: number;
+  currency: string;
+  interval: string;
+  max_numbers: number;
+}
+
 export interface User {
   id: string;
   email: string;

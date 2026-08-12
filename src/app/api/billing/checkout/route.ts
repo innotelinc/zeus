@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { getCurrentUser } from "@/lib/auth";
+import { getOrCreateStripePriceId } from "@/lib/plans";
 import Stripe from "stripe";
 
 const stripe = process.env.STRIPE_SECRET_KEY
@@ -20,21 +21,14 @@ export async function POST(req: Request) {
   }
 
   const { plan } = (await req.json()) as { plan?: string };
-
-  // Map plans to Stripe price IDs (set these in your Stripe dashboard)
-  const priceIds: Record<string, string> = {
-    consumer: process.env.STRIPE_CONSUMER_PRICE_ID ?? "",
-    business: process.env.STRIPE_BUSINESS_PRICE_ID ?? "",
-  };
-
   const selectedPlan = plan ?? user.plan ?? "consumer";
-  const priceId = priceIds[selectedPlan];
 
-  if (!priceId) {
+  let priceId: string;
+  try {
+    priceId = await getOrCreateStripePriceId(selectedPlan);
+  } catch (e) {
     return NextResponse.json(
-      {
-        error: `Stripe price ID not configured for "${selectedPlan}" plan. Set STRIPE_${selectedPlan.toUpperCase()}_PRICE_ID in your .env file.`,
-      },
+      { error: (e as Error).message },
       { status: 500 },
     );
   }
