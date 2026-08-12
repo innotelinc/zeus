@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import Database from "better-sqlite3";
+import bcrypt from "bcryptjs";
 import { readFileSync, existsSync, mkdirSync } from "node:fs";
 import { join } from "node:path";
 
@@ -16,19 +17,26 @@ db.exec(schema);
 
 // ── Seed demo user ──
 const userId = randomUUID();
-const passwordHash = "$2b$10$zdH2ueaSGT4q24xozAiWC.sKhMU7jX3dredo6fMKrvTlmw60tb.OO";
+// Documented demo password (printed at the bottom).
+const DEMO_PASSWORD = "8dpWR8wl4eYncm5v";
+// Hash generated at runtime so it can never drift from DEMO_PASSWORD.
+const passwordHash = bcrypt.hashSync(DEMO_PASSWORD, 10);
 
 const existing = db.prepare("SELECT id, password_hash FROM users WHERE email = ?").get("demo@innotel.us");
 if (existing) {
-  const brokenHash = "$2a$10$VqCTt.CuhS0zFXP0bPn1LuyCJOHPfBrV2YhEhuqJw3MN1fLs9Dfaa";
-  if (existing.password_hash === brokenHash) {
-    db.prepare("UPDATE users SET password_hash = ? WHERE email = ?").run(passwordHash, "demo@innotel.us");
-    console.log("🔧 Repaired broken demo password hash. Login now works.");
-  } else {
-    console.log("⚠ Demo user already exists, skipping seed.");
+  // Self-healing: if the stored hash doesn't match the documented password,
+  // repair it. This fixes any drift (manual edits, older seeds with a bad
+  // hash, or the legacy broken $2a$ hash) without hardcoding a specific
+  // broken value.
+  if (bcrypt.compareSync(DEMO_PASSWORD, existing.password_hash)) {
+    console.log("✅ Demo user exists with correct password. Skipping seed.");
     db.close();
     process.exit(0);
   }
+  db.prepare("UPDATE users SET password_hash = ? WHERE email = ?").run(passwordHash, "demo@innotel.us");
+  console.log("🔧 Repaired demo password hash to the documented password. Login now works.");
+  db.close();
+  process.exit(0);
 }
 
 db.prepare(
