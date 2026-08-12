@@ -149,7 +149,7 @@ export async function getCurrentUser(): Promise<User | null> {
   if (!userId) return null;
   const user = db
     .prepare(
-      "SELECT id, email, name, phone, plan, plan_status, country, stripe_subscription_id, created_at, updated_at FROM users WHERE id = ?",
+      "SELECT id, email, name, phone, plan, plan_status, country, role, stripe_subscription_id, created_at, updated_at FROM users WHERE id = ?",
     )
     .get(userId) as User | undefined;
   return user ?? null;

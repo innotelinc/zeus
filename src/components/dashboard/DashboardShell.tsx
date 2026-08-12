@@ -46,6 +46,14 @@ const navItems = [
   { href: "/dashboard/health", label: "Health", icon: HeartPulseIcon },
 ];
 
+function ShieldIcon({ size = 24 }: { size?: number }) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/>
+    </svg>
+  );
+}
+
 function ThemeToggle() {
   const { theme, setTheme, resolved } = useTheme();
 
@@ -187,6 +195,23 @@ export function DashboardShell({ user, extensions, children }: Props) {
                 </Link>
               );
             })}
+
+            {user.role === "admin" && (
+              <>
+                <div className="my-2 border-t border-white/[0.06]" />
+                <Link
+                  href="/dashboard/admin"
+                  className={`flex items-center gap-3 rounded-xl px-4 py-2.5 text-sm font-medium transition ${
+                    isActive("/dashboard/admin")
+                      ? "bg-brand-500/15 text-brand-300"
+                      : "text-white/50 hover:bg-white/[0.04] hover:text-white"
+                  }`}
+                >
+                  <ShieldIcon size={18} />
+                  Admin
+                </Link>
+              </>
+            )}
           </nav>
         </aside>
 
@@ -212,6 +237,24 @@ export function DashboardShell({ user, extensions, children }: Props) {
                   </Link>
                 );
               })}
+
+              {user.role === "admin" && (
+                <>
+                  <div className="my-2 border-t border-white/[0.06]" />
+                  <Link
+                    href="/dashboard/admin"
+                    onClick={() => setMobileOpen(false)}
+                    className={`flex items-center gap-3 rounded-xl px-4 py-3 text-base font-medium transition ${
+                      isActive("/dashboard/admin")
+                        ? "bg-brand-500/15 text-brand-300"
+                        : "text-white/50 hover:bg-white/[0.04] hover:text-white"
+                    }`}
+                  >
+                    <ShieldIcon size={20} />
+                    Admin
+                  </Link>
+                </>
+              )}
             </nav>
           </div>
         )}

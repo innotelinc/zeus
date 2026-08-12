@@ -27,7 +27,17 @@ export async function POST(req: Request) {
     business: process.env.STRIPE_BUSINESS_PRICE_ID ?? "",
   };
 
-  const priceId = priceIds[plan ?? "consumer"];
+  const selectedPlan = plan ?? user.plan ?? "consumer";
+  const priceId = priceIds[selectedPlan];
+
+  if (!priceId) {
+    return NextResponse.json(
+      {
+        error: `Stripe price ID not configured for "${selectedPlan}" plan. Set STRIPE_${selectedPlan.toUpperCase()}_PRICE_ID in your .env file.`,
+      },
+      { status: 500 },
+    );
+  }
 
   try {
     const session = await stripe.checkout.sessions.create({
