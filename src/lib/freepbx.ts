@@ -87,20 +87,23 @@ async function gql<T = unknown>(
 
 // ---- Types ----
 
+// Mirrors the FreePBX 17 api module's `addExtensionInput` GraphQL type.
+// NOTE: there is NO `secret` field here — the FreePBX device secret is
+// auto-generated. The WebRTC softphone authenticates against the WSS
+// endpoint config the portal writes itself (with its own secret).
 export interface AddExtensionInput {
   extensionId: string;
   name: string;
   email: string;
   tech?: "pjsip" | "sip";
   callerID?: string;
-  outboundCID?: string;
-  emergencyCID?: string;
+  outboundCid?: string;
+  emergencyCid?: string;
   vmEnable?: boolean;
   vmPassword?: string;
   umEnable?: boolean;
   umPassword?: string;
   maxContacts?: number;
-  secret?: string;
 }
 
 export interface AddExtensionResult {
@@ -132,43 +135,13 @@ export async function deleteExtension(
   extensionId: string,
 ): Promise<{ deleteExtension: { status: boolean; message: string } }> {
   return gql(
-    `mutation DeleteExtension($extensionId: ID!) {
-      deleteExtension(extensionId: $extensionId) {
+    `mutation DeleteExtension($input: deleteExtensionInput!) {
+      deleteExtension(input: $input) {
         status
         message
       }
     }`,
-    { extensionId },
+    { input: { extensionId } },
   );
 }
 
-/** Get extension details. */
-export async function getExtension(
-  extensionId: string,
-): Promise<{ extension: Record<string, unknown> }> {
-  return gql(
-    `query GetExtension($extensionId: ID!) {
-      extension(extensionId: $extensionId)
-    }`,
-    { extensionId },
-  );
-}
-
-/** Get voicemail for an extension. */
-export async function getVoicemail(
-  extensionId: string,
-): Promise<{ voicemails: Array<Record<string, unknown>> }> {
-  return gql(
-    `query GetVoicemail($extensionId: ID!) {
-      voicemails(extensionId: $extensionId) {
-        id
-        callerid
-        duration
-        origtime
-        recording
-        transcription
-      }
-    }`,
-    { extensionId },
-  );
-}

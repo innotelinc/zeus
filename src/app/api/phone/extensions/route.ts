@@ -61,7 +61,6 @@ export async function POST(req: Request) {
       name: body.name,
       email: body.email,
       tech: "pjsip",
-      secret,
       vmEnable: body.vmEnable ?? true,
       vmPassword: vmPin,
     });

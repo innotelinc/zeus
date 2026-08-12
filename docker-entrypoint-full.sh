@@ -60,38 +60,56 @@ mysql -u root asterisk -e "UPDATE freepbx_settings SET value = '${UCP_AMI_SECRET
 # Register OAuth2 client for the portal (if API module is installed)
 # Always updates the client_secret so that FREEPBX_CLIENT_SECRET changes take
 # effect on restart without needing to manually fix the database.
+#
+# NOTE: this runs as a heredoc-written PHP file, NOT an inline `php -r "..."`.
+# An inline double-quoted string breaks the moment the PHP code contains a
+# literal double quote (it prematurely closes the shell string and mangles
+# the braces) — which is exactly what used to happen here.
 if [ -n "${FREEPBX_CLIENT_ID:-}" ] && [ -n "${FREEPBX_CLIENT_SECRET:-}" ]; then
   echo ">>> Registering OAuth2 client '${FREEPBX_CLIENT_ID}'..."
-  php -r "
-    \$db = new PDO('mysql:host=localhost;dbname=asterisk', 'root', '');
-    \$db->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
-    \$secretHash = hash('sha256', '${FREEPBX_CLIENT_SECRET}');
-    // Check if client already exists
-    \$stmt = \$db->prepare('SELECT id FROM api_applications WHERE client_id = ?');
-    \$stmt->execute(['${FREEPBX_CLIENT_ID}']);
-    \$existing = \$stmt->fetch(PDO::FETCH_ASSOC);
-    if (!\$existing) {
-      \$stmt = \$db->prepare(
-        'INSERT INTO api_applications (owner, name, description, grant_type, client_id, client_secret, redirect_uri, website, algo, allowed_scopes)
-         VALUES (NULL, ?, ?, ?, ?, ?, NULL, NULL, ?, ?)'
-      );
-      \$stmt->execute([
-        'PBX Portal API',
-        'PBX Customer Portal integration client',
-        'client_credentials',
-        '${FREEPBX_CLIENT_ID}',
-        \$secretHash,
-        'sha256',
-        'all'
-      ]);
-      echo 'OAuth2 client registered.' . PHP_EOL;
-    } else {
-      // Update existing client secret to match current env var
-      \$stmt = \$db->prepare('UPDATE api_applications SET client_secret = ?, algo = ? WHERE client_id = ?');
-      \$stmt->execute([\$secretHash, 'sha256', '${FREEPBX_CLIENT_ID}']);
-      echo 'OAuth2 client secret updated.' . PHP_EOL;
-    }
-  " 2>/dev/null || echo 'WARNING: Could not register OAuth2 client (API module may not be installed yet)'
+  cat > /tmp/register_oauth.php <<'PHPEOF'
+<?php
+$db = new PDO('mysql:host=localhost;dbname=asterisk', 'root', '');
+$db->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
+$clientId = getenv('FREEPBX_CLIENT_ID');
+$clientSecret = getenv('FREEPBX_CLIENT_SECRET');
+if ($clientId === false || $clientSecret === false) {
+  fwrite(STDERR, "Missing FREEPBX_CLIENT_ID/SECRET env vars\n");
+  exit(1);
+}
+$secretHash = hash('sha256', $clientSecret);
+// Check if client already exists
+$stmt = $db->prepare('SELECT id FROM api_applications WHERE client_id = ?');
+$stmt->execute([$clientId]);
+$existing = $stmt->fetch(PDO::FETCH_ASSOC);
+if (!$existing) {
+  $stmt = $db->prepare(
+    'INSERT INTO api_applications (owner, name, description, grant_type, client_id, client_secret, redirect_uri, website, algo, allowed_scopes)
+     VALUES (NULL, ?, ?, ?, ?, ?, NULL, NULL, ?, ?)'
+  );
+  // NOTE: allowed_scopes MUST stay empty (''). ScopeRepository treats
+  // empty as "no restrictions" and grants ['gql','rest'], which unlocks
+  // the full GraphQL schema (extensions/voicemail/...). A non-empty but
+  // invalid value like 'all' silently produces tokens with NO scopes,
+  // which collapses the schema to just the 'node' field.
+  $stmt->execute([
+    'PBX Portal API',
+    'PBX Customer Portal integration client',
+    'client_credentials',
+    $clientId,
+    $secretHash,
+    'sha256',
+    ''
+  ]);
+  echo 'OAuth2 client registered.' . PHP_EOL;
+} else {
+  // Update existing client secret + scopes to match current env var
+  $stmt = $db->prepare('UPDATE api_applications SET client_secret = ?, algo = ?, allowed_scopes = ? WHERE client_id = ?');
+  $stmt->execute([$secretHash, 'sha256', '', $clientId]);
+  echo 'OAuth2 client secret + scopes updated.' . PHP_EOL;
+}
+PHPEOF
+  php /tmp/register_oauth.php 2>/dev/null || echo 'WARNING: Could not register OAuth2 client (API module may not be installed yet)'
 fi
 
 # Start Redis (FreePBX 17 cache/session)
@@ -376,6 +394,37 @@ repair_disabled_modules() {
   fi
 }
 
+# ── FreePBX API module patches ──────────────────────────────
+# The Dockerfile bakes two fixes into the api module's image layer, but
+# the freepbx-www volume shadows the image AND a module repair
+# (`fwconsole ma install api --force`) re-downloads the upstream module,
+# wiping them. Re-apply idempotently at every boot so the portal's
+# GraphQL calls keep working. Missing patches: the portal's gql() request
+# (no ?route= param) crashes the endpoint with "Undefined array key
+# \"route\"" at Gql/Api.php, which surfaces to the user as a broken
+# extensions feature.
+patch_api_module() {
+  local api_dir=/var/www/html/admin/modules/api
+  [ -d "$api_dir" ] || return 0
+
+  # Fix 1: getFlattenedScopes() crashes when a scope module (e.g.
+  # "framework") is not in $activeModules — add a guard to skip it.
+  if [ -f "$api_dir/Api.class.php" ] && \
+     ! grep -q 'if (!isset($activeModules\[$module\])) { continue; }' "$api_dir/Api.class.php"; then
+    sed -i '/foreach (\$validScopes\[\$type\] as \$module => \$scope) {/a\
+\t\t\t\t\tif (!isset($activeModules[$module])) { continue; }' "$api_dir/Api.class.php"
+    echo ">>> [api] Fix 1 applied — getFlattenedScopes guard (Api.class.php)"
+  fi
+
+  # Fix 2: Gql/Api.php crashes on undefined $_GET['route'] (the portal's
+  # gql() call sends no route param). Null-coalesce the bare access.
+  if [ -f "$api_dir/Gql/Api.php" ] && \
+     grep -q "&route=' \. \$_GET\['route'\]" "$api_dir/Gql/Api.php"; then
+    sed -i "s|\$_GET\['route'\]|(\$_GET['route'] ?? '')|g" "$api_dir/Gql/Api.php"
+    echo ">>> [api] Fix 2 applied — Gql \$_GET['route'] null-coalescing"
+  fi
+}
+
 if [ "$START_WEB_UI" = "1" ]; then
   echo ">>> Asterisk is ready — starting web UI..."
 
@@ -457,6 +506,10 @@ WSSEOF
   # Repair any modules FreePBX disabled due to version drift, then
   # reload so the web UI comes up in a clean state.
   repair_disabled_modules
+  # Module repair may have re-downloaded the api module, wiping the
+  # image-baked patches — re-apply them so the portal's GraphQL API
+  # (extensions/voicemail provisioning) keeps working.
+  patch_api_module
   if ! fwconsole reload >/tmp/fwconsole-boot-reload.log 2>&1; then
     echo ">>> [modules] boot reload failed — see /tmp/fwconsole-boot-reload.log"
   fi
