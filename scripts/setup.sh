@@ -1015,15 +1015,20 @@ fi
 fwconsole reload 2>/dev/null || true
 
 # Verify the token endpoint is reachable (self-test)
+# The FreePBX api module's OAuth2 token URL is /admin/api/api/token (NOT
+# /admin/api/api/oauth2/token) and takes form-urlencoded credentials — this
+# must match src/lib/freepbx.ts.
 if command -v curl &>/dev/null; then
   TOKEN_TEST=$(curl -s -o /dev/null -w "%{http_code}" \
-    -X POST "https://${HOSTNAME}/admin/api/api/oauth2/token" \
-    -H "Content-Type: application/json" \
-    -d "{\"grant_type\":\"client_credentials\",\"client_id\":\"${FREEPBX_CLIENT_ID}\",\"client_secret\":\"${FREEPBX_CLIENT_SECRET}\"}" 2>/dev/null || echo "000")
+    -X POST "https://${HOSTNAME}/admin/api/api/token" \
+    -H "Content-Type: application/x-www-form-urlencoded" \
+    --data-urlencode "grant_type=client_credentials" \
+    --data-urlencode "client_id=${FREEPBX_CLIENT_ID}" \
+    --data-urlencode "client_secret=${FREEPBX_CLIENT_SECRET}" 2>/dev/null || true)
   if [ "$TOKEN_TEST" = "200" ]; then
     log "FreePBX OAuth2 token endpoint verified (HTTP 200)"
   else
-    warn "FreePBX OAuth2 token endpoint returned HTTP ${TOKEN_TEST} — check API module configuration"
+    warn "FreePBX OAuth2 token endpoint returned HTTP ${TOKEN_TEST:-000} — check API module configuration"
   fi
 fi
 
@@ -1698,7 +1703,7 @@ echo "╠═══════════════════════�
 echo "║  AMI User     : ${FREEPBX_AMI_USER}"
 echo "║  AMI Secret   : ${FREEPBX_AMI_SECRET}"
 echo "║  API Client   : ${FREEPBX_CLIENT_ID}"
-echo "║  OAuth2 URL   : https://${HOSTNAME}/admin/api/api/oauth2/token"
+echo "║  OAuth2 URL   : https://${HOSTNAME}/admin/api/api/token"
 echo "║  Atlas URL    : ${ATLAS_URL}"
 echo "╠══════════════════════════════════════════════════════════╣"
 echo "║  Portal logs  : journalctl -u innotel-pbx -f            ║"
