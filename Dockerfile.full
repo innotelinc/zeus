@@ -8,7 +8,7 @@
 #           -p 8089:8089 -p 5038:5038 innotel/freepbx
 #
 # This image contains:
-#   - Asterisk 22.9.0 LTS (compiled from source)
+#   - Asterisk 22.10.1 LTS (compiled from source)
 #   - FreePBX 17 (Sangoma official installer)
 #   - PJSIP with WebSocket (port 8089)
 #   - Asterisk AMI (port 5038)
@@ -22,7 +22,7 @@
 FROM debian:12-slim
 
 ENV DEBIAN_FRONTEND=noninteractive
-ENV ASTERISK_VER=22.9.0
+ENV ASTERISK_VER=22.10.1
 
 WORKDIR /usr/src
 
@@ -57,7 +57,7 @@ RUN cd /usr/src && \
     cd spandsp && ./autogen.sh && ./configure && make && make install && ldconfig && \
     cd /usr/src && rm -rf spandsp
 
-# ─── Asterisk 22.9.0 ─────────────────────────────────────────
+# ─── Asterisk 22.10.1 ────────────────────────────────────────
 RUN wget "https://downloads.asterisk.org/pub/telephony/asterisk/releases/asterisk-${ASTERISK_VER}.tar.gz" && \
     tar zxf "asterisk-${ASTERISK_VER}.tar.gz" && \
     cd "asterisk-${ASTERISK_VER}" && \
@@ -110,6 +110,17 @@ RUN sed -i 's/^\(User\|Group\).*/\1 asterisk/' /etc/apache2/apache2.conf && \
 # `asterisk -f`, so this shim does not affect runtime behavior.
 COPY systemctl-shim.sh /usr/local/bin/systemctl
 RUN chmod +x /usr/local/bin/systemctl
+
+# ─── Webmin (server admin panel, port 10000) ────────────────
+# Installed from the official .deb (not the apt repository) so the build
+# doesn't depend on the legacy "sarge" repo + GPG key. Matches setup.sh.
+# Version + SHA256 are pinned; bump both together when upgrading.
+RUN apt update && \
+    wget -q "https://download.webmin.com/download/repository/pool/contrib/w/webmin/webmin_2.653_all.deb" -O /tmp/webmin.deb && \
+    echo "e7698812d5fe79268202c6051dbfb140c94a43df0d28509b894511b27e5f0b15  /tmp/webmin.deb" | sha256sum -c - && \
+    apt -y install /tmp/webmin.deb && \
+    rm -f /tmp/webmin.deb && \
+    apt clean && rm -rf /var/lib/apt/lists/*
 
 # ─── FreePBX 17 (direct framework tarball install) ──────────
 # Installs FreePBX directly from the official framework tarball via its
@@ -635,6 +646,7 @@ RUN postconf -e 'mynetworks = 127.0.0.0/8 [::1]/128' && \
 COPY docker-entrypoint-full.sh /usr/local/bin/entrypoint.sh
 RUN chmod +x /usr/local/bin/entrypoint.sh
 
-EXPOSE 80 5060/udp 5061 8088 8089 5038 10000-20000/udp
+# 10000/tcp = Webmin admin panel; 10000-20000/udp = RTP media
+EXPOSE 80 5060/udp 5061 8088 8089 5038 10000 10000-20000/udp
 
 ENTRYPOINT ["/usr/local/bin/entrypoint.sh"]

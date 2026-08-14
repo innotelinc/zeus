@@ -2,7 +2,7 @@
 # Innotel PBX — Full Stack Docker Compose
 # ═══════════════════════════════════════════════════════════════
 # Deploys the complete VoIP infrastructure:
-#   Asterisk 22.9 + FreePBX 17 + AvantFax + PBX Portal
+#   Asterisk 22.10 + FreePBX 17 + AvantFax + PBX Portal
 #
 # Prerequisites:
 #   1. Configure your env vars:
@@ -21,6 +21,7 @@
 #   8080      AvantFax web UI
 #   8088      Asterisk HTTP (ARI)
 #   8089      PJSIP WebSocket (WSS) for WebRTC
+#   10000     Webmin admin panel
 #   10000:20000/udp  RTP media
 # ═══════════════════════════════════════════════════════════════
 
@@ -50,6 +51,7 @@ services:
       - "8088:8088"       # Asterisk HTTP (plain WebSocket for NPM)
       - "8089:8089"       # PJSIP WebSocket (WSS)
       - "5038:5038"       # Asterisk AMI
+      - "10000:10000"     # Webmin admin panel
       - "10000:20000/udp" # RTP
     environment:
       HOSTNAME: ${HOSTNAME:-voice.innotel.us}

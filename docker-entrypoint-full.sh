@@ -122,6 +122,9 @@ service cron start 2>/dev/null || true
 service postfix start 2>/dev/null || true
 echo ">>> Postfix started"
 
+# Start Webmin (server admin panel on port 10000)
+service webmin start 2>/dev/null || echo ">>> WARNING: Webmin failed to start"
+
 # ── AvantFax setup ─────────────────────────────────────────────
 # Ensure the fax symlink exists (may be hidden by persistent volume)
 if [ ! -L /var/www/html/fax ] && [ -d /usr/src/avantfax/avantfax ]; then

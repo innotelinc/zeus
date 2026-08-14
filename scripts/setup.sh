@@ -2,7 +2,7 @@
 # ============================================================
 #  Innotel VoIP / Fax Full Stack Installer
 #  Target:   Debian 12 "Bookworm" (minimal VM / LXC)
-#  Stack:    Asterisk 22.9.0 (LTS) + FreePBX 17 + AvantFax 3.4.1
+#  Stack:    Asterisk 22.10.1 (LTS) + FreePBX 17 + AvantFax 3.4.1
 #            IAXModem 1.3.5 + HylaFAX 7.0.11
 #            PHP 8.2 (FreePBX 17 default) + PHP 7.4 (AvantFax legacy)
 #            VOSK Speech-to-Text + Dograh ARI WebSocket
@@ -24,7 +24,7 @@ FAX_EMAIL="${FAX_EMAIL:-fax@innotel.us}"
 SMTP_HOST="${SMTP_HOST:-mail.innotel.us}"
 SMTP_SSL_HOST="${SMTP_SSL_HOST:-ssl://mx.innotel.us}"
 SMTP_PORT="${SMTP_PORT:-465}"
-ASTERISK_VER="${ASTERISK_VER:-22.9.0}"
+ASTERISK_VER="${ASTERISK_VER:-22.10.1}"
 FAX_NUMBER="${FAX_NUMBER:-7745057136}"
 FAX_AREACODE="${FAX_AREACODE:-774}"
 FAX_COUNTRY="${FAX_COUNTRY:-1}"
@@ -92,11 +92,17 @@ EOF
 fi
 
 # ─── Webmin ───────────────────────────────────────────────────
+# Installed from the official .deb (not the apt repository) so the install
+# doesn't depend on the legacy "sarge" repo + GPG key staying valid.
+# Version and SHA256 are pinned; bump both together when upgrading.
 info "Installing Webmin"
-curl -fsSL https://download.webmin.com/jcameron-key.asc | gpg --dearmor -o /usr/share/keyrings/webmin.gpg
-echo "deb [signed-by=/usr/share/keyrings/webmin.gpg] https://download.webmin.com/download/newkey/repository sarge contrib" \
-  > /etc/apt/sources.list.d/webmin.list
-apt update && apt -y install webmin
+WEBMIN_VER="2.653"
+WEBMIN_SHA256="e7698812d5fe79268202c6051dbfb140c94a43df0d28509b894511b27e5f0b15"
+curl -fsSL "https://download.webmin.com/download/repository/pool/contrib/w/webmin/webmin_${WEBMIN_VER}_all.deb" \
+  -o /tmp/webmin.deb
+echo "${WEBMIN_SHA256}  /tmp/webmin.deb" | sha256sum -c -
+apt-get -y install --install-recommends /tmp/webmin.deb
+rm -f /tmp/webmin.deb
 
 # ─── Code-Server (VS Code in browser) ─────────────────────────
 info "Installing Code-Server"
@@ -284,7 +290,7 @@ fi
 pip3 install iksemel setuptools 2>/dev/null || true
 
 # ═══════════════════════════════════════════════════════════════
-# PHASE 6 — ASTERISK 22.9.0
+# PHASE 6 — ASTERISK 22.10.1
 # ═══════════════════════════════════════════════════════════════
 
 echo ">>> [6/13] Asterisk ${ASTERISK_VER}"
@@ -645,7 +651,7 @@ wget -O sng_freepbx_debian_install.sh \
   https://github.com/FreePBX/sng_freepbx_debian_install/raw/master/sng_freepbx_debian_install.sh
 chmod +x sng_freepbx_debian_install.sh
 
-# --noasterisk = keep our compiled Asterisk 22.9.0
+# --noasterisk = keep our compiled Asterisk 22.10.1
 bash sng_freepbx_debian_install.sh --noasterisk --opensourceonly
 
 # ─── Node.js (FreePBX UCP) ────────────────────────────────────

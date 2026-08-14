@@ -121,7 +121,7 @@ docker pull ghcr.io/innotelinc/pbx-portal:latest
 
 ### Option 2: Docker — Full Stack
 
-Provisions **everything**: Asterisk 22.9 + FreePBX 17 + AvantFax + PBX Portal.  Use this if you want a self-contained deployment.
+Provisions **everything**: Asterisk 22.10 + FreePBX 17 + AvantFax + PBX Portal.  Use this if you want a self-contained deployment.
 
 ```bash
 git clone https://github.com/innotelinc/pbx-portal.git
@@ -218,7 +218,7 @@ sudo VOIPMS_USER=you@email.com \
 ```
 
 This installs and configures:
-- Asterisk 22.9.0 LTS (compiled from source)
+- Asterisk 22.10.1 LTS (compiled from source)
 - FreePBX 17 (Sangoma official installer)
 - PJSIP WebSocket transport (port 8089 WSS)
 - Asterisk AMI (port 5038)
