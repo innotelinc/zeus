@@ -66,6 +66,13 @@ info() { echo -e "${CYAN}[i]${NC} $*"; }
 
 echo ">>> [1/13] System update & base packages"
 cd /usr/src
+
+# Remove any stale Webmin apt repo left over from an older setup.sh run.
+# The legacy "newkey/repository sarge" repo now returns 404 and breaks
+# every `apt update`. Webmin is installed from its .deb below, so no repo
+# is needed. The keyring file is likewise no longer used.
+rm -f /etc/apt/sources.list.d/webmin.list /usr/share/keyrings/webmin.gpg
+
 apt update && apt -y install zip curl wget gnupg2 net-tools software-properties-common lsb-release
 apt -y upgrade
 
@@ -295,59 +302,72 @@ pip3 install iksemel setuptools 2>/dev/null || true
 
 echo ">>> [6/13] Asterisk ${ASTERISK_VER}"
 cd /usr/src
-if [ ! -f "asterisk-${ASTERISK_VER}.tar.gz" ]; then
-  wget "https://downloads.asterisk.org/pub/telephony/asterisk/releases/asterisk-${ASTERISK_VER}.tar.gz"
+
+# Skip the build when this exact version is already installed, so re-running
+# the installer doesn't recompile Asterisk or trip on contrib scripts that
+# exit non-zero when their sources are already present.
+if command -v asterisk >/dev/null 2>&1 && asterisk -V 2>/dev/null | grep -q "Asterisk ${ASTERISK_VER}"; then
+  echo "Asterisk ${ASTERISK_VER} already installed — skipping build"
+else
+  if [ ! -f "asterisk-${ASTERISK_VER}.tar.gz" ]; then
+    wget "https://downloads.asterisk.org/pub/telephony/asterisk/releases/asterisk-${ASTERISK_VER}.tar.gz"
+  fi
+  tar zxf "asterisk-${ASTERISK_VER}.tar.gz"
+  cd "asterisk-${ASTERISK_VER}"
+
+  # get_mp3_source.sh prints "...already be present..." and exits 1 when
+  # addons/mp3 is already populated; that's not an error, so tolerate it.
+  contrib/scripts/get_mp3_source.sh || true
+  # install_prereq relies on `aptitude` (removed from Debian 12) and is
+  # redundant here — phase 3 already installed the build dependencies.
+  contrib/scripts/install_prereq install || true
+
+  ./configure \
+    --libdir=/usr/lib64 \
+    --with-crypto --with-ssl --with-mysqlclient \
+    --with-srtp --with-sqlite3 \
+    --with-jansson-bundled --with-pjproject-bundled
+
+  make menuselect.makeopts
+  MSEL="menuselect/menuselect"
+  for MOD in \
+    res_config_mysql format_mp3 app_saycounted app_macro smsq stereorize \
+    streamplayer check_expr check_expr2 \
+    codec_opus codec_silk codec_siren7 codec_siren14 \
+    res_ari res_ari_channels res_ari_bridges res_ari_endpoints \
+    res_ari_events res_ari_recordings res_ari_sounds \
+    res_http_websocket chan_websocket \
+    res_speech res_speech_vosk \
+    CORE-SOUNDS-EN-WAV CORE-SOUNDS-EN-ULAW CORE-SOUNDS-EN-ALAW \
+    CORE-SOUNDS-EN-GSM CORE-SOUNDS-EN-G729 CORE-SOUNDS-EN-G722 \
+    CORE-SOUNDS-EN-SLN16 CORE-SOUNDS-EN-SIREN7 CORE-SOUNDS-EN-SIREN14 \
+    MOH-OPSOUND-WAV MOH-OPSOUND-ULAW MOH-OPSOUND-ALAW MOH-OPSOUND-GSM \
+    MOH-OPSOUND-G729 MOH-OPSOUND-G722 MOH-OPSOUND-SLN16 \
+    MOH-OPSOUND-SIREN7 MOH-OPSOUND-SIREN14 \
+    EXTRA-SOUNDS-EN-WAV EXTRA-SOUNDS-EN-ULAW EXTRA-SOUNDS-EN-ALAW \
+    EXTRA-SOUNDS-EN-GSM EXTRA-SOUNDS-EN-G729 EXTRA-SOUNDS-EN-G722 \
+    EXTRA-SOUNDS-EN-SLN16 EXTRA-SOUNDS-EN-SIREN7 EXTRA-SOUNDS-EN-SIREN14; do
+    $MSEL --enable "$MOD" menuselect.makeopts 2>/dev/null || true
+  done
+
+  make && make install && make samples && make config
+  ldconfig
+
+  chown -R asterisk:asterisk /etc/asterisk
+  chown -R asterisk:asterisk /var/{lib,log,spool}/asterisk
+  chown -R asterisk:asterisk /usr/lib64/asterisk
+
+  sed -i 's|#AST_USER|AST_USER|'   /etc/default/asterisk
+  sed -i 's|#AST_GROUP|AST_GROUP|' /etc/default/asterisk
+  sed -i 's|;runuser|runuser|'     /etc/asterisk/asterisk.conf
+  sed -i 's|;rungroup|rungroup|'   /etc/asterisk/asterisk.conf
+  echo "/usr/lib64" >> /etc/ld.so.conf.d/x86_64-linux-gnu.conf
+  ldconfig
+
+  systemctl enable asterisk
 fi
-tar zxf "asterisk-${ASTERISK_VER}.tar.gz"
-cd "asterisk-${ASTERISK_VER}"
 
-contrib/scripts/get_mp3_source.sh
-contrib/scripts/install_prereq install
-
-./configure \
-  --libdir=/usr/lib64 \
-  --with-crypto --with-ssl --with-mysqlclient \
-  --with-srtp --with-sqlite3 \
-  --with-jansson-bundled --with-pjproject-bundled
-
-make menuselect.makeopts
-MSEL="menuselect/menuselect"
-for MOD in \
-  res_config_mysql format_mp3 app_saycounted app_macro smsq stereorize \
-  streamplayer check_expr check_expr2 \
-  codec_opus codec_silk codec_siren7 codec_siren14 \
-  res_ari res_ari_channels res_ari_bridges res_ari_endpoints \
-  res_ari_events res_ari_recordings res_ari_sounds \
-  res_http_websocket chan_websocket \
-  res_speech res_speech_vosk \
-  CORE-SOUNDS-EN-WAV CORE-SOUNDS-EN-ULAW CORE-SOUNDS-EN-ALAW \
-  CORE-SOUNDS-EN-GSM CORE-SOUNDS-EN-G729 CORE-SOUNDS-EN-G722 \
-  CORE-SOUNDS-EN-SLN16 CORE-SOUNDS-EN-SIREN7 CORE-SOUNDS-EN-SIREN14 \
-  MOH-OPSOUND-WAV MOH-OPSOUND-ULAW MOH-OPSOUND-ALAW MOH-OPSOUND-GSM \
-  MOH-OPSOUND-G729 MOH-OPSOUND-G722 MOH-OPSOUND-SLN16 \
-  MOH-OPSOUND-SIREN7 MOH-OPSOUND-SIREN14 \
-  EXTRA-SOUNDS-EN-WAV EXTRA-SOUNDS-EN-ULAW EXTRA-SOUNDS-EN-ALAW \
-  EXTRA-SOUNDS-EN-GSM EXTRA-SOUNDS-EN-G729 EXTRA-SOUNDS-EN-G722 \
-  EXTRA-SOUNDS-EN-SLN16 EXTRA-SOUNDS-EN-SIREN7 EXTRA-SOUNDS-EN-SIREN14; do
-  $MSEL --enable "$MOD" menuselect.makeopts 2>/dev/null || true
-done
-
-make && make install && make samples && make config
-ldconfig
-
-chown -R asterisk:asterisk /etc/asterisk
-chown -R asterisk:asterisk /var/{lib,log,spool}/asterisk
-chown -R asterisk:asterisk /usr/lib64/asterisk
-
-sed -i 's|#AST_USER|AST_USER|'   /etc/default/asterisk
-sed -i 's|#AST_GROUP|AST_GROUP|' /etc/default/asterisk
-sed -i 's|;runuser|runuser|'     /etc/asterisk/asterisk.conf
-sed -i 's|;rungroup|rungroup|'   /etc/asterisk/asterisk.conf
-echo "/usr/lib64" >> /etc/ld.so.conf.d/x86_64-linux-gnu.conf
-ldconfig
-
-systemctl enable asterisk
-systemctl start  asterisk
+systemctl start asterisk
 
 # ═══════════════════════════════════════════════════════════════
 # PHASE 7 — AMI, ARI, VOSK, WEBSOCKET CONFIG
