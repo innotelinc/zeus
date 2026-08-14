@@ -1,7 +1,7 @@
 #!/bin/bash
 # ============================================================
 #  Innotel VoIP / Fax Full Stack Installer
-#  Target:   Debian 12 "Bookworm" (minimal VM / LXC)
+#  Target:   Debian 12 "Bookworm" / Ubuntu 24.04 "Noble" (minimal VM / LXC)
 #  Stack:    Asterisk 22.10.1 (LTS) + FreePBX 17 + AvantFax 3.4.1
 #            IAXModem 1.3.5 + HylaFAX 7.0.11
 #            PHP 8.2 (FreePBX 17 default) + PHP 7.4 (AvantFax legacy)
@@ -10,7 +10,7 @@
 #            PBX Customer Portal (Next.js, port 3000)
 #  VM Spec:  200 GB HD | 16 GB RAM | 16 GB Swap
 #  Date:     August 2026
-#  NOTE:     Run as root on Debian 12 minimal. Review before executing.
+#  NOTE:     Run as root on Debian 12 / Ubuntu 24.04 minimal. Review before executing.
 # ============================================================
 
 set -euo pipefail
@@ -73,7 +73,7 @@ cd /usr/src
 # is needed. The keyring file is likewise no longer used.
 rm -f /etc/apt/sources.list.d/webmin.list /usr/share/keyrings/webmin.gpg
 
-apt update && apt -y install zip curl wget gnupg2 net-tools software-properties-common lsb-release
+apt update && apt -y install zip unzip curl wget rsync gnupg2 net-tools software-properties-common lsb-release
 apt -y upgrade
 
 # Proxmox LXC: prevent host-file clobbering
@@ -567,20 +567,14 @@ mysqladmin -p"${DB_PASS}" create asterisk         2>/dev/null || true
 mysqladmin -p"${DB_PASS}" create asteriskcdrdb    2>/dev/null || true
 mysqladmin -p"${DB_PASS}" create asteriskvoicemail 2>/dev/null || true
 
+# NOTE: ai_call_summaries is intentionally NOT created here. FreePBX populates
+# asteriskcdrdb with its `cdr` table during phase 9, but only when the database
+# is empty — any pre-existing table makes it skip cdr.sql. The table is created
+# after FreePBX is installed (see phase 9).
 mysql -p"${DB_PASS}" <<SQL
 GRANT ALL PRIVILEGES ON asterisk.*          TO asterisk@localhost IDENTIFIED BY '${DB_PASS}';
 GRANT ALL PRIVILEGES ON asteriskcdrdb.*     TO asterisk@localhost IDENTIFIED BY '${DB_PASS}';
 GRANT ALL PRIVILEGES ON asteriskvoicemail.* TO asterisk@localhost IDENTIFIED BY '${DB_PASS}';
-CREATE TABLE IF NOT EXISTS asteriskcdrdb.ai_call_summaries (
-  id         INT AUTO_INCREMENT PRIMARY KEY,
-  uniqueid   VARCHAR(32),
-  caller     VARCHAR(64),
-  callee     VARCHAR(64),
-  summary    TEXT,
-  intent     VARCHAR(128),
-  sentiment  VARCHAR(32),
-  created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-);
 FLUSH PRIVILEGES;
 SQL
 
@@ -665,18 +659,67 @@ systemctl restart mariadb
 
 echo ">>> [9/13] FreePBX 17"
 
-# Use the official FreePBX Debian installer (native on Debian 12)
-cd /tmp
-wget -O sng_freepbx_debian_install.sh \
-  https://github.com/FreePBX/sng_freepbx_debian_install/raw/master/sng_freepbx_debian_install.sh
-chmod +x sng_freepbx_debian_install.sh
-
-# --noasterisk = keep our compiled Asterisk 22.10.1
-bash sng_freepbx_debian_install.sh --noasterisk --opensourceonly
+# The Sangoma installer (sng_freepbx_debian_install.sh) hard-codes Debian 12
+# (bookworm) and pulls packages from a bookworm-only apt repository, so it
+# cannot run on Ubuntu (e.g. 24.04 "noble"). Install FreePBX directly from the
+# official framework tarball instead — it is OS-agnostic and is the same
+# approach the full-stack Docker image (Dockerfile.full) uses.
 
 # ─── Node.js (FreePBX UCP) ────────────────────────────────────
+# The FreePBX installer requires Node 8+ (`node --version`) and aborts without
+# it, so install Node BEFORE running the installer.
 curl -fsSL https://deb.nodesource.com/setup_20.x | bash -
 apt -y install nodejs
+
+# PHP 8.2 extensions FreePBX 17 expects (mirrors Dockerfile.full prerequisites)
+apt -y install php8.2-bz2 php8.2-soap php8.2-sqlite3
+
+# The installer talks to a running Asterisk as the 'asterisk' user, so make
+# sure the CLI is on that user's PATH (login.defs omits /usr/sbin) and that
+# Asterisk is up before proceeding.
+ln -sf /usr/sbin/asterisk /usr/local/bin/asterisk
+if ! asterisk -rx 'core show version' >/dev/null 2>&1; then
+  systemctl restart asterisk 2>/dev/null || true
+  sleep 5
+fi
+asterisk -rx 'core show version'
+
+cd /usr/src
+# Pinned version + SHA256 so the installer is reproducible — the mirror's
+# "-latest" pointer drifts as new FreePBX releases ship. Bump both together.
+FREEPBX_VER="17.0.19.32"
+FREEPBX_SHA256="ea8b1c6fefcb09ed472fb90aaf0301ca54c8d8223c1b8b5c526b27fb6718ffe4"
+wget -q "https://mirror.freepbx.org/modules/packages/freepbx/freepbx-${FREEPBX_VER}.tgz"
+echo "${FREEPBX_SHA256}  freepbx-${FREEPBX_VER}.tgz" | sha256sum -c -
+tar zxf "freepbx-${FREEPBX_VER}.tgz"
+rm "freepbx-${FREEPBX_VER}.tgz"
+cd /usr/src/freepbx
+chown -R asterisk:asterisk .
+
+# Install non-interactively as the DB root user (rootdb mode creates the
+# 'freepbxuser' DB user plus the asterisk/asteriskcdrdb databases).
+# NOTE: the installer returns exit code 1 even on success (Symfony ends with
+# `return 1`), so its failure must not abort the run.
+./install -n --dbuser=root --dbpass="${DB_PASS}" || true
+fwconsole ma installlocal || true
+fwconsole reload
+cd /usr/src && rm -rf freepbx
+
+# ─── AI CDR summaries table ───────────────────────────────────
+# Created here (not phase 8) so FreePBX sees an empty asteriskcdrdb and runs
+# cdr.sql to create the `cdr` table that the AI CDR pipeline updates.
+mysql -p"${DB_PASS}" <<SQL
+CREATE TABLE IF NOT EXISTS asteriskcdrdb.ai_call_summaries (
+  id         INT AUTO_INCREMENT PRIMARY KEY,
+  uniqueid   VARCHAR(32),
+  caller     VARCHAR(64),
+  callee     VARCHAR(64),
+  summary    TEXT,
+  intent     VARCHAR(128),
+  sentiment  VARCHAR(32),
+  created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+SQL
 
 # ─── FreePBX modules ──────────────────────────────────────────
 fwconsole ma downloadinstall pm2      2>/dev/null || true
@@ -1217,7 +1260,7 @@ chmod 775 /var/lib/asterisk/agi-bin/
 mkdir -p /var/lib/asterisk/sounds/en/custom/
 chown asterisk:asterisk /var/lib/asterisk/sounds/en/custom
 
-pip3 install vosk websocket-client pymysql 2>/dev/null || true
+pip3 install --break-system-packages vosk websocket-client pymysql 2>/dev/null || true
 
 apt -y install \
   wget bzip2 xz-utils g++ make cmake git \

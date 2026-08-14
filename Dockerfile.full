@@ -154,8 +154,9 @@ RUN apt update && apt -y install --no-install-recommends --ignore-missing \
     chown mysql:mysql /var/run/mysqld && \
     service mariadb start && \
     cd /usr/src && \
-    wget -q https://mirror.freepbx.org/modules/packages/freepbx/freepbx-17.0-latest.tgz && \
-    tar zxf freepbx-17.0-latest.tgz && rm freepbx-17.0-latest.tgz && \
+    wget -q https://mirror.freepbx.org/modules/packages/freepbx/freepbx-17.0.19.32.tgz && \
+    echo "ea8b1c6fefcb09ed472fb90aaf0301ca54c8d8223c1b8b5c526b27fb6718ffe4  freepbx-17.0.19.32.tgz" | sha256sum -c - && \
+    tar zxf freepbx-17.0.19.32.tgz && rm freepbx-17.0.19.32.tgz && \
     cd /usr/src/freepbx && chown -R asterisk:asterisk . && \
     # Make sure the asterisk CLI is on PATH for the 'asterisk' user
     # (login.defs PATH does not include /usr/sbin on Debian).

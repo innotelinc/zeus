@@ -274,12 +274,17 @@ If you're deploying the portal standalone (Option 1 or 3), you need these servic
 
 ### FreePBX 17 + Asterisk
 
-Install on Debian 12 using the official installer:
+Install from the official framework tarball (works on Debian 12 or Ubuntu 24.04 —
+the Sangoma `sng_freepbx_debian_install.sh` only supports Debian 12):
 
 ```bash
-cd /tmp
-wget https://github.com/FreePBX/sng_freepbx_debian_install/raw/master/sng_freepbx_debian_install.sh
-bash sng_freepbx_debian_install.sh
+cd /usr/src
+wget -q https://mirror.freepbx.org/modules/packages/freepbx/freepbx-17.0.19.32.tgz
+tar zxf freepbx-17.0.19.32.tgz && cd freepbx
+# Requires a running Asterisk (18-22) and Node 8+. Set your MySQL root password.
+./install -n --dbuser=root --dbpass="YOUR_MYSQL_ROOT_PASSWORD" || true
+fwconsole ma installlocal || true
+fwconsole reload
 ```
 
 After installation, configure:
