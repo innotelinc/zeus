@@ -961,11 +961,11 @@ fi
 # ─── FreePBX OAuth2 API Client auto-configuration ───────────
 info "Configuring FreePBX OAuth2 API for PBX Portal"
 
-# Install the API and REST API modules
+# Install the FreePBX API module (REST + GraphQL/OAuth2 that the portal
+# uses). There is no separate 'restapi' module — downloading it fails with
+# "Retrieved Module XML Was Empty", so it's omitted here.
 fwconsole ma downloadinstall api 2>/dev/null || true
-fwconsole ma downloadinstall restapi 2>/dev/null || true
 fwconsole ma enable api 2>/dev/null || true
-fwconsole ma enable restapi 2>/dev/null || true
 fwconsole reload 2>/dev/null || true
 
 # Generate or reuse API client credentials
