@@ -705,6 +705,76 @@ fwconsole ma installlocal || true
 fwconsole reload
 cd /usr/src && rm -rf freepbx
 
+# ─── FreePBX CDR/CEL tables (safety net) ──────────────────────
+# FreePBX normally creates asteriskcdrdb.cdr/.cel during install, but only
+# when the database is empty — a pre-existing database or a partial install
+# that skipped cdr.sql leaves them missing, and the CDR Reports / Call Event
+# Logging pages then throw "Table 'asteriskcdrdb.cdr' doesn't exist" (or
+# .cel) from Database.class.php / Cel.class.php. Recreate idempotently.
+mysql -p"${DB_PASS}" <<'SQL'
+CREATE TABLE IF NOT EXISTS asteriskcdrdb.cdr (
+  calldate datetime NOT NULL DEFAULT '1000-01-01 00:00:00',
+  clid varchar(80) NOT NULL DEFAULT '',
+  src varchar(80) NOT NULL DEFAULT '',
+  dst varchar(80) NOT NULL DEFAULT '',
+  dcontext varchar(80) NOT NULL DEFAULT '',
+  channel varchar(80) NOT NULL DEFAULT '',
+  dstchannel varchar(80) NOT NULL DEFAULT '',
+  lastapp varchar(80) NOT NULL DEFAULT '',
+  lastdata varchar(80) NOT NULL DEFAULT '',
+  duration int(11) NOT NULL DEFAULT '0',
+  billsec int(11) NOT NULL DEFAULT '0',
+  disposition varchar(45) NOT NULL DEFAULT '',
+  amaflags int(11) NOT NULL DEFAULT '0',
+  accountcode varchar(20) NOT NULL DEFAULT '',
+  uniqueid varchar(32) NOT NULL DEFAULT '',
+  userfield varchar(255) NOT NULL DEFAULT '',
+  did varchar(50) NOT NULL DEFAULT '',
+  recordingfile varchar(255) NOT NULL DEFAULT '',
+  cnum varchar(80) NOT NULL DEFAULT '',
+  cnam varchar(80) NOT NULL DEFAULT '',
+  outbound_cnum varchar(80) NOT NULL DEFAULT '',
+  outbound_cnam varchar(80) NOT NULL DEFAULT '',
+  dst_cnam varchar(80) NOT NULL DEFAULT '',
+  linkedid varchar(32) NOT NULL DEFAULT '',
+  peeraccount varchar(80) NOT NULL DEFAULT '',
+  sequence int(11) NOT NULL DEFAULT '0',
+  KEY calldate (calldate),
+  KEY dst (dst),
+  KEY accountcode (accountcode),
+  KEY uniqueid (uniqueid),
+  KEY did (did),
+  KEY recordingfile (recordingfile(191))
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE IF NOT EXISTS asteriskcdrdb.cel (
+  id int(11) NOT NULL AUTO_INCREMENT,
+  eventtype varchar(30) NOT NULL,
+  eventtime datetime NOT NULL,
+  cid_name varchar(80) NOT NULL,
+  cid_num varchar(80) NOT NULL,
+  cid_ani varchar(80) NOT NULL,
+  cid_rdnis varchar(80) NOT NULL,
+  cid_dnid varchar(80) NOT NULL,
+  exten varchar(80) NOT NULL,
+  context varchar(80) NOT NULL,
+  channame varchar(80) NOT NULL,
+  appname varchar(80) NOT NULL,
+  appdata varchar(255) NOT NULL,
+  amaflags int(11) NOT NULL,
+  accountcode varchar(20) NOT NULL,
+  uniqueid varchar(32) NOT NULL,
+  linkedid varchar(32) NOT NULL,
+  peer varchar(80) NOT NULL,
+  userdeftype varchar(255) NOT NULL,
+  extra varchar(512) NOT NULL,
+  PRIMARY KEY (id),
+  KEY uniqueid_index (uniqueid),
+  KEY linkedid_index (linkedid),
+  KEY context_index (context)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+SQL
+
 # ─── AI CDR summaries table ───────────────────────────────────
 # Created here (not phase 8) so FreePBX sees an empty asteriskcdrdb and runs
 # cdr.sql to create the `cdr` table that the AI CDR pipeline updates.
@@ -995,6 +1065,12 @@ if [ -f iaxmodem-1.3.5.tar.gz ]; then
   cd /usr/src
 fi
 
+# Ensure the config dir exists even when the iaxmodem tarball isn't staged in
+# /usr/src — the build above is skipped in that case, but the config loop
+# below is not, and the write used to abort the whole installer with
+# "/etc/iaxmodem/ttyIAX1: No such file or directory".
+mkdir -p /etc/iaxmodem /var/log/iaxmodem
+
 for N in 1 2 3 4; do
 cat > "/etc/iaxmodem/ttyIAX${N}" <<EOF
 device          /dev/ttyIAX${N}
@@ -1031,6 +1107,11 @@ if [ -f "$POLICY" ]; then
     sed -i "s|<policy domain=\"coder\" rights=\"none\" pattern=\"${PAT}\"|<policy domain=\"coder\" rights=\"read|write\" pattern=\"${PAT}\"|g" "$POLICY" || true
   done
 fi
+
+# Same as IAXModem above: the HylaFAX spool + /usr/local/lib/fax are only
+# created by `make install` when the tarball is present — create them here so
+# the config writes below can't abort the installer.
+mkdir -p /var/spool/hylafax/etc /usr/local/lib/fax
 
 for N in 1 2 3 4; do
 cat > "/var/spool/hylafax/etc/config.ttyIAX${N}" <<EOF
@@ -1081,7 +1162,9 @@ EOF
 
 faxdeluser localhost  2>/dev/null || true
 faxdeluser 127.0.0.1 2>/dev/null || true
-faxadduser -a admin "${DB_PASS}"
+# faxadduser is only installed by HylaFAX `make install`; guard it so a
+# missing hylafax tarball can't abort the installer (mirrors faxdeluser).
+faxadduser -a admin "${DB_PASS}" 2>/dev/null || true
 echo "127.0.0.1" >> /var/spool/hylafax/etc/hosts.hfaxd
 
 for N in 1 2 3 4; do
@@ -1167,6 +1250,10 @@ if [ -f avantfax-3.4.1.tgz ]; then
 fi
 
 # ─── AvantFAX local_config.php ───────────────────────────────
+# Only written when the AvantFax web root exists (it's created when the
+# tarball is extracted above). Don't create a stray /var/www/html/fax
+# directory here — that would break the `ln -sf` symlink on a re-run.
+if [ -d /var/www/html/fax/includes ]; then
 cat > /var/www/html/fax/includes/local_config.php <<PHP
 <?php
         define('AFDB_USER',     'avantfax');
@@ -1234,6 +1321,8 @@ cat > /var/www/html/fax/includes/local_config.php <<PHP
 PHP
 
 # ─── AvantFAX cron ───────────────────────────────────────────
+fi
+
 cat > /etc/cron.d/avantfax <<'EOF'
 0 * * * * root /var/www/html/fax/includes/phb.php
 0 0 * * * root /var/www/html/fax/includes/avantfaxcron.php -t 2

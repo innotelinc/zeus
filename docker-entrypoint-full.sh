@@ -14,6 +14,78 @@ echo ">>> Starting Innotel PBX Full Stack..."
 mkdir -p /var/run/mysqld && chown mysql:mysql /var/run/mysqld 2>/dev/null || true
 service mariadb start
 
+# ── Ensure FreePBX CDR/CEL tables exist ──────────────────────
+# FreePBX creates asteriskcdrdb.cdr/.cel only when the database is empty at
+# install time. A pre-existing/restored mariadb-data volume (or a partial
+# install that skipped cdr.sql) leaves them missing, and the CDR Reports /
+# Call Event Logging pages then throw "Table 'asteriskcdrdb.cdr' doesn't
+# exist" (or .cel) from Database.class.php / Cel.class.php. Recreate them
+# idempotently on every boot.
+mysql -u root <<'SQL' 2>/dev/null || true
+CREATE DATABASE IF NOT EXISTS asteriskcdrdb;
+CREATE TABLE IF NOT EXISTS asteriskcdrdb.cdr (
+  calldate datetime NOT NULL DEFAULT '1000-01-01 00:00:00',
+  clid varchar(80) NOT NULL DEFAULT '',
+  src varchar(80) NOT NULL DEFAULT '',
+  dst varchar(80) NOT NULL DEFAULT '',
+  dcontext varchar(80) NOT NULL DEFAULT '',
+  channel varchar(80) NOT NULL DEFAULT '',
+  dstchannel varchar(80) NOT NULL DEFAULT '',
+  lastapp varchar(80) NOT NULL DEFAULT '',
+  lastdata varchar(80) NOT NULL DEFAULT '',
+  duration int(11) NOT NULL DEFAULT '0',
+  billsec int(11) NOT NULL DEFAULT '0',
+  disposition varchar(45) NOT NULL DEFAULT '',
+  amaflags int(11) NOT NULL DEFAULT '0',
+  accountcode varchar(20) NOT NULL DEFAULT '',
+  uniqueid varchar(32) NOT NULL DEFAULT '',
+  userfield varchar(255) NOT NULL DEFAULT '',
+  did varchar(50) NOT NULL DEFAULT '',
+  recordingfile varchar(255) NOT NULL DEFAULT '',
+  cnum varchar(80) NOT NULL DEFAULT '',
+  cnam varchar(80) NOT NULL DEFAULT '',
+  outbound_cnum varchar(80) NOT NULL DEFAULT '',
+  outbound_cnam varchar(80) NOT NULL DEFAULT '',
+  dst_cnam varchar(80) NOT NULL DEFAULT '',
+  linkedid varchar(32) NOT NULL DEFAULT '',
+  peeraccount varchar(80) NOT NULL DEFAULT '',
+  sequence int(11) NOT NULL DEFAULT '0',
+  KEY calldate (calldate),
+  KEY dst (dst),
+  KEY accountcode (accountcode),
+  KEY uniqueid (uniqueid),
+  KEY did (did),
+  KEY recordingfile (recordingfile(191))
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE IF NOT EXISTS asteriskcdrdb.cel (
+  id int(11) NOT NULL AUTO_INCREMENT,
+  eventtype varchar(30) NOT NULL,
+  eventtime datetime NOT NULL,
+  cid_name varchar(80) NOT NULL,
+  cid_num varchar(80) NOT NULL,
+  cid_ani varchar(80) NOT NULL,
+  cid_rdnis varchar(80) NOT NULL,
+  cid_dnid varchar(80) NOT NULL,
+  exten varchar(80) NOT NULL,
+  context varchar(80) NOT NULL,
+  channame varchar(80) NOT NULL,
+  appname varchar(80) NOT NULL,
+  appdata varchar(255) NOT NULL,
+  amaflags int(11) NOT NULL,
+  accountcode varchar(20) NOT NULL,
+  uniqueid varchar(32) NOT NULL,
+  linkedid varchar(32) NOT NULL,
+  peer varchar(80) NOT NULL,
+  userdeftype varchar(255) NOT NULL,
+  extra varchar(512) NOT NULL,
+  PRIMARY KEY (id),
+  KEY uniqueid_index (uniqueid),
+  KEY linkedid_index (linkedid),
+  KEY context_index (context)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+SQL
+
 # Override AMI secret from env var if provided
 if [ -n "${FREEPBX_AMI_SECRET:-}" ]; then
   sed -i "s/secret = .*/secret = ${FREEPBX_AMI_SECRET}/" /etc/asterisk/manager_custom.conf
