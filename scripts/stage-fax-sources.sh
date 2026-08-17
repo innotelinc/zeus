@@ -2,10 +2,10 @@
 # ═══════════════════════════════════════════════════════════════
 #  Innotel PBX — Stage Fax-Stack Source Tarballs
 # ═══════════════════════════════════════════════════════════════
-#  Downloads the phase-10 (fax) source archives into /usr/src so
+#  Downloads the phase-11 (fax) source archives into /usr/src so
 #  scripts/setup.sh can build IAXModem + HylaFAX + AvantFax + OCR.
 #
-#  Why this exists: setup.sh phase 10 only builds each fax component
+#  Why this exists: setup.sh phase 11 only builds each fax component
 #  when its tarball is already present in /usr/src. On a bare-metal
 #  VM those tarballs are not shipped, so the build is silently skipped
 #  and (before the fail-open fix) the config step aborted the installer

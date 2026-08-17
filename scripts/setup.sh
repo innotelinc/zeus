@@ -1,58 +1,23 @@
 #!/bin/bash
-# ============================================================
-#  Innotel VoIP / Fax Full Stack Installer
-#  Target:   Debian 12 "Bookworm" / Ubuntu 24.04 "Noble" (minimal VM / LXC)
-#  Stack:    Asterisk 22.10.1 (LTS) + FreePBX 17 + AvantFax 3.4.1
+# ═══════════════════════════════════════════════════════════════
+#  Innotel FreePBX / Fax Stack Installer
+#  Target:   Ubuntu 24.04 "Noble" LXC (privileged) / minimal VM
+#  Stack:    Asterisk 22.10.1 (+ 20.20.1 source for VOSK module)
+#            FreePBX 17 + AvantFax 3.4.1
 #            IAXModem 1.3.5 + HylaFAX 7.0.11
-#            PHP 8.2 (FreePBX 17 default) + PHP 7.4 (AvantFax legacy)
-#            VOSK Speech-to-Text + Dograh ARI WebSocket
-#            AI CDR Summarisation (Ollama / llama3.1:8b)
-#            PBX Customer Portal (Next.js, port 3000)
+#            PHP 8.3 + VOSK Speech-to-Text + AI CDR (Ollama)
+#            Webmin + Code-Server + Fail2Ban + AsterBan
 #  VM Spec:  200 GB HD | 16 GB RAM | 16 GB Swap
 #  Date:     August 2026
-#  NOTE:     Run as root on Debian 12 / Ubuntu 24.04 minimal. Review before executing.
-# ============================================================
+#  NOTE:     Run as root on Ubuntu 24.04. Review before executing.
+#
+#  The PBX Customer Portal is installed by a SEPARATE script:
+#      scripts/setup-portal.sh
+#  This script only provisions the FreePBX/Asterisk/fax server and
+#  leaves it portal-ready (AMI user, ARI, WSS transport, OAuth2 API).
+# ═══════════════════════════════════════════════════════════════
 
 set -euo pipefail
-
-# ─── VARIABLES ────────────────────────────────────────────────
-HOSTNAME="${HOSTNAME:-voice.innotel.us}"
-PUB_IP="${PUB_IP:-}"
-DB_PASS="${DB_PASS:-eExoVkmrjqJcUv3A17Zc}"
-ADMIN_EMAIL="${ADMIN_EMAIL:-admin@innotel.us}"
-FAX_EMAIL="${FAX_EMAIL:-fax@innotel.us}"
-SMTP_HOST="${SMTP_HOST:-mail.innotel.us}"
-SMTP_SSL_HOST="${SMTP_SSL_HOST:-ssl://mx.innotel.us}"
-SMTP_PORT="${SMTP_PORT:-465}"
-ASTERISK_VER="${ASTERISK_VER:-22.10.1}"
-FAX_NUMBER="${FAX_NUMBER:-7745057136}"
-FAX_AREACODE="${FAX_AREACODE:-774}"
-FAX_COUNTRY="${FAX_COUNTRY:-1}"
-DOGRAH_WS_URI="${DOGRAH_WS_URI:-ws://aivoice.innotel.us/api/v1/telephony/ws/ari}"
-DOGRAH_ARI_PASS="${DOGRAH_ARI_PASS:-eExoVkmrjqJcUv3A17Zc-dograh}"
-ARI_HTTP_PORT="${ARI_HTTP_PORT:-8088}"
-
-# PBX Portal variables
-VOIPMS_USER="${VOIPMS_USER:-}"
-VOIPMS_PASS="${VOIPMS_PASS:-}"
-VOIPMS_SIP_SERVER="${VOIPMS_SIP_SERVER:-newyork1.voip.ms}"
-VOIPMS_MAIN_ACCOUNT="${VOIPMS_MAIN_ACCOUNT:-}"
-VOIPMS_SIP_USER="${VOIPMS_SIP_USER:-}"
-VOIPMS_SIP_PASS="${VOIPMS_SIP_PASS:-}"
-ATLAS_URL="${ATLAS_URL:-http://atlas-server:3000}"
-ATLAS_API_KEY="${ATLAS_API_KEY:-$(openssl rand -hex 32)}"
-SESSION_SECRET="${SESSION_SECRET:-$(openssl rand -hex 32)}"
-STRIPE_SECRET_KEY="${STRIPE_SECRET_KEY:-}"
-STRIPE_WEBHOOK_SECRET="${STRIPE_WEBHOOK_SECRET:-}"
-STRIPE_PUBLISHABLE_KEY="${STRIPE_PUBLISHABLE_KEY:-}"
-TURN_SERVER="${TURN_SERVER:-}"
-TURN_USERNAME="${TURN_USERNAME:-}"
-TURN_CREDENTIAL="${TURN_CREDENTIAL:-}"
-FREEPBX_AMI_USER="${FREEPBX_AMI_USER:-pbxportal}"
-FREEPBX_AMI_SECRET="${FREEPBX_AMI_SECRET:-$(openssl rand -hex 16)}"
-FREEPBX_CLIENT_ID="${FREEPBX_CLIENT_ID:-pbxportal-api}"
-FREEPBX_CLIENT_SECRET="${FREEPBX_CLIENT_SECRET:-$(openssl rand -hex 24)}"
-APP_DIR="${APP_DIR:-/opt/innotel-pbx}"
 
 GREEN='\033[0;32m'; YELLOW='\033[1;33m'; RED='\033[0;31m'; CYAN='\033[0;36m'; NC='\033[0m'
 log()  { echo -e "${GREEN}[✓]${NC} $*"; }
@@ -60,12 +25,89 @@ warn() { echo -e "${YELLOW}[!]${NC} $*"; }
 err()  { echo -e "${RED}[✗]${NC} $*"; }
 info() { echo -e "${CYAN}[i]${NC} $*"; }
 
+# ─── SECRETS (.env) ──────────────────────────────────────────
+# All secrets live in an .env file — never hardcoded in this script.
+# Copy scripts/pbx.env.example to pbx.env (next to this script) or set
+# PBX_ENV_FILE=/path/to/pbx.env and fill in the real values. The file is
+# sourced below so its values override the defaults that follow.
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PBX_ENV_FILE="${PBX_ENV_FILE:-${SCRIPT_DIR}/pbx.env}"
+if [ -f "$PBX_ENV_FILE" ]; then
+  set -a
+  # shellcheck disable=SC1090
+  . "$PBX_ENV_FILE"
+  set +a
+  info "Loaded secrets from ${PBX_ENV_FILE}"
+else
+  warn "No secrets file at ${PBX_ENV_FILE}"
+  warn "Copy scripts/pbx.env.example to pbx.env and fill in the values."
+fi
+
+# ─── VARIABLES ────────────────────────────────────────────────
+HOSTNAME="${HOSTNAME:-voice.innotel.us}"
+PUB_IP="${PUB_IP:-}"
+DB_PASS="${DB_PASS:-}"
+ADMIN_EMAIL="${ADMIN_EMAIL:-admin@innotel.us}"
+FAX_EMAIL="${FAX_EMAIL:-fax@innotel.us}"
+SMTP_HOST="${SMTP_HOST:-mail.innotel.us}"
+SMTP_SSL_HOST="${SMTP_SSL_HOST:-ssl://mx.innotel.us}"
+SMTP_PORT="${SMTP_PORT:-465}"
+SMTP_PASS="${SMTP_PASS:-${DB_PASS}}"
+ASTERISK_VER="${ASTERISK_VER:-22.10.1}"
+# The VOSK Asterisk module (vosk-asterisk) is compiled against this source
+# tree. 22.10.1 is the runtime Asterisk; keep a 20.20.1 tree around for
+# anything compiled against the older headers, matching the classic layout.
+ASTERISK_LEGACY_VER="${ASTERISK_LEGACY_VER:-20.20.1}"
+FAX_NUMBER="${FAX_NUMBER:-7745057136}"
+FAX_AREACODE="${FAX_AREACODE:-774}"
+FAX_COUNTRY="${FAX_COUNTRY:-1}"
+DOGRAH_WS_URI="${DOGRAH_WS_URI:-ws://aivoice.innotel.us/api/v1/telephony/ws/ari}"
+DOGRAH_ARI_PASS="${DOGRAH_ARI_PASS:-$(openssl rand -hex 16)-dograh}"
+ARI_HTTP_PORT="${ARI_HTTP_PORT:-8088}"
+VOSK_MODEL_URL="${VOSK_MODEL_URL:-https://alphacephei.com/vosk/models/vosk-model-en-us-0.22-lgraph.zip}"
+VOSK_MODEL_DIR="${VOSK_MODEL_DIR:-vosk-model-en-us-0.22-lgraph}"
+OLLAMA_MODEL="${OLLAMA_MODEL:-llama3.2}"
+
+# Portal-facing credentials (consumed by scripts/setup-portal.sh)
+FREEPBX_AMI_USER="${FREEPBX_AMI_USER:-pbxportal}"
+FREEPBX_AMI_SECRET="${FREEPBX_AMI_SECRET:-$(openssl rand -hex 16)}"
+FREEPBX_CLIENT_ID="${FREEPBX_CLIENT_ID:-pbxportal-api}"
+FREEPBX_CLIENT_SECRET="${FREEPBX_CLIENT_SECRET:-$(openssl rand -hex 24)}"
+
+# ─── VoIP.ms trunks (SIP/PJSIP + IAX) & SMS ──────────────────
+VOIPMS_SIP_USER="${VOIPMS_SIP_USER:-}"
+VOIPMS_SIP_PASS="${VOIPMS_SIP_PASS:-}"
+VOIPMS_SIP_SERVER="${VOIPMS_SIP_SERVER:-newyork1.voip.ms}"
+VOIPMS_IAX_USER="${VOIPMS_IAX_USER:-${VOIPMS_SIP_USER}}"
+VOIPMS_IAX_PASS="${VOIPMS_IAX_PASS:-${VOIPMS_SIP_PASS}}"
+VOIPMS_TRUNK_NAME="${VOIPMS_TRUNK_NAME:-voipms_pjsip}"
+VOIPMS_IAX_TRUNK_NAME="${VOIPMS_IAX_TRUNK_NAME:-voipms}"
+# DID numbers that may send/receive SMS over the PJSIP trunk
+SMS_DIDS="${SMS_DIDS:-7745057135 8579901777 4135612020 4132643964 7257807770}"
+SMS_IN_CONTEXT="${SMS_IN_CONTEXT:-sms-in}"
+SMS_OUT_CONTEXT="${SMS_OUT_CONTEXT:-sms-out}"
+# IAXModem <-> FreePBX peer secret (must match on both sides)
+IAXMODEM_SECRET="${IAXMODEM_SECRET:-329fax}"
+
+# DB_PASS is the master password — it is required.
+if [ -z "$DB_PASS" ] || [ "$DB_PASS" = "CHANGE_ME" ]; then
+  err "DB_PASS is not set — add it to ${PBX_ENV_FILE} (see scripts/pbx.env.example)"
+  exit 1
+fi
+
 # ═══════════════════════════════════════════════════════════════
 # PHASE 1 — BASE SYSTEM
 # ═══════════════════════════════════════════════════════════════
 
-echo ">>> [1/13] System update & base packages"
-cd /usr/src
+echo ">>> [1/15] System update & base packages"
+cd /usr/src || true
+
+# Proxmox LXC: DAHDI dummy devices + host-file clobbering.
+# For a privileged LXC add these to the container config:
+#   lxc.cgroup2.devices.allow: c 196:* rwm
+#   lxc.mount.entry: /dev/dahdi dev/dahdi none bind,optional,create=dir
+touch /etc/.pve-ignore.hosts 2>/dev/null || true
+touch /etc/.pve-ignore.resolv.conf 2>/dev/null || true
 
 # Remove any stale Webmin apt repo left over from an older setup.sh run.
 # The legacy "newkey/repository sarge" repo now returns 404 and breaks
@@ -73,12 +115,10 @@ cd /usr/src
 # is needed. The keyring file is likewise no longer used.
 rm -f /etc/apt/sources.list.d/webmin.list /usr/share/keyrings/webmin.gpg
 
-apt update && apt -y install zip unzip curl wget rsync gnupg2 net-tools software-properties-common lsb-release
+apt update && apt -y install zip zstd unzip curl wget rsync gnupg2 net-tools software-properties-common lsb-release
+apt -y remove apparmor 2>/dev/null || true
+apt -y purge apparmor  2>/dev/null || true
 apt -y upgrade
-
-# Proxmox LXC: prevent host-file clobbering
-touch /etc/.pve-ignore.hosts 2>/dev/null || true
-touch /etc/.pve-ignore.resolv.conf 2>/dev/null || true
 
 # ─── Hostname ─────────────────────────────────────────────────
 hostnamectl set-hostname "${HOSTNAME}" --static
@@ -105,15 +145,19 @@ fi
 info "Installing Webmin"
 WEBMIN_VER="2.653"
 WEBMIN_SHA256="e7698812d5fe79268202c6051dbfb140c94a43df0d28509b894511b27e5f0b15"
-curl -fsSL "https://download.webmin.com/download/repository/pool/contrib/w/webmin/webmin_${WEBMIN_VER}_all.deb" \
-  -o /tmp/webmin.deb
-echo "${WEBMIN_SHA256}  /tmp/webmin.deb" | sha256sum -c -
-apt-get -y install --install-recommends /tmp/webmin.deb
-rm -f /tmp/webmin.deb
+if ! command -v webmin >/dev/null 2>&1; then
+  curl -fsSL "https://download.webmin.com/download/repository/pool/contrib/w/webmin/webmin_${WEBMIN_VER}_all.deb" \
+    -o /tmp/webmin.deb
+  echo "${WEBMIN_SHA256}  /tmp/webmin.deb" | sha256sum -c -
+  apt-get -y install --install-recommends /tmp/webmin.deb
+  rm -f /tmp/webmin.deb
+fi
 
 # ─── Code-Server (VS Code in browser) ─────────────────────────
 info "Installing Code-Server"
-curl -fsSL https://code-server.dev/install.sh | sh
+if ! command -v code-server >/dev/null 2>&1; then
+  curl -fsSL https://code-server.dev/install.sh | sh
+fi
 mkdir -p ~/.config/code-server
 cat > ~/.config/code-server/config.yaml <<EOF
 bind-addr: 0.0.0.0:8081
@@ -121,25 +165,24 @@ auth: password
 password: ${DB_PASS}
 cert: false
 EOF
-systemctl enable --now code-server@root
+systemctl enable --now code-server@root 2>/dev/null || true
 
 # ═══════════════════════════════════════════════════════════════
 # PHASE 2 — REPOSITORIES & SENDMAIL
 # ═══════════════════════════════════════════════════════════════
 
-echo ">>> [2/13] PHP repositories & sendmail"
+echo ">>> [2/15] PHP 8.3 repositories & sendmail"
 
-# PHP 8.2 is native on Debian 12. PHP 7.4 needs sury.org.
-curl -fsSL https://packages.sury.org/php/apt.gpg | gpg --dearmor -o /usr/share/keyrings/sury-php.gpg
-echo "deb [signed-by=/usr/share/keyrings/sury-php.gpg] https://packages.sury.org/php/ $(lsb_release -sc) main" \
-  > /etc/apt/sources.list.d/php.list
+# PHP 8.3 on Ubuntu 24.04 comes from the ondrej/php PPA.
+add-apt-repository -y ppa:ondrej/php
+add-apt-repository -y ppa:deadsnakes/ppa
 apt update && apt -y upgrade
 
 # ─── Sendmail ─────────────────────────────────────────────────
 apt -y install mailutils libsasl2-modules sasl2-bin sendmail
 
 cat > /etc/mail/authinfo <<EOF
-AuthInfo:${SMTP_HOST} "U:admin" "I:${ADMIN_EMAIL}" "P:oFLsqu6g0u"
+AuthInfo:${SMTP_HOST} "U:admin" "I:${ADMIN_EMAIL}" "P:${SMTP_PASS}"
 EOF
 
 cat > /etc/mail/genericstable <<EOF
@@ -151,6 +194,9 @@ localhost
 ${HOSTNAME}
 EOF
 
+# Append the authinfo/genericstable features + SMART_HOST to sendmail.mc
+# (idempotent: only append once).
+if ! grep -q 'FEATURE(`authinfo' /etc/mail/sendmail.mc 2>/dev/null; then
 cat >> /etc/mail/sendmail.mc <<'SENDMAILEOF'
 FEATURE(`authinfo', `hash -o /etc/mail/authinfo.db')dnl
 FEATURE(`genericstable', `hash -o /etc/mail/genericstable.db')dnl
@@ -164,14 +210,23 @@ define(`RELAY_MAILER_ARGS', `TCP $h 465')dnl
 define(`ESMTP_MAILER_ARGS', `TCP $h 465')dnl
 include(`/etc/mail/sasl/sasl.m4')dnl
 SENDMAILEOF
+fi
+
+# default-auth-info + submit.mc SASL include (idempotent)
+if ! grep -q 'sasl.m4' /etc/mail/submit.mc 2>/dev/null; then
+cat >> /etc/mail/submit.mc <<'SUBMITEOF'
+
+include(`/etc/mail/sasl/sasl.m4')dnl
+SUBMITEOF
+fi
 
 sendmailconfig -f || true
 
 # ═══════════════════════════════════════════════════════════════
-# PHASE 3 — CORE BUILD DEPENDENCIES
+# PHASE 3 — CORE BUILD DEPENDENCIES (PHP 8.3)
 # ═══════════════════════════════════════════════════════════════
 
-echo ">>> [3/13] Core build dependencies"
+echo ">>> [3/15] Core build dependencies"
 apt -y install \
   apache2 python3-certbot-apache openssh-server mariadb-client mariadb-server \
   bison flex mpg123 libxml2-dev sqlite3 libsqlite3-dev pkg-config automake libtool autoconf \
@@ -186,36 +241,29 @@ apt -y install \
   libnewt-dev libssl-dev libncurses5-dev libjansson-dev apt-utils ipset dos2unix \
   fail2ban
 
-# ─── PHP 8.2 (FreePBX 17 default — native on Debian 12) ─────
+# ─── PHP 8.3 (FreePBX 17 / AvantFax — from ondrej/php) ───────
 apt -y install \
-  libapache2-mod-php8.2 php8.2 php-pear php8.2-cgi php8.2-common php8.2-curl \
-  php8.2-mbstring php8.2-gd php8.2-mysql php8.2-bcmath php8.2-zip php8.2-xml \
-  php8.2-imap php8.2-snmp php8.2-gmp php8.2-redis php8.2-memcached redis \
-  php8.2-cli php8.2-intl php8.2-fpm php8.2-ldap
+  libapache2-mod-php8.3 php8.3 php-pear php8.3-cgi php8.3-common php8.3-curl \
+  php8.3-mbstring php8.3-gd php8.3-mysql php8.3-bcmath php8.3-zip php8.3-xml \
+  php8.3-imap php8.3-snmp php8.3-gmp php8.3-redis php8.3-memcached redis \
+  php8.3-cli php8.3-intl php8.3-fpm php8.3-ldap php8.3-bz2 php8.3-soap php8.3-sqlite3
 
-# ─── PHP 7.4 (AvantFax legacy — from sury.org) ──────────────
-apt -y install \
-  libapache2-mod-php7.4 php7.4 php7.4-cgi php7.4-ldap php7.4-common php7.4-curl \
-  php7.4-mbstring php7.4-gd php7.4-mysql php7.4-bcmath php7.4-zip php7.4-xml \
-  php7.4-imap php7.4-snmp php7.4-fpm
+update-alternatives --set php /usr/bin/php8.3
 
-update-alternatives --set php /usr/bin/php8.2
-
-for VER in 8.2 7.4; do
-  for SAPI in apache2 cli fpm; do
-    INI="/etc/php/${VER}/${SAPI}/php.ini"
-    [ -f "$INI" ] || continue
-    sed -i 's/\(^upload_max_filesize = \).*/\1512M/' "$INI"
-    sed -i 's/\(^memory_limit = \).*/\1512M/'        "$INI"
-    sed -i 's/\(^post_max_size = \).*/\1256M/'        "$INI"
-  done
+# Tune PHP for a telephony/fax web app
+for SAPI in apache2 cli fpm; do
+  INI="/etc/php/8.3/${SAPI}/php.ini"
+  [ -f "$INI" ] || continue
+  sed -i 's/\(^upload_max_filesize = \).*/\1512M/' "$INI"
+  sed -i 's/\(^memory_limit = \).*/\1512M/'        "$INI"
+  sed -i 's/\(^post_max_size = \).*/\1256M/'       "$INI"
 done
 
 # ═══════════════════════════════════════════════════════════════
 # PHASE 4 — APACHE & ASTERISK USER
 # ═══════════════════════════════════════════════════════════════
 
-echo ">>> [4/13] Apache + Asterisk user"
+echo ">>> [4/15] Apache + Asterisk user"
 groupadd asterisk   || true
 useradd -r -d /var/lib/asterisk -g asterisk asterisk 2>/dev/null || true
 usermod -aG audio,dialout asterisk
@@ -234,48 +282,90 @@ cat >> /etc/apache2/apache2.conf <<'EOF'
 </Directory>
 EOF
 
-a2enmod proxy_fcgi setenvif rewrite
-a2enconf php8.2-fpm
+# PHP-FPM
+apt -y install php8.3-fpm
+sed -i 's/^user = .*/user = asterisk/'            /etc/php/8.3/fpm/pool.d/www.conf
+sed -i 's/^group = .*/group = asterisk/'          /etc/php/8.3/fpm/pool.d/www.conf
+sed -i 's/^listen.owner = .*/listen.owner = asterisk/' /etc/php/8.3/fpm/pool.d/www.conf
+sed -i 's/^listen.group = .*/listen.group = asterisk/' /etc/php/8.3/fpm/pool.d/www.conf
+sed -i 's/^listen.mode = .*/listen.mode = 0660/'  /etc/php/8.3/fpm/pool.d/www.conf
+
+a2enmod rewrite proxy_fcgi setenvif
+a2enconf php8.3-fpm
 rm -f /var/www/html/index.html
-systemctl enable apache2 mariadb
-systemctl start  apache2 mariadb
+systemctl enable apache2 mariadb php8.3-fpm
+systemctl start  apache2 mariadb php8.3-fpm
 
 # ═══════════════════════════════════════════════════════════════
-# PHASE 5 — COMPILE ASTERISK DEPENDENCIES
+# PHASE 5 — DAHDI (Proxmox or LXC)
 # ═══════════════════════════════════════════════════════════════
 
-echo ">>> [5/13] Compile dependencies"
-cd /usr/src
+echo ">>> [5/15] DAHDI"
 
-# DAHDI (Proxmox-aware)
-if [ -f install-dahdi-on-proxmox.sh ]; then
+# LXC: dahdi-linux-complete tarball (preferred when present)
+if [ -f /usr/src/dahdi-linux-complete-3.4.0+3.4.0.tar.gz ]; then
+  cd /usr/src
+  tar zxf dahdi-linux-complete-3.4.0+3.4.0.tar.gz
+  cd dahdi-linux-complete-3.4.0+3.4.0
+  make
+  make install
+  make install-config
+  sed -i 's/modprobe dahdi/modprobe -f dahdi/g' /etc/init.d/dahdi
+  /etc/init.d/dahdi restart || true
+# Proxmox VE: build dahdi-linux from git against the running kernel
+elif [ -f /usr/src/install-dahdi-on-proxmox.sh ]; then
+  cd /usr/src
   chmod +x install-dahdi-on-proxmox.sh && ./install-dahdi-on-proxmox.sh || true
+else
+  warn "No DAHDI source found in /usr/src — skipping DAHDI install"
 fi
+
+# ═══════════════════════════════════════════════════════════════
+# PHASE 6 — COMPILE ASTERISK DEPENDENCIES
+# ═══════════════════════════════════════════════════════════════
+
+echo ">>> [6/15] Compile dependencies"
+cd /usr/src
 
 # libpri
 if [ -f libpri-1.6.1.tar.gz ]; then
   tar zxf libpri-1.6.1.tar.gz && cd libpri-1.6.1 && make && make install && cd /usr/src
 fi
 
+# asterisk-perl
+if [ -f asterisk-perl-1.08.tar.gz ]; then
+  tar zxf asterisk-perl-1.08.tar.gz && cd asterisk-perl-1.08
+  perl Makefile.PL && make all && make install && cd /usr/src
+fi
+
 # spandsp
 if [ ! -d spandsp ]; then
   git clone https://github.com/innotelinc/spandsp.git
 fi
-cd spandsp && ./autogen.sh && ./configure && make && make install && ldconfig && cd /usr/src
+if [ ! -f /usr/local/lib/libspandsp.so ]; then
+  cd spandsp && ./autogen.sh && ./configure && make && make install && ldconfig && cd /usr/src
+fi
 
 # mpg123
-if [ -f mpg123-1.33.4.tar.bz2 ]; then
-  tar jxf mpg123-1.33.4.tar.bz2 && cd mpg123-1.33.4
+if [ -f mpg123-1.33.7.tar.bz2 ]; then
+  tar jxf mpg123-1.33.7.tar.bz2 && cd mpg123-1.33.7
   ./configure --libdir=/usr/lib64 && make && make install
   ln -sf /usr/local/bin/mpg123 /usr/bin/mpg123
   cd /usr/src
 fi
 
 # lame
-if [ -f lame-3.100.tar.gz ]; then
-  tar zxf lame-3.100.tar.gz && cd lame-3.100
+if [ -f lame-4.0.tar.gz ]; then
+  tar zxf lame-4.0.tar.gz && cd lame-4.0
   ./configure --libdir=/usr/lib64 && make && make install
   ln -sf /usr/local/bin/lame /usr/bin/lame
+  cd /usr/src
+fi
+
+# texinfo
+if [ -f texinfo-7.3.tar.gz ]; then
+  tar zxf texinfo-7.3.tar.gz && cd texinfo-7.3
+  ./configure --libdir=/usr/lib64 && make && make install
   cd /usr/src
 fi
 
@@ -285,11 +375,17 @@ if [ -f libsrtp-2.7.0.tar.gz ]; then
   ./configure --libdir=/usr/lib64 --enable-openssl && make && make install
   echo "/usr/local/include" > /etc/ld.so.conf.d/srtp.conf
   ldconfig && cd /usr/src
+elif [ ! -d libsrtp ]; then
+  git clone https://github.com/cisco/libsrtp.git
+  cd libsrtp
+  ./configure --libdir=/usr/lib64 --enable-openssl && make && make install
+  echo "/usr/local/include" > /etc/ld.so.conf.d/srtp.conf
+  ldconfig && cd /usr/src
 fi
 
 # sqlite3 (latest)
-if [ -f sqlite-autoconf-3510200.tar.gz ]; then
-  tar zxf sqlite-autoconf-3510200.tar.gz && cd sqlite-autoconf-3510200
+if [ -f sqlite-autoconf-3530400.tar.gz ]; then
+  tar zxf sqlite-autoconf-3530400.tar.gz && cd sqlite-autoconf-3530400
   ./configure --libdir=/usr/lib64 && make && make install
   ldconfig && cd /usr/src
 fi
@@ -297,10 +393,10 @@ fi
 pip3 install iksemel setuptools 2>/dev/null || true
 
 # ═══════════════════════════════════════════════════════════════
-# PHASE 6 — ASTERISK 22.10.1
+# PHASE 7 — ASTERISK 22.10.1
 # ═══════════════════════════════════════════════════════════════
 
-echo ">>> [6/13] Asterisk ${ASTERISK_VER}"
+echo ">>> [7/15] Asterisk ${ASTERISK_VER}"
 cd /usr/src
 
 # Skip the build when this exact version is already installed, so re-running
@@ -309,6 +405,14 @@ cd /usr/src
 if command -v asterisk >/dev/null 2>&1 && asterisk -V 2>/dev/null | grep -q "Asterisk ${ASTERISK_VER}"; then
   echo "Asterisk ${ASTERISK_VER} already installed — skipping build"
 else
+  # Legacy source tree (used by the VOSK module compile)
+  if [ -n "${ASTERISK_LEGACY_VER}" ] && [ ! -d "asterisk-${ASTERISK_LEGACY_VER}" ]; then
+    if [ ! -f "asterisk-${ASTERISK_LEGACY_VER}.tar.gz" ]; then
+      wget "https://downloads.asterisk.org/pub/telephony/asterisk/releases/asterisk-${ASTERISK_LEGACY_VER}.tar.gz"
+    fi
+    tar zxf "asterisk-${ASTERISK_LEGACY_VER}.tar.gz"
+  fi
+
   if [ ! -f "asterisk-${ASTERISK_VER}.tar.gz" ]; then
     wget "https://downloads.asterisk.org/pub/telephony/asterisk/releases/asterisk-${ASTERISK_VER}.tar.gz"
   fi
@@ -318,7 +422,7 @@ else
   # get_mp3_source.sh prints "...already be present..." and exits 1 when
   # addons/mp3 is already populated; that's not an error, so tolerate it.
   contrib/scripts/get_mp3_source.sh || true
-  # install_prereq relies on `aptitude` (removed from Debian 12) and is
+  # install_prereq relies on `aptitude` (removed from Ubuntu 24.04) and is
   # redundant here — phase 3 already installed the build dependencies.
   contrib/scripts/install_prereq install || true
 
@@ -370,189 +474,37 @@ fi
 systemctl start asterisk
 
 # ═══════════════════════════════════════════════════════════════
-# PHASE 7 — AMI, ARI, VOSK, WEBSOCKET CONFIG
+# PHASE 8 — G.729 CODEC
 # ═══════════════════════════════════════════════════════════════
 
-echo ">>> [7/13] AMI + ARI (Dograh) + VOSK + WebSocket config"
-
-# ─── AMI (Asterisk Manager Interface) ────────────────────────
-cat > /etc/asterisk/manager_custom.conf <<EOF
-; Auto-generated by Innotel PBX setup
-[${FREEPBX_AMI_USER}]
-secret = ${FREEPBX_AMI_SECRET}
-deny = 0.0.0.0/0.0.0.0
-permit = 127.0.0.1/255.255.255.0
-read = system,call,log,verbose,command,agent,user,config,dtmf,reporting,cdr,dialplan,originate
-write = system,call,log,verbose,command,agent,user,config,dtmf,reporting,cdr,dialplan,originate
-eventfilter=!Event: RTCP*
-eventfilter=!Event: VarSet
-eventfilter=!Event: Newexten
-EOF
-
-# Enable AMI globally
-sed -i 's/^enabled=.*/enabled=yes/' /etc/asterisk/manager.conf 2>/dev/null || true
-sed -i 's/^bindaddr=.*/bindaddr=0.0.0.0/' /etc/asterisk/manager.conf 2>/dev/null || true
-
-# ─── ARI ─────────────────────────────────────────────────────
-cat > /etc/asterisk/ari_general_custom.conf <<EOF
-[general]
-enabled = yes
-pretty = yes
-allowed_origins = *
-EOF
-
-cat > /etc/asterisk/ari_additional_custom.conf <<EOF
-[dograh]
-type = user
-read_only = no
-password = ${DOGRAH_ARI_PASS}
-EOF
-
-# ─── HTTP server (ARI + WebSocket share this) ────────────────
-cat > /etc/asterisk/http_custom.conf <<EOF
-[general]
-enabled = yes
-bindaddr = 0.0.0.0
-bindport = ${ARI_HTTP_PORT}
-EOF
-
-# ─── WebSocket client to Dograh ───────────────────────────────
-cat > /etc/asterisk/websocket_client.conf <<EOF
-[dograh]
-type = websocket_client
-uri = ${DOGRAH_WS_URI}
-protocols = audio
-EOF
-
-# ─── PJSIP WebSocket Transport (WSS port 8089) for WebRTC ────
-info "Configuring PJSIP WebSocket transport for WebRTC (wss://0.0.0.0:8089)"
-
-# Generate self-signed TLS certificate for WSS
-mkdir -p /etc/asterisk/keys
-openssl req -x509 -newkey rsa:2048 -nodes \
-  -keyout /etc/asterisk/keys/asterisk.key \
-  -out /etc/asterisk/keys/asterisk.crt \
-  -days 3650 \
-  -subj "/CN=${HOSTNAME}" 2>/dev/null
-chown -R asterisk:asterisk /etc/asterisk/keys
-chmod 640 /etc/asterisk/keys/asterisk.key
-chmod 644 /etc/asterisk/keys/asterisk.crt
-
-# PJSIP WebSocket transport + WebRTC endpoint template
-cat > /etc/asterisk/pjsip_wss.conf <<PJSIPEOF
-; ═══════════════════════════════════════════════════════════════
-; PJSIP WebSocket Transport — WebRTC Softphone Support
-; ═══════════════════════════════════════════════════════════════
-
-; ── WSS Transport (port 8089) ─────────────────────────────────
-[transport-wss]
-type = transport
-protocol = wss
-bind = 0.0.0.0:8089
-cert_file = /etc/asterisk/keys/asterisk.crt
-priv_key_file = /etc/asterisk/keys/asterisk.key
-
-; ── WebRTC Endpoint Template (inherited by all WebRTC extensions)
-[webtrc-template](!)
-type = endpoint
-transport = transport-wss
-context = from-internal
-disallow = all
-allow = ulaw,alaw,opus,gsm,g722
-webrtc = yes
-dtls_auto_generate_cert = yes
-use_avpf = yes
-media_encryption = dtls
-icesupport = yes
-direct_media = no
-dtmf_mode = rfc4733
-force_rport = yes
-rewrite_contact = yes
-rtp_symmetric = yes
-PJSIPEOF
-
-# Ensure pjsip.conf includes our WebSocket config
-if [ -f /etc/asterisk/pjsip.conf ]; then
-  if ! grep -q 'pjsip_wss.conf' /etc/asterisk/pjsip.conf 2>/dev/null; then
-    echo '#include pjsip_wss.conf' >> /etc/asterisk/pjsip.conf
-  fi
-else
-  echo '#include pjsip_wss.conf' > /etc/asterisk/pjsip.conf
-fi
-
-# ─── STUN for ICE (NAT traversal) ─────────────────────────────
-cat > /etc/asterisk/rtp_custom.conf <<EOF
-[general]
-stunaddr = stun.l.google.com:19302
-icesupport = yes
-EOF
-
-# Ensure rtp.conf includes the custom config
-if [ -f /etc/asterisk/rtp.conf ]; then
-  if ! grep -q 'rtp_custom.conf' /etc/asterisk/rtp.conf 2>/dev/null; then
-    echo '#include rtp_custom.conf' >> /etc/asterisk/rtp.conf
-  fi
-fi
-
-# Load the PJSIP WebSocket transport module
-asterisk -rx 'module load res_pjsip_transport_websocket.so' 2>/dev/null || true
-asterisk -rx 'pjsip reload' 2>/dev/null || true
-asterisk -rx 'pjsip show transports' 2>/dev/null || true
-
-log "PJSIP WebSocket transport configured on wss://${HOSTNAME}:8089"
-
-# ─── Dialplan extensions ──────────────────────────────────────
-cat >> /etc/asterisk/extensions_custom.conf <<'EOF'
-
-; ── Dograh ARI Stasis routing ──────────────────────────────────
-[from-external]
-exten => _X.,1,NoOp(Dograh: incoming call to ${EXTEN})
- same => n,Stasis(dograh)
- same => n,Hangup()
-
-; ── VOSK speech-recognition test extension ────────────────────
-[internal]
-exten = 1,1,Answer
- same = n,Wait(1)
- same = n,SpeechCreate
- same = n,SpeechBackground(hello)
- same = n,Verbose(0,Result was ${SPEECH_TEXT(0)})
-EOF
-
-# ─── VOSK Asterisk module ─────────────────────────────────────
+echo ">>> [8/15] G.729 codec"
 cd /usr/src
-if [ ! -d vosk-asterisk ]; then
-  git clone https://github.com/innotelinc/vosk-asterisk.git
+
+if [ ! -f /usr/lib64/asterisk/modules/codec_g729.so ]; then
+  if [ ! -d bcg729 ]; then git clone https://github.com/innotelinc/bcg729.git; fi
+  cd bcg729 && cmake . && make && make install && cd /usr/src
+  if [ ! -d asterisk-g72x ]; then git clone https://github.com/innotelinc/asterisk-g72x.git; fi
+  cd asterisk-g72x
+  ./autogen.sh
+  ./configure --libdir=/usr/lib64 --with-bcg729 --with-asterisk-includes=/usr/src/asterisk-${ASTERISK_VER}/include/
+  make && make install
+  chmod +x /usr/lib64/asterisk/modules/codec_g729.so
+  chown asterisk:asterisk /usr/lib64/asterisk/modules/codec_g729.so
+  cd /usr/src
 fi
-cd vosk-asterisk
-./bootstrap
-./configure \
-  --with-asterisk=/usr/src/asterisk-${ASTERISK_VER} \
-  --prefix=/usr --libdir=/usr/lib64
-make && make install
 
-chmod 755 /usr/lib64/asterisk/modules/res_speech_vosk.so
-chown asterisk:asterisk /usr/lib64/asterisk/modules/res_speech_vosk.so
-
-asterisk -rx 'module reload res_ari'         2>/dev/null || true
-asterisk -rx 'module load res_speech.so'      2>/dev/null || true
-asterisk -rx 'module load res_http_websocket.so' 2>/dev/null || true
-asterisk -rx 'module load chan_websocket.so'  2>/dev/null || true
-asterisk -rx 'module load res_speech_vosk.so' 2>/dev/null || true
-asterisk -rx 'dialplan reload'                2>/dev/null || true
-
-# ─── Custom logger ────────────────────────────────────────────
-cat > /etc/asterisk/logger_logfiles_custom.conf <<EOF
-messages => notice,warning,error,security
-EOF
-asterisk -rx 'logger reload' 2>/dev/null || true
+asterisk -rx 'module load codec_g729.so' 2>/dev/null || true
+asterisk -rx "core show translation recalc 10" 2>/dev/null || true
 
 # ═══════════════════════════════════════════════════════════════
-# PHASE 8 — DATABASE SETUP
+# PHASE 9 — DATABASE SETUP (MariaDB + ODBC + CDR)
 # ═══════════════════════════════════════════════════════════════
 
-echo ">>> [8/13] MariaDB databases & ODBC"
-mysql_secure_installation <<EOF
+echo ">>> [9/15] MariaDB databases & ODBC"
+
+# Secure the install non-interactively (idempotent-ish; tolerates an
+# already-secured root password).
+mysql_secure_installation <<EOF 2>/dev/null || true
 
 y
 ${DB_PASS}
@@ -568,15 +520,19 @@ mysqladmin -p"${DB_PASS}" create asteriskcdrdb    2>/dev/null || true
 mysqladmin -p"${DB_PASS}" create asteriskvoicemail 2>/dev/null || true
 
 # NOTE: ai_call_summaries is intentionally NOT created here. FreePBX populates
-# asteriskcdrdb with its `cdr` table during phase 9, but only when the database
-# is empty — any pre-existing table makes it skip cdr.sql. The table is created
-# after FreePBX is installed (see phase 9).
+# asteriskcdrdb with its `cdr` table during phase 10, but only when the
+# database is empty — any pre-existing table makes it skip cdr.sql. The table
+# is created after FreePBX is installed (see phase 10).
 mysql -p"${DB_PASS}" <<SQL
 GRANT ALL PRIVILEGES ON asterisk.*          TO asterisk@localhost IDENTIFIED BY '${DB_PASS}';
 GRANT ALL PRIVILEGES ON asteriskcdrdb.*     TO asterisk@localhost IDENTIFIED BY '${DB_PASS}';
 GRANT ALL PRIVILEGES ON asteriskvoicemail.* TO asterisk@localhost IDENTIFIED BY '${DB_PASS}';
 FLUSH PRIVILEGES;
 SQL
+
+# ─── pear (FreePBX / AvantFAX dependency) ─────────────────────
+pear channel-update pear.php.net 2>/dev/null || true
+pear install DB MDB2 MDB2 MDB2#mysql MDB2#mysqli MDB2#sqlite 2>/dev/null || true
 
 # ─── MariaDB ODBC connector ───────────────────────────────────
 cd /usr/src
@@ -612,6 +568,17 @@ option=3
 Charset=utf8
 EOF
 
+cat > /etc/asterisk/cdr_odbc.conf <<EOF
+[global]
+dsn=MySQL-asteriskcdrdb
+loguniqueid=yes
+dispositionstring=yes
+table=cdr
+usegmtime=no
+hrtime=yes
+newcdrcolumns=yes
+EOF
+
 cat > /etc/asterisk/cdr_adaptive_odbc.conf <<EOF
 [asteriskcdrdb]
 connection=asteriskcdrdb
@@ -642,8 +609,42 @@ password=>${DB_PASS}
 database=>asteriskvoicemail
 EOF
 
+# ─── Radius (CDR/CEL to a RADIUS server) ─────────────────────
 mkdir -p /etc/radiusclient-ng
-touch /etc/radiusclient-ng/radiusclient.conf
+cat > /etc/radiusclient-ng/radiusclient.conf <<'RADIUSEOF'
+authserver 192.168.1.9:1812
+acctserver 192.168.1.9:1813
+
+servers /etc/radiusclient-ng/servers
+dictionary /etc/radiusclient-ng/dictionary
+
+radius_timeout 10
+radius_retries 3
+radius_deadtime 0
+RADIUSEOF
+
+cat > /etc/radiusclient-ng/servers <<'RADIUSSERVERS'
+192.168.1.9 testing123
+RADIUSSERVERS
+chmod 600 /etc/radiusclient-ng/servers
+
+cp /usr/share/radcli/dictionary /etc/radiusclient-ng/dictionary 2>/dev/null || \
+cp /etc/radcli/dictionary /etc/radiusclient-ng/dictionary 2>/dev/null || true
+chmod 644 /etc/radiusclient-ng/dictionary 2>/dev/null || true
+
+# Enable RADIUS CDR/CEL (best-effort; harmless if radcli isn't present)
+cat > /etc/asterisk/cdr_custom.conf <<'CDREOF'
+[radius]
+usegmtime=no
+loguniqueid=yes
+loguserfield=yes
+radiuscfg => /etc/radiusclient-ng/radiusclient.conf
+CDREOF
+cat > /etc/asterisk/cel_custom.conf <<'CELEOF'
+[radius]
+usegmtime=no
+radiuscfg => /etc/radiusclient-ng/radiusclient.conf
+CELEOF
 
 # MariaDB: disable strict mode (AvantFax compat)
 cat > /etc/mysql/conf.d/mysql.cnf <<EOF
@@ -654,10 +655,10 @@ EOF
 systemctl restart mariadb
 
 # ═══════════════════════════════════════════════════════════════
-# PHASE 9 — FREEPBX 17
+# PHASE 10 — FREEPBX 17
 # ═══════════════════════════════════════════════════════════════
 
-echo ">>> [9/13] FreePBX 17"
+echo ">>> [10/15] FreePBX 17"
 
 # The Sangoma installer (sng_freepbx_debian_install.sh) hard-codes Debian 12
 # (bookworm) and pulls packages from a bookworm-only apt repository, so it
@@ -670,9 +671,6 @@ echo ">>> [9/13] FreePBX 17"
 # it, so install Node BEFORE running the installer.
 curl -fsSL https://deb.nodesource.com/setup_20.x | bash -
 apt -y install nodejs
-
-# PHP 8.2 extensions FreePBX 17 expects (mirrors Dockerfile.full prerequisites)
-apt -y install php8.2-bz2 php8.2-soap php8.2-sqlite3
 
 # The installer talks to a running Asterisk as the 'asterisk' user, so make
 # sure the CLI is on that user's PATH (login.defs omits /usr/sbin) and that
@@ -689,10 +687,14 @@ cd /usr/src
 # "-latest" pointer drifts as new FreePBX releases ship. Bump both together.
 FREEPBX_VER="17.0.19.32"
 FREEPBX_SHA256="ea8b1c6fefcb09ed472fb90aaf0301ca54c8d8223c1b8b5c526b27fb6718ffe4"
-wget -q "https://mirror.freepbx.org/modules/packages/freepbx/freepbx-${FREEPBX_VER}.tgz"
-echo "${FREEPBX_SHA256}  freepbx-${FREEPBX_VER}.tgz" | sha256sum -c -
-tar zxf "freepbx-${FREEPBX_VER}.tgz"
-rm "freepbx-${FREEPBX_VER}.tgz"
+if [ ! -d /usr/src/freepbx ]; then
+  if [ ! -f "freepbx-${FREEPBX_VER}.tgz" ]; then
+    wget -q "https://mirror.freepbx.org/modules/packages/freepbx/freepbx-${FREEPBX_VER}.tgz"
+  fi
+  echo "${FREEPBX_SHA256}  freepbx-${FREEPBX_VER}.tgz" | sha256sum -c -
+  tar zxf "freepbx-${FREEPBX_VER}.tgz"
+  rm -f "freepbx-${FREEPBX_VER}.tgz"
+fi
 cd /usr/src/freepbx
 chown -R asterisk:asterisk .
 
@@ -703,7 +705,6 @@ chown -R asterisk:asterisk .
 ./install -n --dbuser=root --dbpass="${DB_PASS}" || true
 fwconsole ma installlocal || true
 fwconsole reload
-cd /usr/src && rm -rf freepbx
 
 # ─── FreePBX CDR/CEL tables (safety net) ──────────────────────
 # FreePBX normally creates asteriskcdrdb.cdr/.cel during install, but only
@@ -776,7 +777,7 @@ CREATE TABLE IF NOT EXISTS asteriskcdrdb.cel (
 SQL
 
 # ─── AI CDR summaries table ───────────────────────────────────
-# Created here (not phase 8) so FreePBX sees an empty asteriskcdrdb and runs
+# Created here (not phase 9) so FreePBX sees an empty asteriskcdrdb and runs
 # cdr.sql to create the `cdr` table that the AI CDR pipeline updates.
 mysql -p"${DB_PASS}" <<SQL
 CREATE TABLE IF NOT EXISTS asteriskcdrdb.ai_call_summaries (
@@ -864,102 +865,150 @@ cat > /etc/logrotate.d/asterisk <<'EOF'
 }
 EOF
 
-# ─── VoIP.ms SIP Trunk auto-configuration ────────────────────
-if [ -n "${VOIPMS_SIP_USER}" ] && [ -n "${VOIPMS_SIP_PASS}" ] && [ -n "${VOIPMS_SIP_SERVER}" ]; then
-  info "Configuring VoIP.ms SIP trunk (${VOIPMS_SIP_SERVER})"
+# ─── AMI (Asterisk Manager Interface) — portal-facing ────────
+cat > /etc/asterisk/manager_custom.conf <<EOF
+; Auto-generated by Innotel PBX setup
+[${FREEPBX_AMI_USER}]
+secret = ${FREEPBX_AMI_SECRET}
+deny = 0.0.0.0/0.0.0.0
+permit = 127.0.0.1/255.255.255.0
+read = system,call,log,verbose,command,agent,user,config,dtmf,reporting,cdr,dialplan,originate
+write = system,call,log,verbose,command,agent,user,config,dtmf,reporting,cdr,dialplan,originate
+eventfilter=!Event: RTCP*
+eventfilter=!Event: VarSet
+eventfilter=!Event: Newexten
+EOF
 
-  cat > /etc/asterisk/pjsip_voipms_custom.conf <<'VOIPMSPJSIPEOF'
+# Enable AMI globally
+sed -i 's/^enabled=.*/enabled=yes/' /etc/asterisk/manager.conf 2>/dev/null || true
+sed -i 's/^bindaddr=.*/bindaddr=0.0.0.0/' /etc/asterisk/manager.conf 2>/dev/null || true
+
+# ─── ARI (Asterisk REST Interface) — portal-facing ───────────
+cat > /etc/asterisk/ari_general_custom.conf <<EOF
+[general]
+enabled = yes
+pretty = yes
+allowed_origins = *
+EOF
+
+cat > /etc/asterisk/ari_additional_custom.conf <<EOF
+[dograh]
+type = user
+read_only = no
+password = ${DOGRAH_ARI_PASS}
+EOF
+
+# ─── HTTP server (ARI + WebSocket share this) ────────────────
+cat > /etc/asterisk/http_custom.conf <<EOF
+[general]
+enabled = yes
+bindaddr = 0.0.0.0
+bindport = ${ARI_HTTP_PORT}
+EOF
+
+# ─── WebSocket client to Dograh ───────────────────────────────
+cat > /etc/asterisk/websocket_client.conf <<EOF
+[dograh]
+type = websocket_client
+uri = ${DOGRAH_WS_URI}
+protocols = audio
+EOF
+
+# ─── PJSIP WebSocket Transport (WSS port 8089) for WebRTC ────
+info "Configuring PJSIP WebSocket transport for WebRTC (wss://0.0.0.0:8089)"
+
+# Generate self-signed TLS certificate for WSS
+mkdir -p /etc/asterisk/keys
+openssl req -x509 -newkey rsa:2048 -nodes \
+  -keyout /etc/asterisk/keys/asterisk.key \
+  -out /etc/asterisk/keys/asterisk.crt \
+  -days 3650 \
+  -subj "/CN=${HOSTNAME}" 2>/dev/null
+chown -R asterisk:asterisk /etc/asterisk/keys
+chmod 640 /etc/asterisk/keys/asterisk.key
+chmod 644 /etc/asterisk/keys/asterisk.crt
+
+# PJSIP WebSocket transport + WebRTC endpoint template
+cat > /etc/asterisk/pjsip_wss.conf <<'PJSIPEOF'
 ; ═══════════════════════════════════════════════════════════════
-; VoIP.ms SIP Trunk — Auto-generated by Innotel PBX setup
+; PJSIP WebSocket Transport — WebRTC Softphone Support
 ; ═══════════════════════════════════════════════════════════════
 
-; ── Auth ──────────────────────────────────────────────────────
-[voipms-auth]
-type = auth
-auth_type = userpass
-VOIPMSPJSIPEOF
-  cat >> /etc/asterisk/pjsip_voipms_custom.conf <<VOIPMSAUTH
-password = ${VOIPMS_SIP_PASS}
-username = ${VOIPMS_SIP_USER}
-VOIPMSAUTH
+; ── WSS Transport (port 8089) ─────────────────────────────────
+[transport-wss]
+type = transport
+protocol = wss
+bind = 0.0.0.0:8089
+cert_file = /etc/asterisk/keys/asterisk.crt
+priv_key_file = /etc/asterisk/keys/asterisk.key
 
-  cat >> /etc/asterisk/pjsip_voipms_custom.conf <<'VOIPMSPJSIP2'
-
-; ── Registration ──────────────────────────────────────────────
-[voipms-reg]
-type = registration
-outbound_auth = voipms-auth
-VOIPMSPJSIP2
-  cat >> /etc/asterisk/pjsip_voipms_custom.conf <<VOIPMSREG
-server_uri = sip:${VOIPMS_SIP_SERVER}
-client_uri = sip:${VOIPMS_SIP_USER}@${VOIPMS_SIP_SERVER}
-VOIPMSREG
-
-  cat >> /etc/asterisk/pjsip_voipms_custom.conf <<'VOIPMSPJSIP3'
-retry_interval = 60
-
-; ── AOR ───────────────────────────────────────────────────────
-[voipms]
-type = aor
-VOIPMSPJSIP3
-  cat >> /etc/asterisk/pjsip_voipms_custom.conf <<VOIPMSAOR
-contact = sip:${VOIPMS_SIP_SERVER}
-VOIPMSAOR
-
-  cat >> /etc/asterisk/pjsip_voipms_custom.conf <<'VOIPMSPJSIP4'
-
-; ── Endpoint ──────────────────────────────────────────────────
-[voipms-endpoint]
+; ── WebRTC Endpoint Template (inherited by all WebRTC extensions)
+[webtrc-template](!)
 type = endpoint
-context = from-trunk
+transport = transport-wss
+context = from-internal
 disallow = all
-allow = ulaw,alaw
-aors = voipms
-outbound_auth = voipms-auth
-VOIPMSPJSIP4
-  cat >> /etc/asterisk/pjsip_voipms_custom.conf <<VOIPMSEP
-from_user = ${VOIPMS_SIP_USER}
-from_domain = ${VOIPMS_SIP_SERVER}
-VOIPMSEP
-
-  cat >> /etc/asterisk/pjsip_voipms_custom.conf <<'VOIPMSPJSIP5'
+allow = ulaw,alaw,opus,gsm,g722
+webrtc = yes
+dtls_auto_generate_cert = yes
+use_avpf = yes
+media_encryption = dtls
+icesupport = yes
 direct_media = no
-rtp_symmetric = yes
+dtmf_mode = rfc4733
 force_rport = yes
 rewrite_contact = yes
-dtmf_mode = rfc4733
+rtp_symmetric = yes
+PJSIPEOF
 
-; ── Identify (match inbound INVITEs) ──────────────────────────
-[voipms-identify]
-type = identify
-endpoint = voipms-endpoint
-VOIPMSPJSIP5
-  cat >> /etc/asterisk/pjsip_voipms_custom.conf <<VOIPMSID
-match = ${VOIPMS_SIP_SERVER}
-VOIPMSID
-
-  # Include in main pjsip.conf (FreePBX uses pjsip_custom_post.conf)
-  if ! grep -q 'pjsip_voipms_custom.conf' /etc/asterisk/pjsip_custom_post.conf 2>/dev/null; then
-    echo '#include pjsip_voipms_custom.conf' >> /etc/asterisk/pjsip_custom_post.conf
+# Ensure pjsip.conf includes our WebSocket config
+if [ -f /etc/asterisk/pjsip.conf ]; then
+  if ! grep -q 'pjsip_wss.conf' /etc/asterisk/pjsip.conf 2>/dev/null; then
+    echo '#include pjsip_wss.conf' >> /etc/asterisk/pjsip.conf
   fi
-
-  # Also build an outbound route via FreePBX CLI if fwconsole is available
-  if command -v fwconsole &>/dev/null; then
-    fwconsole trunks --add=voipms --tech=pjsip --detail='{"username":"'"${VOIPMS_SIP_USER}"'","secret":"'"${VOIPMS_SIP_PASS}"'","host":"'"${VOIPMS_SIP_SERVER}"'","context":"from-trunk","disallow":"all","allow":"ulaw","allow":"alaw"}' 2>/dev/null || true
-  fi
-
-  chown asterisk:asterisk /etc/asterisk/pjsip_voipms_custom.conf
-  asterisk -rx 'pjsip reload' 2>/dev/null || true
-  asterisk -rx 'pjsip show registrations' 2>/dev/null || true
-  fwconsole reload 2>/dev/null || true
-
-  log "VoIP.ms SIP trunk configured — server: ${VOIPMS_SIP_SERVER}, user: ${VOIPMS_SIP_USER}"
 else
-  warn "Skipping VoIP.ms trunk — set VOIPMS_SIP_USER, VOIPMS_SIP_PASS, and VOIPMS_SIP_SERVER env vars"
+  echo '#include pjsip_wss.conf' > /etc/asterisk/pjsip.conf
 fi
 
+# ─── STUN for ICE (NAT traversal) ─────────────────────────────
+cat > /etc/asterisk/rtp_custom.conf <<EOF
+[general]
+stunaddr = stun.l.google.com:19302
+icesupport = yes
+EOF
+
+# Ensure rtp.conf includes the custom config
+if [ -f /etc/asterisk/rtp.conf ]; then
+  if ! grep -q 'rtp_custom.conf' /etc/asterisk/rtp.conf 2>/dev/null; then
+    echo '#include rtp_custom.conf' >> /etc/asterisk/rtp.conf
+  fi
+fi
+
+# Load the PJSIP WebSocket transport module
+asterisk -rx 'module load res_pjsip_transport_websocket.so' 2>/dev/null || true
+asterisk -rx 'pjsip reload' 2>/dev/null || true
+log "PJSIP WebSocket transport configured on wss://${HOSTNAME}:8089"
+
+# ─── Dialplan extensions ──────────────────────────────────────
+cat >> /etc/asterisk/extensions_custom.conf <<'EOF'
+
+; ── Dograh ARI Stasis routing ──────────────────────────────────
+[from-external]
+exten => _X.,1,NoOp(Dograh: incoming call to ${EXTEN})
+ same => n,Stasis(dograh)
+ same => n,Hangup()
+
+; ── VOSK speech-recognition test extension ────────────────────
+[internal]
+exten = 1,1,Answer
+ same = n,Wait(1)
+ same = n,SpeechCreate
+ same = n,SpeechBackground(hello)
+ same = n,Verbose(0,Result was ${SPEECH_TEXT(0)})
+EOF
+
 # ─── FreePBX OAuth2 API Client auto-configuration ───────────
-info "Configuring FreePBX OAuth2 API for PBX Portal"
+info "Configuring FreePBX OAuth2 API"
 
 # Install the FreePBX API module (REST + GraphQL/OAuth2 that the portal
 # uses). There is no separate 'restapi' module — downloading it fails with
@@ -969,14 +1018,11 @@ fwconsole ma enable api 2>/dev/null || true
 fwconsole reload 2>/dev/null || true
 
 # Generate or reuse API client credentials
-# FreePBX API module stores OAuth2 clients in the database.
-# First check if our pbxportal client already exists.
 EXISTING_CLIENT=$(mysql -u root -p"${DB_PASS}" -N -e \
   "SELECT client_id FROM asterisk.api_applications WHERE name='pbxportal' LIMIT 1" 2>/dev/null || true)
 
 if [ -n "$EXISTING_CLIENT" ] && [ "$FREEPBX_CLIENT_ID" = "pbxportal-api" ]; then
   FREEPBX_CLIENT_ID="$EXISTING_CLIENT"
-  # Try to fetch existing secret
   EXISTING_SECRET=$(mysql -u root -p"${DB_PASS}" -N -e \
     "SELECT client_secret FROM asterisk.api_applications WHERE client_id='${EXISTING_CLIENT}' LIMIT 1" 2>/dev/null || true)
   if [ -n "$EXISTING_SECRET" ]; then
@@ -984,12 +1030,9 @@ if [ -n "$EXISTING_CLIENT" ] && [ "$FREEPBX_CLIENT_ID" = "pbxportal-api" ]; then
   fi
   log "Reusing existing pbxportal API client: ${FREEPBX_CLIENT_ID}"
 else
-  # Create a new OAuth2 client_credentials application
-  # Generate cryptographically random client_id and client_secret
   NEW_CLIENT_ID="pbxportal-$(openssl rand -hex 8)"
   NEW_CLIENT_SECRET="$(openssl rand -hex 32)"
 
-  # Ensure the api_applications table exists
   mysql -u root -p"${DB_PASS}" asterisk <<'EOSQL'
 CREATE TABLE IF NOT EXISTS api_applications (
   id INT AUTO_INCREMENT PRIMARY KEY,
@@ -1011,26 +1054,7 @@ EOSQL
   log "Created FreePBX OAuth2 API client: ${FREEPBX_CLIENT_ID}"
 fi
 
-# Ensure FreePBX API is accessible and reload
 fwconsole reload 2>/dev/null || true
-
-# Verify the token endpoint is reachable (self-test)
-# The FreePBX api module's OAuth2 token URL is /admin/api/api/token (NOT
-# /admin/api/api/oauth2/token) and takes form-urlencoded credentials — this
-# must match src/lib/freepbx.ts.
-if command -v curl &>/dev/null; then
-  TOKEN_TEST=$(curl -s -o /dev/null -w "%{http_code}" \
-    -X POST "https://${HOSTNAME}/admin/api/api/token" \
-    -H "Content-Type: application/x-www-form-urlencoded" \
-    --data-urlencode "grant_type=client_credentials" \
-    --data-urlencode "client_id=${FREEPBX_CLIENT_ID}" \
-    --data-urlencode "client_secret=${FREEPBX_CLIENT_SECRET}" 2>/dev/null || true)
-  if [ "$TOKEN_TEST" = "200" ]; then
-    log "FreePBX OAuth2 token endpoint verified (HTTP 200)"
-  else
-    warn "FreePBX OAuth2 token endpoint returned HTTP ${TOKEN_TEST:-000} — check API module configuration"
-  fi
-fi
 
 # ─── Fix HTTPS bind address for WebRTC WebSocket ──────────────
 # FreePBX generates http_additional.conf with tlsbindaddr=127.0.0.1:8089
@@ -1043,11 +1067,189 @@ if [ -f /etc/asterisk/http_additional.conf ]; then
   log "HTTPS server now bound to 0.0.0.0:8089 for WebRTC WebSocket"
 fi
 
+# ─── VoIP.ms trunks (SIP/PJSIP + IAX) into FreePBX ────────────
+if [ -n "${VOIPMS_SIP_USER}" ] && [ -n "${VOIPMS_SIP_PASS}" ]; then
+  info "Configuring VoIP.ms trunks — PJSIP: ${VOIPMS_TRUNK_NAME}, IAX: ${VOIPMS_IAX_TRUNK_NAME} (${VOIPMS_SIP_SERVER})"
+
+  # ── PJSIP trunk (voipms_pjsip) — voice + SMS ──────────────
+  cat > /etc/asterisk/pjsip_voipms_custom.conf <<VOIPMSEOF
+; ═══════════════════════════════════════════════════════════════
+; VoIP.ms PJSIP Trunk — Auto-generated by Innotel PBX setup
+; ═══════════════════════════════════════════════════════════════
+
+; ── Auth ──────────────────────────────────────────────────────
+[${VOIPMS_TRUNK_NAME}-auth]
+type = auth
+auth_type = userpass
+username = ${VOIPMS_SIP_USER}
+password = ${VOIPMS_SIP_PASS}
+
+; ── Registration ──────────────────────────────────────────────
+[${VOIPMS_TRUNK_NAME}-reg]
+type = registration
+outbound_auth = ${VOIPMS_TRUNK_NAME}-auth
+server_uri = sip:${VOIPMS_SIP_SERVER}
+client_uri = sip:${VOIPMS_SIP_USER}@${VOIPMS_SIP_SERVER}
+retry_interval = 60
+
+; ── AOR ───────────────────────────────────────────────────────
+[${VOIPMS_TRUNK_NAME}]
+type = aor
+contact = sip:${VOIPMS_SIP_SERVER}
+
+; ── Endpoint ──────────────────────────────────────────────────
+[${VOIPMS_TRUNK_NAME}-endpoint]
+type = endpoint
+context = from-trunk
+disallow = all
+allow = ulaw,g729
+aors = ${VOIPMS_TRUNK_NAME}
+outbound_auth = ${VOIPMS_TRUNK_NAME}-auth
+from_user = ${VOIPMS_SIP_USER}
+from_domain = ${VOIPMS_SIP_SERVER}
+direct_media = no
+rtp_symmetric = yes
+force_rport = yes
+rewrite_contact = yes
+dtmf_mode = rfc4733
+trust_id_inbound = yes
+send_id_inbound = yes
+insecure = invite
+qualify_frequency = 60
+; SMS: route out-of-call MESSAGE to the sms-in dialplan
+message_context = ${SMS_IN_CONTEXT}
+
+; ── Identify (match inbound INVITEs) ──────────────────────────
+[${VOIPMS_TRUNK_NAME}-identify]
+type = identify
+endpoint = ${VOIPMS_TRUNK_NAME}-endpoint
+match = ${VOIPMS_SIP_SERVER}
+VOIPMSEOF
+
+  if ! grep -q 'pjsip_voipms_custom.conf' /etc/asterisk/pjsip_custom_post.conf 2>/dev/null; then
+    echo '#include pjsip_voipms_custom.conf' >> /etc/asterisk/pjsip_custom_post.conf
+  fi
+  chown asterisk:asterisk /etc/asterisk/pjsip_voipms_custom.conf
+
+  # ── IAX trunk (voipms) ─────────────────────────────────────
+  cat > /etc/asterisk/iax_voipms_custom.conf <<IAXEOF
+; ═══════════════════════════════════════════════════════════════
+; VoIP.ms IAX Trunk — Auto-generated by Innotel PBX setup
+; ═══════════════════════════════════════════════════════════════
+[${VOIPMS_IAX_TRUNK_NAME}]
+type = friend
+username = ${VOIPMS_IAX_USER}
+secret = ${VOIPMS_IAX_PASS}
+host = ${VOIPMS_SIP_SERVER}
+context = from-trunk
+disallow = all
+allow = ulaw
+insecure = port,invite
+requirecalltoken = no
+qualify = yes
+IAXEOF
+
+  if ! grep -q 'iax_voipms_custom.conf' /etc/asterisk/iax_custom.conf 2>/dev/null; then
+    echo '#include iax_voipms_custom.conf' >> /etc/asterisk/iax_custom.conf
+  fi
+  chown asterisk:asterisk /etc/asterisk/iax_voipms_custom.conf
+
+  # Register both trunks in the FreePBX GUI (best-effort — the config
+  # files above make them work at runtime regardless).
+  fwconsole trunks --add="${VOIPMS_TRUNK_NAME}" --tech=pjsip \
+    --detail='{"username":"'"${VOIPMS_SIP_USER}"'","secret":"'"${VOIPMS_SIP_PASS}"'","host":"'"${VOIPMS_SIP_SERVER}"'","context":"from-trunk","disallow":"all","allow":"ulaw","allow":"g729"}' 2>/dev/null || true
+  fwconsole trunks --add="${VOIPMS_IAX_TRUNK_NAME}" --tech=iax \
+    --detail='{"username":"'"${VOIPMS_IAX_USER}"'","secret":"'"${VOIPMS_IAX_PASS}"'","host":"'"${VOIPMS_SIP_SERVER}"'","context":"from-trunk","disallow":"all","allow":"ulaw"}' 2>/dev/null || true
+
+  asterisk -rx 'pjsip reload' 2>/dev/null || true
+  fwconsole reload 2>/dev/null || true
+
+  log "VoIP.ms trunks configured — PJSIP: ${VOIPMS_TRUNK_NAME}, IAX: ${VOIPMS_IAX_TRUNK_NAME}"
+else
+  warn "Skipping VoIP.ms trunks — set VOIPMS_SIP_USER and VOIPMS_SIP_PASS in ${PBX_ENV_FILE}"
+fi
+
+# ─── SMS over PJSIP (VoIP.ms) ─────────────────────────────────
+# Enables SMS on the PJSIP trunk: chan_sip + PJSIP general settings,
+# per-DID endpoints, and the sms-in / sms-out dialplan contexts.
+info "Configuring SMS over PJSIP"
+
+# chan_sip general settings (classic SMS handling) — append so we don't
+# clobber anything FreePBX's SIP Settings page has written.
+if ! grep -q 'accept_outofcall_message' /etc/asterisk/sip_custom.conf 2>/dev/null; then
+  cat >> /etc/asterisk/sip_custom.conf <<SIPSMS
+[general]
+tcpenable=yes
+tcpbindaddr=0.0.0.0
+accept_outofcall_message=yes
+outofcall_message_context=${SMS_IN_CONTEXT}
+auth_message_requests=no
+SIPSMS
+fi
+
+# PJSIP general settings (the trunk is PJSIP) — append, same reason.
+if ! grep -q 'accept_outofcall_message' /etc/asterisk/pjsip_custom.conf 2>/dev/null; then
+  cat >> /etc/asterisk/pjsip_custom.conf <<PJSIPSMS
+[general]
+accept_outofcall_message=yes
+outofcall_message_context=${SMS_IN_CONTEXT}
+auth_message_requests=no
+PJSIPSMS
+fi
+
+# Per-DID endpoints so Asterisk accepts MESSAGE addressed to these numbers
+{
+  echo "; SMS-capable DIDs — Auto-generated by Innotel PBX setup"
+  for DID in ${SMS_DIDS}; do
+    echo "[${DID}](+);"
+  done
+} > /etc/asterisk/pjsip.endpoint_custom_post.conf
+chown asterisk:asterisk /etc/asterisk/pjsip.endpoint_custom_post.conf
+
+# SMS dialplan contexts
+cat >> /etc/asterisk/extensions_custom.conf <<SMSDIALEOF
+
+; ── SMS over PJSIP (VoIP.ms) ──────────────────────────────────
+[${SMS_IN_CONTEXT}]
+exten => _.,1,NoOp(Inbound SMS dialplan invoked)
+ same => n,NoOp(To ${MESSAGE(to)})
+ same => n,NoOp(From ${MESSAGE(from)})
+ same => n,NoOp(Body ${MESSAGE(body)})
+ same => n,Set(NUMBER_TO=${MESSAGE_DATA(X-SMS-To)})
+ same => n,Set(HOST_TO=${CUT(MESSAGE(to),@,2)})
+ same => n,Set(ACTUAL_FROM=${MESSAGE(from)})
+ same => n,Set(ACTUAL_TO=pjsip:${NUMBER_TO}@${HOST_TO})
+ same => n,MessageSend(${ACTUAL_TO},${ACTUAL_FROM})
+ same => n,NoOp(Send status is ${MESSAGE_SEND_STATUS})
+ same => n,Hangup()
+
+[${SMS_OUT_CONTEXT}]
+exten => _.,1,NoOp(Outbound Message dialplan invoked)
+ same => n,NoOp(To ${MESSAGE(to)})
+ same => n,NoOp(From ${MESSAGE(from)})
+ same => n,NoOp(Body ${MESSAGE(body)})
+ same => n,Set(NUMBER_TO=${CUT(CUT(MESSAGE(to),@,1),:,2)})
+ same => n,Set(EXTENSION_FROM=${CUT(CUT(MESSAGE(from),@,1),:,2)})
+ same => n,Set(NUMBER_FROM=${EXTENSION_FROM})
+ same => n,Set(ACTUAL_FROM=${EXTENSION_FROM} <sip:${VOIPMS_SIP_USER}@${VOIPMS_SIP_SERVER}>)
+ same => n,Set(ACTUAL_TO=pjsip:${VOIPMS_TRUNK_NAME}/sip:${NUMBER_TO}@${VOIPMS_SIP_SERVER})
+ same => n,MessageSend(${ACTUAL_TO},${ACTUAL_FROM})
+ same => n,NoOp(Send status is ${MESSAGE_SEND_STATUS})
+ same => n,Hangup()
+SMSDIALEOF
+
+asterisk -rx 'pjsip reload'    2>/dev/null || true
+asterisk -rx 'sip reload'      2>/dev/null || true
+asterisk -rx 'dialplan reload' 2>/dev/null || true
+fwconsole reload 2>/dev/null || true
+
+log "SMS over PJSIP configured — DIDs: ${SMS_DIDS}"
+
 # ═══════════════════════════════════════════════════════════════
-# PHASE 10 — FAX STACK (IAXModem + HylaFAX + AvantFAX)
+# PHASE 11 — FAX STACK (Tesseract + IAXModem + HylaFAX + AvantFAX)
 # ═══════════════════════════════════════════════════════════════
 
-echo ">>> [10/13] Fax stack"
+echo ">>> [11/15] Fax stack"
 cd /usr/src
 
 # ─── Leptonica & Tesseract OCR ───────────────────────────────
@@ -1059,7 +1261,7 @@ if [ -f tesseract-5.5.2.tar.gz ]; then
   tar zxf tesseract-5.5.2.tar.gz && cd tesseract-5.5.2
   ./autogen.sh && ./configure --libdir=/usr/lib64 && make && make install && cd /usr/src
 fi
-[ -f eng.traineddata ] && mv eng.traineddata /usr/local/share/tessdata/
+[ -f eng.traineddata ] && mv eng.traineddata /usr/local/share/tessdata/ 2>/dev/null || true
 
 # ─── IAXModem 1.3.5 ──────────────────────────────────────────
 if [ -f iaxmodem-1.3.5.tar.gz ]; then
@@ -1085,7 +1287,7 @@ port            $((4569 + N))
 refresh         60
 server          127.0.0.1
 peername        ${FAX_NUMBER}
-secret          329fax
+secret          ${IAXMODEM_SECRET}
 codec           ulaw
 cidname         Fax Server
 cidnumber       ${FAX_NUMBER}
@@ -1105,7 +1307,7 @@ if [ -f hylafax-7.0.11.tar.gz ]; then
   cd /usr/src
 fi
 
-# ImageMagick policy
+# ImageMagick policy: allow PS/PDF/XPS coder rights (fax rendering)
 POLICY=/etc/ImageMagick-6/policy.xml
 if [ -f "$POLICY" ]; then
   for PAT in PS PS2 PS3 EPS PDF XPS; do
@@ -1144,7 +1346,7 @@ FaxRcvdCmd:             bin/faxrcvd.php
 DynamicConfig:          bin/dynconf.php
 NotifyCmd:              bin/notify.php
 ModemType:              Class1
-ModemResetCmds:         "ATH1\nAT+VCID=1"
+ModemResetCmds:         "ATH1\\nAT+VCID=1"
 ModemReadyCmds:         ATH0
 Class1AdaptRecvCmd:     AT+FAR=1
 Class1TMConnectDelay:   400
@@ -1167,8 +1369,6 @@ EOF
 
 faxdeluser localhost  2>/dev/null || true
 faxdeluser 127.0.0.1 2>/dev/null || true
-# faxadduser is only installed by HylaFAX `make install`; guard it so a
-# missing hylafax tarball can't abort the installer (mirrors faxdeluser).
 faxadduser -a admin "${DB_PASS}" 2>/dev/null || true
 echo "127.0.0.1" >> /var/spool/hylafax/etc/hosts.hfaxd
 
@@ -1265,37 +1465,49 @@ cat > /var/www/html/fax/includes/local_config.php <<PHP
         define('AFDB_PASS',     'd58fe49');
         define('AFDB_NAME',     'avantfax');
         define('AFDB_HOST',     'localhost');
-        \$BINARYDIR = '/usr/bin';
-        \$HYLAFAX_PREFIX = '/usr/local';
-        \$HYLASPOOL = '/var/spool/hylafax';
-        \$HYLATIFF2PS = false;
-        \$CALLIDn_CIDNumber = 1;
-        \$CALLIDn_CIDName = 2;
-        \$CALLIDn_DIDNum = 3;
-        \$FAXMAILUSER = 'root';
-        \$WWWUSER = 'asterisk';
+        \\$BINARYDIR = '/usr/bin';
+        \\$HYLAFAX_PREFIX = '/usr/local';
+        \\$HYLASPOOL = '/var/spool/hylafax';
+        \\$HYLATIFF2PS = false;
+        \\$CALLIDn_CIDNumber = 1;
+        \\$CALLIDn_CIDName = 2;
+        \\$CALLIDn_DIDNum = 3;
+        \\$FAXMAILUSER = 'root';
+        \\$WWWUSER = 'asterisk';
         define('ADMIN_EMAIL', '${FAX_EMAIL}');
-        \$NOTIFY_INCLUDE_PDF = true;
-        \$FAXRCVD_INCLUDE_THUMBNAIL = true;
-        \$FAXRCVD_INCLUDE_PDF = true;
-        \$ENABLE_DID_ROUTING = false;
-        \$AUTOCONFDID = true;
-        \$dft_config_lang = 'en';
-        \$FROM_COMPANY = ""; \$FROM_LOCATION = ""; \$FROM_FAXNUMBER = ""; \$FROM_VOICENUMBER = "";
-        \$DEFAULT_TSI_ID = ""; \$ENABLE_DL_TIFF = true;
-        \$AVANTFAX_SERVERNAME = 'fax.innotel.us';
-        \$SHOWSERVER_DETAILS = true; \$SHOW_ALL_CONTACTS = true;
-        \$TIFF_TO_G4 = false; \$AVANTFAX_DEBUG = false;
+        \\$NOTIFY_INCLUDE_PDF = true;
+        \\$FAXRCVD_INCLUDE_THUMBNAIL = true;
+        \\$FAXRCVD_INCLUDE_PDF = true;
+        \\$ENABLE_DID_ROUTING = false;
+        \\$AUTOCONFDID = true;
+        \\$dft_config_lang = 'en';
+        \\$FROM_COMPANY = "";
+        \\$FROM_LOCATION = "";
+        \\$FROM_FAXNUMBER = "";
+        \\$FROM_VOICENUMBER = "";
+        \\$DEFAULT_TSI_ID = "";
+        \\$ENABLE_DL_TIFF = true;
+        \\$AVANTFAX_SERVERNAME = 'fax.innotel.us';
+        \\$SHOWSERVER_DETAILS = true;
+        \\$SHOW_ALL_CONTACTS = true;
+        \\$TIFF_TO_G4 = false;
+        \\$AVANTFAX_DEBUG = false;
         define('RESTRICTED_USER_MODE', false);
-        \$NUM_PAGES_FOLLOW = 0;
+        \\$NUM_PAGES_FOLLOW = 0;
         define('WHITEPAGES', "http://www.whitepages.com/search/ReversePhone?full_phone=");
-        define('MAX_USERNAME_SIZE', 15); define('MAX_PASSWD_SIZE', 15);
-        define('MIN_PASSWD_SIZE', 8); define('MAX_EMAIL_SIZE', 99);
+        define('MAX_USERNAME_SIZE', 15);
+        define('MAX_PASSWD_SIZE', 15);
+        define('MIN_PASSWD_SIZE', 8);
+        define('MAX_EMAIL_SIZE', 99);
         define('INBOX_LIST_MODEM', false);
-        \$FOCUS_ON_NEW_FAX = true; \$FOCUS_ON_NEW_FAX_POPUP = true;
-        \$SENDFAX_REQUEUE_EMAIL = true; \$SENDFAX_USE_COVERPAGE = true;
-        \$ARCHIVEFAX2EMAIL = true; \$ARCHIVE_WIDE = true;
-        \$DEFAULT_FAXES_PER_PAGE_INBOX = 25; \$DEFAULT_FAXES_PER_PAGE_ARCHIVE = 30;
+        \\$FOCUS_ON_NEW_FAX = true;
+        \\$FOCUS_ON_NEW_FAX_POPUP = true;
+        \\$SENDFAX_REQUEUE_EMAIL = true;
+        \\$SENDFAX_USE_COVERPAGE = true;
+        \\$ARCHIVEFAX2EMAIL = true;
+        \\$ARCHIVE_WIDE = true;
+        \\$DEFAULT_FAXES_PER_PAGE_INBOX = 25;
+        \\$DEFAULT_FAXES_PER_PAGE_ARCHIVE = 30;
         define('ENABLE_OCR_SUPPORT', true);
         define('OCR_BINARY', "/usr/local/bin/tesseract");
         define('OCR_COMMAND', OCR_BINARY." %s %s -l %s");
@@ -1303,7 +1515,7 @@ cat > /var/www/html/fax/includes/local_config.php <<PHP
         define('ENABLE_BARDECODE_SUPPORT', true);
         define('BARDECODE_BINARY', "/var/spool/hylafax/bin/bardecode");
         define('BARDECODE_COMMAND', BARDECODE_BINARY." -t any -f %s");
-        \$FAXRCVD_PRINT_PDF = false;
+        \\$FAXRCVD_PRINT_PDF = false;
         define('EMAIL_ENCODING_TEXT', "Base64Encoding");
         define('EMAIL_ENCODING_HTML', "Base64Encoding");
         define('EMAIL_ENCODING_CHARSET', "UTF-8");
@@ -1312,47 +1524,98 @@ cat > /var/www/html/fax/includes/local_config.php <<PHP
         define('SMTP_PORT', ${SMTP_PORT});
         define('SMTP_AUTH', true);
         define('SMTP_USERNAME', '${ADMIN_EMAIL}');
-        define('SMTP_PASSWORD', '${DB_PASS}');
-        define('SMTP_LOCALHOST', 'mx.innotel.us');
-        \$NOTIFY_ON_SUCCESS = true;
-        \$SYSTEM_EMAIL_SIG_HTML = '<a href="https://fax.innotel.us/">Innotel Fax Services</a>';
-        \$SYSTEM_EMAIL_SIG_TEXT = 'fax.innotel.us';
-        \$COVERPAGE_FILE = 'cover.ps'; \$HTML2PS = '/usr/bin/html2ps';
-        \$PAPERSIZE = 'letter'; \$DPI = 92; \$DPIS = 200;
+        define('SMTP_PASSWORD', '${SMTP_PASS}');
+        define('SMTP_LOCALHOST', '${SMTP_HOST}');
+        \\$NOTIFY_ON_SUCCESS = true;
+        \\$SYSTEM_EMAIL_SIG_HTML = '<a href="https://fax.innotel.us/">Innotel Fax Services</a>';
+        \\$SYSTEM_EMAIL_SIG_TEXT = 'fax.innotel.us';
+        \\$COVERPAGE_FILE = 'cover.ps'; \\$HTML2PS = '/usr/bin/html2ps';
+        \\$PAPERSIZE = 'letter'; \\$DPI = 92; \\$DPIS = 200;
         define('PREV_TN', 80); define('PREV_SP', 750);
-        \$MAX_SESSION_LIFETIME = 8*60*60;
-        \$ALTERNATE_AUTH_ENABLE = false; \$ALTERNATE_AUTH_FALLBACK = true;
-        \$ALTERNATE_AUTH_CLASS = "PAMAuth";
+        \\$MAX_SESSION_LIFETIME = 8*60*60;
+        \\$ALTERNATE_AUTH_ENABLE = false; \\$ALTERNATE_AUTH_FALLBACK = true;
+        \\$ALTERNATE_AUTH_CLASS = "PAMAuth";
 PHP
-
-# ─── AvantFAX cron ───────────────────────────────────────────
 fi
 
+# ─── AvantFAX cron ───────────────────────────────────────────
 cat > /etc/cron.d/avantfax <<'EOF'
 0 * * * * root /var/www/html/fax/includes/phb.php
 0 0 * * * root /var/www/html/fax/includes/avantfaxcron.php -t 2
 EOF
 
 # ═══════════════════════════════════════════════════════════════
-# PHASE 11 — SPEECH, VOSK SERVER & AI CDR
+# PHASE 12 — IONCUBE & SPEECH AGI
 # ═══════════════════════════════════════════════════════════════
 
-echo ">>> [11/13] VOSK server + AI CDR pipeline"
-cd /usr/src
+echo ">>> [12/15] IONCube + speech AGI"
+
+# ─── IONCube (PHP 8.3 loader) ────────────────────────────────
+if [ -f /usr/src/ioncube_loaders_lin_x86-64.zip ]; then
+  cd /usr/src
+  if [ ! -d ioncube ]; then
+    unzip -o ioncube_loaders_lin_x86-64.zip
+  fi
+  # Ubuntu 24.04 PHP 8.3 extension dir is /usr/lib/php/20230831
+  PHP_EXT_DIR="$(php-config --extension-dir 2>/dev/null || echo /usr/lib/php/20230831)"
+  if [ -n "$PHP_EXT_DIR" ] && [ -f "/usr/src/ioncube/ioncube_loader_lin_8.3.so" ]; then
+    cp /usr/src/ioncube/ioncube_loader_lin_8.3.so "$PHP_EXT_DIR/"
+    cat > /etc/php/8.3/mods-available/00-ioncube.ini <<EOF
+zend_extension = ${PHP_EXT_DIR}/ioncube_loader_lin_8.3.so
+EOF
+    ln -sf /etc/php/8.3/mods-available/00-ioncube.ini /etc/php/8.3/apache2/conf.d/00-ioncube.ini
+    ln -sf /etc/php/8.3/mods-available/00-ioncube.ini /etc/php/8.3/cli/conf.d/00-ioncube.ini
+    systemctl restart apache2
+  fi
+fi
 
 # ─── Google TTS / speech-recog AGI ───────────────────────────
+cd /usr/src
 if [ ! -d asterisk-speech-recog ]; then
   git clone https://github.com/innotelinc/asterisk-speech-recog.git
 fi
 if [ ! -d asterisk-googletts ]; then
   git clone https://github.com/innotelinc/asterisk-googletts.git
 fi
-cp asterisk-googletts/googletts.agi       /var/lib/asterisk/agi-bin/
-cp asterisk-speech-recog/speech-recog.agi /var/lib/asterisk/agi-bin/
+cp asterisk-googletts/googletts.agi       /var/lib/asterisk/agi-bin/ 2>/dev/null || true
+cp asterisk-speech-recog/speech-recog.agi /var/lib/asterisk/agi-bin/ 2>/dev/null || true
 chown -R asterisk:asterisk /var/lib/asterisk/agi-bin/
 chmod 775 /var/lib/asterisk/agi-bin/
 mkdir -p /var/lib/asterisk/sounds/en/custom/
 chown asterisk:asterisk /var/lib/asterisk/sounds/en/custom
+
+# ─── VOSK Asterisk module ─────────────────────────────────────
+cd /usr/src
+if [ ! -d vosk-asterisk ]; then
+  git clone https://github.com/innotelinc/vosk-asterisk.git
+fi
+cd vosk-asterisk
+./bootstrap
+./configure \
+  --with-asterisk=/usr/src/asterisk-${ASTERISK_VER} \
+  --prefix=/usr --libdir=/usr/lib64
+make && make install
+
+chmod 755 /usr/lib64/asterisk/modules/res_speech_vosk.so
+chown asterisk:asterisk /usr/lib64/asterisk/modules/res_speech_vosk.so
+
+asterisk -rx 'module load res_speech.so'       2>/dev/null || true
+asterisk -rx 'module load res_http_websocket.so' 2>/dev/null || true
+asterisk -rx 'module load res_speech_vosk.so'  2>/dev/null || true
+asterisk -rx 'dialplan reload'                 2>/dev/null || true
+
+# ─── Custom logger ────────────────────────────────────────────
+cat > /etc/asterisk/logger_logfiles_custom.conf <<EOF
+messages => notice,warning,error,security
+EOF
+asterisk -rx 'logger reload' 2>/dev/null || true
+
+# ═══════════════════════════════════════════════════════════════
+# PHASE 13 — VOSK SERVER & AI CDR
+# ═══════════════════════════════════════════════════════════════
+
+echo ">>> [13/15] VOSK server + AI CDR pipeline"
+cd /usr/src
 
 pip3 install --break-system-packages vosk websocket-client pymysql 2>/dev/null || true
 
@@ -1363,44 +1626,75 @@ apt -y install \
   automake autoconf libtool pkg-config ca-certificates
 
 # ─── Kaldi + VOSK API ────────────────────────────────────────
+# Kaldi is the heaviest compile in this script and the usual failure point:
+# every g++ job writes a temp .s file in $TMPDIR, so when /tmp runs out of
+# space (or systemd-tmpfiles-clean wipes it mid-build) the build dies with
+#   "Assembler messages: Error: can't open /tmp/ccXXXX.s for reading"
+# Guards below: use a temp dir with room, cap jobs by RAM, and skip the whole
+# section on re-runs once vosk-api has built (marker file).
 KALDI_MKL=0
 
-if [ ! -d /opt/kaldi ]; then
-  git clone -b vosk --single-branch https://github.com/innotelinc/kaldi.git /opt/kaldi
-fi
-cd /opt/kaldi/tools
-sed -i 's:status=0:exit 0:g' extras/check_dependencies.sh
-sed -i 's:--enable-ngram-fsts:--enable-ngram-fsts --disable-bin:g' Makefile
-make -j"$(nproc)" openfst cub
-extras/install_openblas_clapack.sh
+if [ ! -f /opt/vosk-api/.built ]; then
+  TMPDIR="${TMPDIR:-/tmp}"
+  TMP_FREE_MB="$(df -m "$TMPDIR" 2>/dev/null | awk 'NR==2 {print $4}')"
+  if [ "${TMP_FREE_MB:-0}" -lt 4096 ]; then
+    warn "Only ${TMP_FREE_MB:-0} MB free in $TMPDIR — using /var/tmp for Kaldi temp files"
+    TMPDIR=/var/tmp
+    mkdir -p /var/tmp
+    export TMPDIR
+  fi
+  MEM_MB="$(free -m | awk '/^Mem:/ {print $2}')"
+  KALDI_JOBS="$(nproc)"
+  if [ "${KALDI_JOBS}" -gt 4 ]; then KALDI_JOBS=4; fi   # Kaldi docs recommend -j 4
+  if [ "${MEM_MB:-0}" -lt 4096 ]; then
+    warn "RAM is ${MEM_MB:-0} MB — building Kaldi with 1 job"
+    KALDI_JOBS=1
+  elif [ "${MEM_MB:-0}" -lt 8192 ]; then
+    warn "RAM is ${MEM_MB:-0} MB — building Kaldi with 2 jobs"
+    KALDI_JOBS=2
+  fi
 
-cd /opt/kaldi/src
-./configure --mathlib=OPENBLAS_CLAPACK --shared
-make -j clean depend; make -j2
-sed -i 's:-msse -msse2:-msse -msse2:g' kaldi.mk
-sed -i 's: -O1 : -O3 :g' kaldi.mk
-make -j"$(nproc)" online2 lm rnnlm
+  if [ ! -d /opt/kaldi ]; then
+    git clone -b vosk --single-branch https://github.com/innotelinc/kaldi.git /opt/kaldi
+  fi
+  cd /opt/kaldi/tools
+  sed -i 's:status=0:exit 0:g' extras/check_dependencies.sh
+  sed -i 's:--enable-ngram-fsts:--enable-ngram-fsts --disable-bin:g' Makefile
+  make -j"$KALDI_JOBS" openfst cub
+  extras/install_openblas_clapack.sh
 
-if [ ! -d /opt/vosk-api ]; then
-  git clone https://github.com/innotelinc/vosk-api.git /opt/vosk-api
-fi
-cd /opt/vosk-api/src
-KALDI_MKL=0 KALDI_ROOT=/opt/kaldi make -j"$(nproc)"
-cd /opt/vosk-api/python && python3 ./setup.py install
+  cd /opt/kaldi/src
+  ./configure --mathlib=OPENBLAS_CLAPACK --shared
+  # No `make clean`: on a re-run (e.g. after the assembler failure above) this
+  # resumes incrementally instead of rebuilding all of Kaldi from scratch.
+  make depend
+  make -j"$KALDI_JOBS"
+  sed -i 's:-msse -msse2:-msse -msse2:g' kaldi.mk
+  sed -i 's: -O1 : -O3 :g' kaldi.mk
+  make -j"$KALDI_JOBS" online2 lm rnnlm
 
-if [ ! -d /opt/vosk-server ]; then
-  git clone https://github.com/innotelinc/vosk-server.git /opt/vosk-server
+  if [ ! -d /opt/vosk-api ]; then
+    git clone https://github.com/innotelinc/vosk-api.git /opt/vosk-api
+  fi
+  cd /opt/vosk-api/src
+  KALDI_MKL=0 KALDI_ROOT=/opt/kaldi make -j"$KALDI_JOBS"
+  cd /opt/vosk-api/python && python3 ./setup.py install
+
+  if [ ! -d /opt/vosk-server ]; then
+    git clone https://github.com/innotelinc/vosk-server.git /opt/vosk-server
+  fi
+  rm -f /opt/vosk-api/src/*.o
+  touch /opt/vosk-api/.built
 fi
-rm -f /opt/vosk-api/src/*.o
 
 # ─── VOSK model ──────────────────────────────────────────────
 mkdir -p /opt/vosk-model-en
 cd /opt/vosk-model-en
 if [ ! -d model ]; then
-  wget https://alphacephei.com/vosk/models/vosk-model-en-us-0.22-lgraph.zip
-  unzip vosk-model-en-us-0.22-lgraph.zip
-  mv vosk-model-en-us-0.22-lgraph model
-  rm vosk-model-en-us-0.22-lgraph.zip
+  wget "${VOSK_MODEL_URL}"
+  unzip "$(basename "${VOSK_MODEL_URL}")"
+  mv "${VOSK_MODEL_DIR}" model
+  rm -f "$(basename "${VOSK_MODEL_URL}")"
 fi
 
 sed -i 's/async def recognize(websocket, path):/async def recognize(websocket):/' \
@@ -1422,53 +1716,251 @@ systemctl daemon-reload
 systemctl enable vosk.service
 systemctl start  vosk.service
 
-# ─── VOSK sendmail shim ───────────────────────────────────────
+# ─── VOSK sendmail shim (voicemail → transcription email) ────
 if [ -f /usr/src/vosk-ffmpeg.py ] && [ -f /usr/src/sendmailmp3-vosk ]; then
   mv /usr/src/vosk-ffmpeg.py /usr/src/sendmailmp3-vosk /usr/local/sbin/
   chmod 755 /usr/local/sbin/sendmailmp3-vosk /usr/local/sbin/vosk-ffmpeg.py
   chown asterisk:asterisk /usr/local/sbin/sendmailmp3-vosk /usr/local/sbin/vosk-ffmpeg.py
 fi
 
-# ─── AI CDR (Ollama + llama3.1) ──────────────────────────────
+# ─── AI CDR (Ollama) ─────────────────────────────────────────
 curl -fsSL https://ollama.com/install.sh | sh
-ollama pull llama3.1:8b &
+ollama pull "${OLLAMA_MODEL}" &
 
 mkdir -p /opt/ai-cdr
+cat > /opt/ai-cdr/db.conf <<EOF
+[db]
+host = localhost
+user = asterisk
+password = ${DB_PASS}
+database = asteriskcdrdb
+EOF
+chmod 600 /opt/ai-cdr/db.conf
+chown asterisk:asterisk /opt/ai-cdr/db.conf
+
 cat > /opt/ai-cdr/summarize.py <<'PYEOF'
 #!/usr/bin/env python3
-"""AI CDR Summariser — Innotel"""
-import sys, json, subprocess, pymysql
-from vosk import Model, KaldiRecognizer
+"""AI CDR summarizer — invoked from FreePBX macro-hangupcall-custom.
+
+Usage: summarize.py <recording_path> <uniqueid> <caller> <callee>
+
+Reads DB credentials from /opt/ai-cdr/db.conf (mode 600), NOT hardcoded here.
+"""
+import sys
+import os
+import json
+import time
 import wave
+import logging
+import subprocess
+import re
+import configparser
 
-wav_path = sys.argv[1]
-uniqueid, caller, callee = sys.argv[2], sys.argv[3], sys.argv[4]
+import pymysql
+from vosk import Model, KaldiRecognizer
 
-wf  = wave.open(wav_path, "rb")
-rec = KaldiRecognizer(Model("/opt/vosk-model-en/model"), wf.getframerate())
-parts = []
-while True:
-    data = wf.readframes(4000)
-    if not data: break
-    if rec.AcceptWaveform(data): parts.append(json.loads(rec.Result())["text"])
-parts.append(json.loads(rec.FinalResult())["text"])
-transcript = " ".join(parts).strip()
+LOG_PATH = "/var/log/asterisk/ai-cdr-summarize.log"
+DB_CONF_PATH = "/opt/ai-cdr/db.conf"
+VOSK_MODEL_PATH = "/opt/vosk-model-en/model"
+TARGET_SAMPLE_RATE = 16000
+FILE_WAIT_ATTEMPTS = 10
+FILE_WAIT_SECONDS = 1
+OLLAMA_TIMEOUT_SECONDS = 60
+OLLAMA_MODEL = "llama3.2"
 
-prompt = f'Summarize this phone call in 1-2 sentences. Extract intent and sentiment. Return ONLY JSON: {{"summary":"","intent":"","sentiment":""}}\n\nTranscript:\n{transcript}'
-out = subprocess.run(["ollama","run","llama3.1:8b"], input=prompt.encode(), stdout=subprocess.PIPE).stdout.decode()
-raw = out[out.find("{"):out.rfind("}")+1]
-try: js = json.loads(raw)
-except: js = {"summary":transcript[:200],"intent":"unknown","sentiment":"neutral"}
+logging.basicConfig(
+    filename=LOG_PATH,
+    level=logging.INFO,
+    format="%(asctime)s [%(levelname)s] %(message)s",
+)
+log = logging.getLogger("ai-cdr")
 
-db = pymysql.connect(host="localhost",user="asterisk",password="eExoVkmrjqJcUv3A17Zc",db="asteriskcdrdb")
-c = db.cursor()
-c.execute("INSERT INTO ai_call_summaries (uniqueid,caller,callee,summary,intent,sentiment) VALUES (%s,%s,%s,%s,%s,%s)", (uniqueid,caller,callee,js["summary"],js["intent"],js["sentiment"]))
-c.execute("UPDATE cdr SET userfield=%s WHERE uniqueid=%s", (js["summary"],uniqueid))
-db.commit(); db.close()
-print(f"[AI-CDR] {uniqueid}: {js['summary']}")
+
+def load_db_creds():
+    if not os.path.exists(DB_CONF_PATH):
+        log.error("Missing DB credentials file at %s", DB_CONF_PATH)
+        sys.exit(1)
+
+    cfg = configparser.ConfigParser()
+    cfg.read(DB_CONF_PATH)
+    try:
+        return {
+            "host": cfg.get("db", "host", fallback="localhost"),
+            "user": cfg.get("db", "user"),
+            "password": cfg.get("db", "password"),
+            "database": cfg.get("db", "database"),
+        }
+    except configparser.NoOptionError as e:
+        log.error("db.conf missing required field: %s", e)
+        sys.exit(1)
+
+
+def wait_for_file(path, attempts=FILE_WAIT_ATTEMPTS, delay=FILE_WAIT_SECONDS):
+    """MixMonitor may still be flushing when the hangup handler fires."""
+    for i in range(attempts):
+        if os.path.exists(path) and os.path.getsize(path) > 44:  # > bare WAV header
+            return True
+        log.info("Recording not ready yet (attempt %d/%d): %s", i + 1, attempts, path)
+        time.sleep(delay)
+    return False
+
+
+def to_16k_mono_wav(src_path):
+    """Resample to 16kHz mono PCM — the Vosk model expects 16kHz."""
+    converted_path = f"/tmp/aicdr_{os.path.basename(src_path)}.16k.wav"
+    result = subprocess.run(
+        [
+            "ffmpeg", "-y", "-i", src_path,
+            "-ac", "1", "-ar", str(TARGET_SAMPLE_RATE),
+            converted_path,
+        ],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        timeout=30,
+    )
+    if result.returncode != 0:
+        log.error("ffmpeg resample failed for %s: %s", src_path, result.stderr.decode(errors="replace"))
+        return None
+    return converted_path
+
+
+def transcribe(wav_path):
+    with wave.open(wav_path, "rb") as wf:
+        rec = KaldiRecognizer(Model(VOSK_MODEL_PATH), wf.getframerate())
+        while True:
+            data = wf.readframes(4000)
+            if not data:
+                break
+            rec.AcceptWaveform(data)
+        result = json.loads(rec.FinalResult())
+        return result.get("text", "").strip()
+
+
+def summarize_with_llm(text):
+    if not text:
+        return {"summary": "", "intent": "", "sentiment": "neutral"}
+
+    prompt = f"""Summarize this phone call in 1-2 sentences.
+Extract intent and sentiment.
+Return JSON only, no markdown, no commentary:
+{{"summary": "", "intent": "", "sentiment": ""}}
+
+Transcript:
+{text}
+"""
+    try:
+        result = subprocess.run(
+            ["ollama", "run", OLLAMA_MODEL],
+            input=prompt.encode(),
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=OLLAMA_TIMEOUT_SECONDS,
+        )
+    except subprocess.TimeoutExpired:
+        log.error("ollama call timed out after %ds", OLLAMA_TIMEOUT_SECONDS)
+        return {"summary": "", "intent": "", "sentiment": "unknown"}
+
+    out = result.stdout.decode(errors="replace")
+
+    match = re.search(r"\{.*\}", out, re.DOTALL)
+    if not match:
+        log.error("No JSON object found in ollama output: %s", out[:500])
+        return {"summary": "", "intent": "", "sentiment": "unknown"}
+
+    try:
+        js = json.loads(match.group(0))
+    except json.JSONDecodeError as e:
+        log.error("Failed to parse JSON from ollama output: %s | raw: %s", e, out[:500])
+        return {"summary": "", "intent": "", "sentiment": "unknown"}
+
+    return {
+        "summary": js.get("summary", ""),
+        "intent": js.get("intent", ""),
+        "sentiment": js.get("sentiment", ""),
+    }
+
+
+def save_to_db(uniqueid, caller, callee, result):
+    creds = load_db_creds()
+    db = pymysql.connect(
+        host=creds["host"],
+        user=creds["user"],
+        password=creds["password"],
+        db=creds["database"],
+        autocommit=False,
+    )
+    try:
+        with db.cursor() as c:
+            c.execute(
+                """
+                INSERT INTO ai_call_summaries
+                    (uniqueid, caller, callee, summary, intent, sentiment)
+                VALUES (%s, %s, %s, %s, %s, %s)
+                ON DUPLICATE KEY UPDATE
+                    summary = VALUES(summary),
+                    intent = VALUES(intent),
+                    sentiment = VALUES(sentiment)
+                """,
+                (uniqueid, caller, callee, result["summary"], result["intent"], result["sentiment"]),
+            )
+            c.execute(
+                "UPDATE cdr SET userfield=%s WHERE uniqueid=%s",
+                (result["summary"], uniqueid),
+            )
+        db.commit()
+    except Exception:
+        db.rollback()
+        raise
+    finally:
+        db.close()
+
+
+def main():
+    if len(sys.argv) < 5:
+        log.error("Called with wrong argument count: %s", sys.argv)
+        sys.exit(1)
+
+    wav_path, uniqueid, caller, callee = sys.argv[1:5]
+    log.info("Processing call uniqueid=%s caller=%s callee=%s file=%s", uniqueid, caller, callee, wav_path)
+
+    if not wait_for_file(wav_path):
+        log.error("Recording never appeared: %s", wav_path)
+        sys.exit(1)
+
+    converted = to_16k_mono_wav(wav_path)
+    if not converted:
+        sys.exit(1)
+
+    try:
+        text = transcribe(converted)
+    except Exception:
+        log.exception("Transcription failed for %s", wav_path)
+        sys.exit(1)
+    finally:
+        if os.path.exists(converted):
+            os.remove(converted)
+
+    log.info("Transcript (%d chars) for %s", len(text), uniqueid)
+
+    result = summarize_with_llm(text)
+
+    try:
+        save_to_db(uniqueid, caller, callee, result)
+    except Exception:
+        log.exception("DB write failed for uniqueid=%s", uniqueid)
+        sys.exit(1)
+
+    log.info("Done: uniqueid=%s sentiment=%s", uniqueid, result["sentiment"])
+
+
+if __name__ == "__main__":
+    main()
 PYEOF
 
 chown -R asterisk:asterisk /opt/ai-cdr
+mkdir -p /var/log/asterisk
+touch /var/log/asterisk/ai-cdr-summarize.log
+chown asterisk:asterisk /var/log/asterisk/ai-cdr-summarize.log
 
 # ─── FreePBX hangup hook ─────────────────────────────────────
 cat >> /etc/asterisk/extensions_custom.conf <<'EOF'
@@ -1477,7 +1969,7 @@ cat >> /etc/asterisk/extensions_custom.conf <<'EOF'
 [macro-hangupcall-custom]
 exten => s,1,NoOp(AI CDR hangup handler)
  same => n,Set(RECFILE=${IF($["${MIXMONITOR_FILENAME}"!=""]?${MIXMONITOR_FILENAME}:${CDR(recordingfile)})})
- same => n,ExecIf($["${RECFILE}"!=""]?System(/usr/bin/python3 /opt/ai-cdr/summarize.py "${RECFILE}" "${CDR(uniqueid)}" "${CALLERID(num)}" "${CONNECTEDLINE(num)}"))
+ same => n,ExecIf($["${RECFILE}"!=""]?System(/usr/bin/nohup /usr/bin/python3 /opt/ai-cdr/summarize.py "${RECFILE}" "${CDR(uniqueid)}" "${CALLERID(num)}" "${CONNECTEDLINE(num)}" >/var/log/asterisk/ai-cdr.log 2>&1 &))
  same => n,MacroExit()
 EOF
 
@@ -1485,10 +1977,10 @@ fwconsole reload 2>/dev/null || true
 asterisk -rx "dialplan reload" 2>/dev/null || true
 
 # ═══════════════════════════════════════════════════════════════
-# PHASE 12 — SECURITY, CODECS, CERTBOT
+# PHASE 14 — SECURITY (Fail2Ban + AsterBan + Certbot)
 # ═══════════════════════════════════════════════════════════════
 
-echo ">>> [12/13] Security, codecs, certbot"
+echo ">>> [14/15] Security, AsterBan, certbot"
 
 # ─── Fail2Ban ─────────────────────────────────────────────────
 cat > /etc/fail2ban/jail.d/asterisk.conf <<EOF
@@ -1502,13 +1994,14 @@ systemctl enable fail2ban && systemctl restart fail2ban
 
 # ─── AsterBan ─────────────────────────────────────────────────
 cd /usr/src
-if [ ! -d /usr/local/go ]; then
-  apt -y install golang-go 2>/dev/null || true
+if [ ! -f /usr/local/go/bin/go ] && [ ! -d /usr/local/go ]; then
+  if [ -f go1.26.5.linux-amd64.tar.gz ]; then
+    tar -C /usr/local -xvf go1.26.5.linux-amd64.tar.gz
+  else
+    apt -y install golang-go 2>/dev/null || true
+  fi
 fi
-if [ -f go1.22.5.linux-amd64.tar.gz ]; then
-  tar -C /usr/local -xvf go1.22.5.linux-amd64.tar.gz
-  export PATH=$PATH:/usr/local/go/bin
-fi
+export PATH="$PATH:/usr/local/go/bin"
 
 if [ ! -d fail2ban-for-asterisk ]; then
   git clone https://github.com/vvampirius/fail2ban-for-asterisk.git
@@ -1531,153 +2024,27 @@ ABEOF
 fi
 cd /usr/src
 
-# ─── G.729 codec ─────────────────────────────────────────────
-if [ ! -f /usr/lib64/asterisk/modules/codec_g729.so ]; then
-  if [ ! -d bcg729 ]; then git clone https://github.com/innotelinc/bcg729.git; fi
-  cd bcg729 && cmake . && make && make install && cd /usr/src
-  if [ ! -d asterisk-g72x ]; then git clone https://github.com/innotelinc/asterisk-g72x.git; fi
-  cd asterisk-g72x
-  ./autogen.sh
-  ./configure --libdir=/usr/lib64 --with-bcg729 --with-asterisk-includes=/usr/src/asterisk-${ASTERISK_VER}/include/
-  make && make install
-  chmod +x /usr/lib64/asterisk/modules/codec_g729.so
-  chown asterisk:asterisk /usr/lib64/asterisk/modules/codec_g729.so
-  cd /usr/src
-fi
+# ─── SELinux (Ubuntu ships AppArmor, not SELinux) ─────────────
+# On minimal Ubuntu there is no SELinux policy to disable; AppArmor was
+# removed in phase 1. Kept as a comment for RHEL-style ports.
 
-asterisk -rx 'module load codec_g729.so' 2>/dev/null || true
-
-for SO in codec_g723 codec_g729; do
-  SRC="/usr/src/${SO}-ast220-gcc4-glibc-x86_64-pentium4.so"
-  DST="/usr/lib64/asterisk/modules/${SO}.so"
-  if [ -f "$SRC" ] && [ ! -f "$DST" ]; then
-    mv "$SRC" "$DST" && chmod +x "$DST" && chown asterisk:asterisk "$DST"
-  fi
-done
-
-# ─── Certbot ──────────────────────────────────────────────────
-# certbot --apache --email ${ADMIN_EMAIL} --agree-tos --no-eff-email -d ${HOSTNAME}
-# certbot --apache --email ${ADMIN_EMAIL} --agree-tos --no-eff-email -d fax.innotel.us
-
-# ─── IONCube (if needed) ─────────────────────────────────────
-if [ -f /usr/src/ioncube_loaders_lin_x86-64.zip ]; then
-  cd /usr/src && unzip -o ioncube_loaders_lin_x86-64.zip
-  cp ioncube/ioncube_loader_lin_7.4.so /usr/lib/php/20190902/ 2>/dev/null || true
-  [ -f 00-ioncube.ini ] && cp 00-ioncube.ini /etc/php/7.4/apache2/conf.d/ 2>/dev/null || true
-fi
+# ─── Certbot (LetsEncrypt) ────────────────────────────────────
+# ACME DNS auth hook for wildcard certs (requires DNS API credentials).
+# Uncomment and adapt when DNS records are in place:
+#   certbot --preferred-chain "ISRG Root X1" --email ${ADMIN_EMAIL} \
+#     --agree-tos --no-eff-email certonly --manual \
+#     --manual-auth-hook /etc/letsencrypt/acme-dns-auth.py \
+#     --preferred-challenges dns --debug-challenges \
+#     -d innotel.us -d \*.innotel.us --key-type rsa
+#   certbot --apache --preferred-chain "ISRG Root X1" \
+#     --email ${ADMIN_EMAIL} --agree-tos --no-eff-email -d ${HOSTNAME}
 
 # ─── Sudoers ──────────────────────────────────────────────────
-echo "asterisk ALL = NOPASSWD: /sbin/reboot, /sbin/halt, /usr/local/sbin/faxdeluser, /usr/local/sbin/faxadduser -u * -p * *" >> /etc/sudoers
+grep -q 'faxadduser' /etc/sudoers 2>/dev/null || \
+  echo "asterisk ALL = NOPASSWD: /sbin/reboot, /sbin/halt, /usr/local/sbin/faxdeluser, /usr/local/sbin/faxadduser -u * -p * *" >> /etc/sudoers
 
 echo "/usr/lib64" > /etc/ld.so.conf.d/asterisk.conf
 ldconfig
-
-# ═══════════════════════════════════════════════════════════════
-# PHASE 13 — PBX CUSTOMER PORTAL
-# ═══════════════════════════════════════════════════════════════
-
-echo ">>> [13/13] PBX Customer Portal"
-
-# Ensure Node.js 20
-if ! command -v node &>/dev/null || [ "$(node -v | cut -d. -f1 | tr -d v)" -lt 18 ]; then
-  curl -fsSL https://deb.nodesource.com/setup_20.x | bash -
-  apt -y install nodejs
-fi
-
-mkdir -p "$APP_DIR"
-
-# Try to copy from local source, else clone
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-REPO_DIR="$(dirname "$SCRIPT_DIR")"
-if [ -f "$REPO_DIR/package.json" ]; then
-  info "Copying portal from $REPO_DIR..."
-  rsync -a --exclude='node_modules' --exclude='.git' --exclude='data' --exclude='.next' "$REPO_DIR/" "$APP_DIR/"
-else
-  info "Cloning portal from GitHub..."
-  git clone https://github.com/innotelinc/pbx-portal.git "$APP_DIR"
-fi
-
-cd "$APP_DIR"
-npm ci --production 2>&1 | tail -5
-
-# ─── Generate .env ───────────────────────────────────────────
-cat > "${APP_DIR}/.env" <<EOF
-# Bind to all interfaces so the server doesn't fail with
-# EADDRNOTAVAIL when HOSTNAME is set to a public IP
-HOSTNAME=0.0.0.0
-# ── Generated by Innotel PBX setup ──
-# Server: ${HOSTNAME}  |  Date: $(date -u +"%Y-%m-%dT%H:%M:%SZ")
-
-SESSION_SECRET=${SESSION_SECRET}
-VOIPMS_API_USERNAME=${VOIPMS_USER}
-VOIPMS_API_PASSWORD=${VOIPMS_PASS}
-FREEPBX_URL=https://${HOSTNAME}
-FREEPBX_CLIENT_ID=${FREEPBX_CLIENT_ID}
-FREEPBX_CLIENT_SECRET=${FREEPBX_CLIENT_SECRET}
-NEXT_PUBLIC_FREEPBX_WSS_URL=wss://${HOSTNAME}:8089/ws
-NEXT_PUBLIC_TURN_SERVER=${TURN_SERVER}
-NEXT_PUBLIC_TURN_USERNAME=${TURN_USERNAME}
-NEXT_PUBLIC_TURN_CREDENTIAL=${TURN_CREDENTIAL}
-ASTERISK_AMI_HOST=127.0.0.1
-ASTERISK_AMI_PORT=5038
-ASTERISK_AMI_USERNAME=${FREEPBX_AMI_USER}
-ASTERISK_AMI_SECRET=${FREEPBX_AMI_SECRET}
-AVANTFAX_URL=http://${HOSTNAME}:8080/fax
-NEXT_PUBLIC_AVANTFAX_URL=http://${HOSTNAME}:8080/fax
-ATLAS_API_URL=${ATLAS_URL}
-ATLAS_API_KEY=${ATLAS_API_KEY}
-STRIPE_SECRET_KEY=${STRIPE_SECRET_KEY}
-STRIPE_WEBHOOK_SECRET=${STRIPE_WEBHOOK_SECRET}
-NEXT_PUBLIC_STRIPE_PUBLISHABLE_KEY=${STRIPE_PUBLISHABLE_KEY}
-NEXT_PUBLIC_URL=https://${HOSTNAME}:3000
-NODE_ENV=production
-EOF
-
-# ─── Build & seed ────────────────────────────────────────────
-npm run build 2>&1 | tail -10
-npm run seed 2>&1 || true
-
-# ─── Systemd service ─────────────────────────────────────────
-cat > /etc/systemd/system/innotel-pbx.service <<EOF
-[Unit]
-Description=Innotel PBX Customer Portal
-After=network.target mariadb.service freepbx.service
-[Service]
-Type=simple
-User=root
-WorkingDirectory=${APP_DIR}
-Environment=NODE_ENV=production
-Environment=PORT=3000
-ExecStart=/usr/bin/node ${APP_DIR}/node_modules/.bin/next start -H 0.0.0.0 -p 3000
-Environment=HOSTNAME=0.0.0.0
-Restart=always
-RestartSec=5
-StandardOutput=journal
-StandardError=journal
-SyslogIdentifier=innotel-pbx
-[Install]
-WantedBy=multi-user.target
-EOF
-
-systemctl daemon-reload
-systemctl enable innotel-pbx
-systemctl start  innotel-pbx
-
-# ─── Firewall ────────────────────────────────────────────────
-if command -v ufw &>/dev/null; then
-  ufw allow 3000/tcp comment "PBX Portal"
-  ufw allow 8089/tcp comment "Asterisk WSS"
-  ufw allow 8080/tcp comment "AvantFax"
-  ufw allow 5060/udp comment "SIP"
-  ufw allow 10000:20000/udp comment "RTP"
-  ufw --force enable 2>/dev/null || true
-elif command -v iptables &>/dev/null; then
-  for PORT in 3000 8089 8080; do iptables -I INPUT -p tcp --dport $PORT -j ACCEPT; done
-  iptables -I INPUT -p udp --dport 5060 -j ACCEPT
-  iptables -I INPUT -p udp --dport 10000:20000 -j ACCEPT
-fi
-
-log "PBX Portal installed at ${APP_DIR}"
 
 # ═══════════════════════════════════════════════════════════════
 # FINAL RESTART & SUMMARY
@@ -1688,24 +2055,30 @@ fwconsole restart 2>/dev/null || true
 
 echo ""
 echo "╔══════════════════════════════════════════════════════════╗"
-echo "║  INNOTEL FULL STACK — INSTALLATION COMPLETE              ║"
+echo "║  INNOTEL FREEPBX / FAX STACK — INSTALLATION COMPLETE     ║"
 echo "╠══════════════════════════════════════════════════════════╣"
-echo "║  PBX Portal   : https://${HOSTNAME}:3000                 "
-echo "║  Demo login   : demo@innotel.us / 8dpWR8wl4eYncm5v              ║"
-echo "║  FreePBX Admin: http://${HOSTNAME}/admin                 "
-echo "║  AvantFAX     : http://${HOSTNAME}/fax                   "
-echo "║  Webmin       : https://${HOSTNAME}:10000               ║"
-echo "║  Code-Server  : http://${HOSTNAME}:8081                 ║"
-echo "║  ARI          : http://${HOSTNAME}:${ARI_HTTP_PORT}/ari  "
-echo "║  WebSocket    : wss://${HOSTNAME}:8089/ws               ║"
-echo "║  SIP Trunk    : ${VOIPMS_SIP_SERVER} (VoIP.ms)          ║"
+echo "║  FreePBX Admin : http://${HOSTNAME}/admin                 ║"
+echo "║  AvantFAX      : http://${HOSTNAME}/fax                   ║"
+echo "║  Webmin        : https://${HOSTNAME}:10000               ║"
+echo "║  Code-Server   : http://${HOSTNAME}:8081                 ║"
+echo "║  ARI           : http://${HOSTNAME}:${ARI_HTTP_PORT}/ari  ║"
+echo "║  WebSocket     : wss://${HOSTNAME}:8089/ws               ║"
+echo "║  VOSK ASR      : ws://127.0.0.1:2700                     ║"
+echo "║  SIP Trunk     : ${VOIPMS_SIP_SERVER} (VoIP.ms)          ║"
+echo "║  SMS           : ${VOIPMS_TRUNK_NAME} DIDs=${SMS_DIDS}   ║"
 echo "╠══════════════════════════════════════════════════════════╣"
-echo "║  AMI User     : ${FREEPBX_AMI_USER}"
-echo "║  AMI Secret   : ${FREEPBX_AMI_SECRET}"
-echo "║  API Client   : ${FREEPBX_CLIENT_ID}"
-echo "║  OAuth2 URL   : https://${HOSTNAME}/admin/api/api/token"
-echo "║  Atlas URL    : ${ATLAS_URL}"
+echo "║  AMI User      : ${FREEPBX_AMI_USER}                      ║"
+echo "║  AMI Secret    : ${FREEPBX_AMI_SECRET}                    ║"
+echo "║  API Client    : ${FREEPBX_CLIENT_ID}                     ║"
+echo "║  OAuth2 URL    : https://${HOSTNAME}/admin/api/api/token  ║"
 echo "╠══════════════════════════════════════════════════════════╣"
-echo "║  Portal logs  : journalctl -u innotel-pbx -f            ║"
-echo "║  Portal config: ${APP_DIR}/.env                          "
+echo "║  Next step     : run scripts/setup-portal.sh to deploy    ║"
+echo "║                  the PBX Customer Portal on this server   ║"
 echo "╚══════════════════════════════════════════════════════════╝"
+echo ""
+echo "Portal-facing credentials are printed above — pass the same values"
+echo "to scripts/setup-portal.sh (FREEPBX_AMI_USER/SECRET, FREEPBX_CLIENT_ID/"
+echo "CLIENT_SECRET, HOSTNAME, DB_PASS) so the portal can authenticate."
+echo ""
+echo "Secrets live in ${PBX_ENV_FILE} (see scripts/pbx.env.example)."
+echo "SMS is enabled on ${VOIPMS_TRUNK_NAME} for DIDs: ${SMS_DIDS}"

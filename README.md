@@ -11,7 +11,7 @@ Built with **Next.js 16 (App Router) + React 19 + Tailwind CSS v4** and **SQLite
 | You want to… | Use |
 |---|---|
 | Run **just the portal** (you already have FreePBX/Asterisk) | [Docker (portal only)](#option-1-docker---portal-only) or [npm](#option-3-npm-dev) |
-| Run the **entire stack** (Asterisk + FreePBX + Portal) | [Docker (full stack)](#option-2-docker---full-stack) or [setup.sh](#option-4-bare-metal---setupsh) |
+| Run the **entire stack** (Asterisk + FreePBX + Portal) | [Docker (full stack)](#option-2-docker---full-stack) or [setup.sh + setup-portal.sh](#option-4-bare-metal---setupsh) |
 | **Develop / contribute** to the portal | [npm dev](#option-3-npm-dev) |
 
 ---
@@ -207,28 +207,44 @@ npm run dev
 
 Runs on `http://localhost:3000` with hot reload.  Configure `.env` to point at your FreePBX/Asterisk servers.
 
-### Option 4: Bare Metal — setup.sh
+### Option 4: Bare Metal — setup.sh + setup-portal.sh
 
-A single 1,500+ line script provisions the entire stack on **Debian 12** from source:
+The bare-metal install is split into two scripts. **`scripts/setup.sh`** provisions the FreePBX/fax server on **Ubuntu 24.04** from source; **`scripts/setup-portal.sh`** deploys the PBX Customer Portal against that server.
+
+First, put all secrets in a `.env` file (both scripts source it):
 
 ```bash
-sudo VOIPMS_USER=you@email.com \
-     VOIPMS_PASS=yourpass \
-     bash scripts/setup.sh
+cp scripts/pbx.env.example scripts/pbx.env
+nano scripts/pbx.env   # fill in DB_PASS, VoIP.ms creds, portal secrets
 ```
 
-This installs and configures:
-- Asterisk 22.10.1 LTS (compiled from source)
-- FreePBX 17 (Sangoma official installer)
-- PJSIP WebSocket transport (port 8089 WSS)
-- Asterisk AMI (port 5038)
-- AvantFax 3.4.1 + HylaFAX 7.0.11 + IAXModem
-- VoIP.ms SIP trunk auto-configuration
-- FreePBX OAuth2 API client
-- VOSK speech-to-text + AI CDR summarisation
-- PBX Portal (Next.js, auto-started via systemd)
+Then run:
 
-**File:** `scripts/setup.sh`
+```bash
+# 1. FreePBX / Asterisk / fax stack (run as root, ~45-90 min)
+sudo bash scripts/setup.sh
+
+# 2. PBX Customer Portal (reads the same pbx.env)
+sudo bash scripts/setup-portal.sh
+```
+
+`scripts/setup.sh` installs and configures:
+- Asterisk 22.10.1 LTS (compiled from source, + 20.20.1 source tree)
+- FreePBX 17 (pinned framework tarball)
+- PJSIP WebSocket transport (port 8089 WSS) + Asterisk AMI (port 5038)
+- AvantFax 3.4.1 + HylaFAX 7.0.11 + IAXModem + Tesseract OCR
+- VoIP.ms SIP + IAX trunk auto-configuration (into FreePBX settings)
+- **SMS over PJSIP** — `sms-in`/`sms-out` dialplan, per-DID endpoints, MESSAGE handling on the trunk
+- FreePBX OAuth2 API client (portal-facing)
+- VOSK speech-to-text + AI CDR summarisation (Ollama)
+- Webmin, Code-Server, Fail2Ban, AsterBan
+
+`scripts/setup-portal.sh` installs and configures:
+- Node.js 20 + Next.js portal (port 3000, systemd service)
+- `.env` wired to the FreePBX server (AMI, OAuth2, WSS, AvantFax)
+- Demo account seed (`demo@innotel.us`)
+
+**Files:** `scripts/setup.sh`, `scripts/setup-portal.sh`
 
 ---
 
@@ -345,7 +361,7 @@ write = system,call,log,verbose,command,agent,user,config,dtmf,reporting,cdr,dia
 
 Install alongside FreePBX:
 ```bash
-# See scripts/setup.sh Phase 10 for the full installation
+# See scripts/setup.sh Phase 11 for the full installation
 # AvantFax runs on port 8080 by default
 ```
 
@@ -355,7 +371,8 @@ Install alongside FreePBX:
 
 ```
 scripts/
-  setup.sh                # 1,500-line full-stack installer (Debian 12)
+  setup.sh                # FreePBX/fax stack installer (Ubuntu 24.04)
+  setup-portal.sh         # PBX Customer Portal installer (separate)
   schema.sql              # SQLite schema
   seed.mjs                # Demo account seed
   migrations/             # Schema migrations
