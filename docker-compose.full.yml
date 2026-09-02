@@ -8,7 +8,7 @@
 #   1. Configure your env vars:
 #      cp .env.docker.example .env   # then fill in real values
 #   2. Start the stack — the Asterisk/FreePBX image is pulled from GHCR
-#      (ghcr.io/innotelinc/zeus-voip-platform:latest-fullstack, published by the
+#      (ghcr.io/innotelinc/zeus:latest-fullstack, published by the
 #      GitHub Actions release workflow on every push to master). To build it
 #      locally instead (dev/offline), add the build override:
 #      docker compose -f docker-compose.full.yml -f docker-compose.full.build.yml up -d
@@ -39,7 +39,7 @@ services:
     # No pull_policy set — the default (`missing`) pulls only when the image
     # is not present locally. The build override below relies on that default
     # to build instead of pull on offline servers.
-    image: ghcr.io/innotelinc/zeus-voip-platform:latest-fullstack
+    image: ghcr.io/innotelinc/zeus:latest-fullstack
     container_name: zeus-freepbx
     restart: unless-stopped
     security_opt:

@@ -117,7 +117,7 @@ if [ -f "$REPO_DIR/package.json" ]; then
   rsync -a --exclude='node_modules' --exclude='.git' --exclude='data' --exclude='.next' "$REPO_DIR/" "$APP_DIR/"
 else
   info "Cloning portal from GitHub..."
-  git clone https://github.com/innotelinc/zeus-voip-platform.git "$APP_DIR"
+  git clone https://github.com/innotelinc/zeus.git "$APP_DIR"
 fi
 
 cd "$APP_DIR"

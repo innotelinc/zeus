@@ -29,7 +29,7 @@ mkdir -p "$SRC_DIR" "$DEPLOY_DIR"
 # data/ and .env are excluded by gitignore automatically.
 echo ">>> Building source bundle (${VERSION})..."
 git archive --format=tar.gz \
-  --prefix="zeus-voip-platform-${VERSION}/" \
+  --prefix="zeus-${VERSION}/" \
   -o "$SRC_DIR/zeus-source-bundle.tar.gz" \
   HEAD
 sha256sum "$SRC_DIR/zeus-source-bundle.tar.gz" \
@@ -63,12 +63,12 @@ DEPLOY_FILES=(
   scripts/migrations
 )
 
-rm -rf "$DEPLOY_DIR/zeus-voip-platform"
-mkdir -p "$DEPLOY_DIR/zeus-voip-platform"
+rm -rf "$DEPLOY_DIR/zeus"
+mkdir -p "$DEPLOY_DIR/zeus"
 for f in "${DEPLOY_FILES[@]}"; do
   if [ -e "$f" ]; then
-    mkdir -p "$DEPLOY_DIR/zeus-voip-platform/$(dirname "$f")"
-    cp -r "$f" "$DEPLOY_DIR/zeus-voip-platform/$f"
+    mkdir -p "$DEPLOY_DIR/zeus/$(dirname "$f")"
+    cp -r "$f" "$DEPLOY_DIR/zeus/$f"
   else
     echo "WARN missing deployment file: $f" >&2
   fi
@@ -76,8 +76,8 @@ done
 
 tar -czf "$DEPLOY_DIR/zeus-deployment.tar.gz" \
   -C "$DEPLOY_DIR" \
-  zeus-voip-platform
-rm -rf "$DEPLOY_DIR/zeus-voip-platform"
+  zeus
+rm -rf "$DEPLOY_DIR/zeus"
 
 # ── 3. Checksums for the whole release ────────────────────────
 (

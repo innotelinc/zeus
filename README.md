@@ -115,8 +115,8 @@ npm run dev            # runs on http://localhost:3000
 ### Option 1: Docker — Portal Only
 
 ```bash
-git clone https://github.com/innotelinc/zeus-voip-platform.git
-cd zeus-voip-platform
+git clone https://github.com/innotelinc/zeus.git
+cd zeus
 cp .env.docker.example .env   # edit with your server addresses
 docker compose up -d          # portal at http://localhost:3000
 ```
@@ -126,7 +126,7 @@ docker compose up -d          # portal at http://localhost:3000
 **Files:** `Dockerfile`, `docker-compose.yml`, `.env.docker.example`
 
 ```bash
-docker pull ghcr.io/innotelinc/zeus-voip-platform:latest
+docker pull ghcr.io/innotelinc/zeus:latest
 ```
 
 ### Option 2: Docker — Full Stack
@@ -145,7 +145,7 @@ To build the full-stack image locally instead (45-90 min, one-time): `docker com
 | Service | Image | Ports |
 |---|---|---|
 | MariaDB | inside full-stack image | 3306 (internal) |
-| Asterisk + FreePBX | `ghcr.io/innotelinc/zeus-voip-platform:latest-fullstack` | 80, 5060/udp, 8088, 8089, 5038, 10000, 10000-20000/udp |
+| Asterisk + FreePBX | `ghcr.io/innotelinc/zeus:latest-fullstack` | 80, 5060/udp, 8088, 8089, 5038, 10000, 10000-20000/udp |
 | AvantFax | inside full-stack image (`/fax`) | via :80 |
 | Zeus Portal | built from `Dockerfile` | 3000 |
 
@@ -259,8 +259,8 @@ GitHub Actions builds and publishes Docker images and generates release artifact
 
 | Trigger | Image / artifact | Tag |
 |---|---|---|
-| Push to `master` | `ghcr.io/innotelinc/zeus-voip-platform` | `latest`, `sha-xxxxx`, `master` (portal) |
-| Push to `master` | `ghcr.io/innotelinc/zeus-voip-platform` | `latest-fullstack`, `master-fullstack`, `sha-xxxxx-fullstack` |
+| Push to `master` | `ghcr.io/innotelinc/zeus` | `latest`, `sha-xxxxx`, `master` (portal) |
+| Push to `master` | `ghcr.io/innotelinc/zeus` | `latest-fullstack`, `master-fullstack`, `sha-xxxxx-fullstack` |
 | Tag `v*` (release pipeline) | portal + fullstack images | `1.0.0`, `1.0.0-fullstack` (+ `latest`/`latest-fullstack`) |
 | Tag `v*` (release pipeline) | release artifacts: source bundle + deployment payload + SHA256SUMS | attached to the GitHub Release |
 
