@@ -125,6 +125,7 @@ export interface Voicemail {
   caller_name: string | null;
   duration_seconds: number;
   transcript: string | null;
+  summary: string | null;
   listened: number;
   file_path: string | null;
   created_at: string;

@@ -1,11 +1,11 @@
 # ═══════════════════════════════════════════════════════════════
-# Innotel PBX — Asterisk + FreePBX Full Stack Image
+# Zeus — VOIP Platform Full Stack Image (Asterisk + FreePBX)
 # ═══════════════════════════════════════════════════════════════
 # Build:  docker compose -f docker-compose.full.yml -f docker-compose.full.build.yml build
-#         (tags the image as ghcr.io/innotelinc/pbx-portal:latest-fullstack,
+#         (tags the image as ghcr.io/innotelinc/zeus-voip-platform:latest-fullstack,
 #          the same name compose pulls from GHCR once CI publishes it)
 # Run:    docker run -d --name freepbx -p 80:80 -p 5060:5060/udp \
-#           -p 8089:8089 -p 5038:5038 innotel/freepbx
+#           -p 8089:8089 -p 5038:5038 zeus/freepbx
 #
 # This image contains:
 #   - Asterisk 22.10.1 LTS (compiled from source)
@@ -213,7 +213,7 @@ RUN mkdir -p /etc/asterisk/keys && \
     openssl req -x509 -newkey rsa:2048 -nodes \
       -keyout /etc/asterisk/keys/asterisk.key \
       -out /etc/asterisk/keys/asterisk.crt \
-      -days 3650 -subj "/CN=voice.innotel.us" && \
+      -days 3650 -subj "/CN=pbx.zeus.innotel.us" && \
     chown -R asterisk:asterisk /etc/asterisk/keys && \
     chmod 640 /etc/asterisk/keys/asterisk.key
 

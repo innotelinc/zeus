@@ -1,12 +1,13 @@
-name: Docker Build & Publish
+name: Zeus Docker Build & Publish
 
 on:
   push:
     branches: [master]
   pull_request:
     branches: [master]
-  release:
-    types: [published]
+  # Release tags (v*) are built & published by .github/workflows/release.yml
+  # — keep this workflow to master pushes and PR checks so a release never
+  # double-builds the 45-90 min full-stack image.
   workflow_dispatch:
   schedule:
     # Weekly check that the full-stack Docker image still builds
@@ -43,18 +44,18 @@ jobs:
 
       - name: Verify image can start
         run: |
-          docker build -t pbx-portal:pr-test .
-          docker run --rm -d --name pbx-pr-test -p 3099:3000 \
+          docker build -t zeus-voip-platform:pr-test .
+          docker run --rm -d --name zeus-pr-test -p 3099:3000 \
             -e SESSION_SECRET=pr-test-secret \
             -e VOIPMS_API_USERNAME=test \
             -e VOIPMS_API_PASSWORD=test \
             -e STRIPE_SECRET_KEY=sk_test_demo \
             -e STRIPE_WEBHOOK_SECRET=whsec_demo \
-            pbx-portal:pr-test
+            zeus-voip-platform:pr-test
           sleep 5
           curl -sf -o /dev/null -w '%{http_code}' http://localhost:3099/
           curl -sf http://localhost:3099/api/health || true
-          docker rm -f pbx-pr-test
+          docker rm -f zeus-pr-test
 
       - name: Validate full-stack compose file
         run: |

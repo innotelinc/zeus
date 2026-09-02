@@ -1,8 +1,8 @@
 # ═══════════════════════════════════════════════════════════════
-# Innotel PBX Portal — Dockerfile
+# Zeus — VOIP Platform Portal — Dockerfile
 # ═══════════════════════════════════════════════════════════════
-# Build:  docker build -t innotel/pbx-portal .
-# Run:    docker run -p 3000:3000 -v pbx-data:/app/data --env-file .env innotel/pbx-portal
+# Build:  docker build -t zeus/portal .
+# Run:    docker run -p 3000:3000 -v zeus-data:/app/data --env-file .env zeus/portal
 # ═══════════════════════════════════════════════════════════════
 
 FROM node:22-alpine AS base

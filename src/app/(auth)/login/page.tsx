@@ -1,128 +1,75 @@
-"use client";
-
-import { useState } from "react";
-import { useRouter } from "next/navigation";
 import Link from "next/link";
 import { Logo } from "@/components/Logo";
-import { ArrowRightIcon } from "@/components/icons";
-import { api } from "@/lib/client-api";
+import { oidcEnabled } from "@/lib/oidc";
+import { PasswordLoginForm } from "./password-form";
 
-export default function LoginPage() {
-  const router = useRouter();
-  const [email, setEmail] = useState("");
-  const [password, setPassword] = useState("");
-  const [error, setError] = useState<string | null>(null);
-  const [loading, setLoading] = useState(false);
+export const dynamic = "force-dynamic";
 
-  async function handleSubmit(e: React.FormEvent) {
-    e.preventDefault();
-    setError(null);
-    setLoading(true);
+export default async function LoginPage({
+  searchParams,
+}: {
+  searchParams: Promise<{ error?: string; next?: string }>;
+}) {
+  const params = await searchParams;
+  const sso = oidcEnabled();
+  const next = params.next?.startsWith("/") && !params.next.startsWith("//")
+    ? params.next
+    : "/dashboard";
 
-    let data: { success: boolean } | undefined;
-    try {
-      data = await api<{ success: boolean }>("/api/auth/login", {
-        method: "POST",
-        body: JSON.stringify({ email, password }),
-      });
-    } catch (e) {
-      setError(e instanceof Error ? e.message : "Login failed");
-      setLoading(false);
-      return;
-    }
-
-    if (!data?.success) {
-      setError("Unexpected response from server. Please try again.");
-      setLoading(false);
-      return;
-    }
-
-    // Verify the session cookie was stored before navigating.
-    try {
-      const me = await api<{ user?: unknown }>("/api/auth/me");
-      if (me?.user) {
-        router.push("/dashboard");
-        return;
-      }
-    } catch {
-      // session not ready yet — retry after a short delay
-    }
-    // Retry after a delay — cookies may need time to settle in the browser
-    setTimeout(async () => {
-      try {
-        const me = await api<{ user?: unknown }>("/api/auth/me");
-        if (me?.user) {
-          router.push("/dashboard");
-          return;
-        }
-      } catch {
-        // still not ready
-      }
-      // If session still isn't valid, show an error instead of navigating
-      setError("Session not established. Please try logging in again.");
-      setLoading(false);
-    }, 500);
-  }
+  const errorMessages: Record<string, string> = {
+    access_denied: "Sign-in was cancelled.",
+    state_mismatch: "Sign-in session expired or was tampered with — try again.",
+    exchange_failed: "Could not complete the sign-in. Please try again.",
+    user_provision_failed: "Your account could not be set up. Contact support.",
+  };
 
   return (
     <div className="min-h-screen flex items-center justify-center bg-ink-950 px-4 py-12">
       <div className="w-full max-w-md">
         <div className="text-center mb-8">
           <Logo size="lg" />
-          <p className="mt-3 text-white/45">Welcome back</p>
+          <p className="mt-3 text-white/45">
+            {sso ? "Sign in with your Zeus account" : "Welcome back"}
+          </p>
         </div>
 
         <div className="card-surface rounded-2xl p-6 sm:p-8">
-          {error && (
+          {params.error && (
             <div className="mb-4 rounded-xl border border-rose-500/30 bg-rose-500/10 px-4 py-3 text-sm text-rose-300">
-              {error}
+              {errorMessages[params.error] ?? "Sign-in failed. Please try again."}
             </div>
           )}
 
-          <form onSubmit={handleSubmit} className="space-y-4">
-            <label className="block">
-              <span className="input-label">Email address</span>
-              <input
-                className="input-base"
-                type="email"
-                placeholder="jane@example.com"
-                value={email}
-                onChange={(e) => setEmail(e.target.value)}
-                autoComplete="email"
-                required
-              />
-            </label>
+          {sso ? (
+            <>
+              <a
+                href={`/api/auth/authentik/login?next=${encodeURIComponent(next)}`}
+                className="btn-primary w-full py-2.5 text-sm"
+              >
+                Continue with Authentik
+              </a>
+              <p className="mt-4 text-center text-xs text-white/35">
+                Accounts are managed by Authentik — self-service registration,
+                passwords, and security live there.
+              </p>
+            </>
+          ) : (
+            <PasswordLoginForm next={next} />
+          )}
+        </div>
 
-            <label className="block">
-              <span className="input-label">Password</span>
-              <input
-                className="input-base"
-                type="password"
-                placeholder="Your password"
-                value={password}
-                onChange={(e) => setPassword(e.target.value)}
-                autoComplete="current-password"
-                required
-              />
-            </label>
-
-            <button
-              type="submit"
-              disabled={loading}
-              className="btn-primary w-full py-2.5 text-sm"
-            >
-              {loading ? "Signing in..." : "Sign in"}
-              {!loading && <ArrowRightIcon size={15} />}
-            </button>
-          </form>
-
+        {sso ? (
+          <p className="mt-6 text-center text-xs text-white/30">
+            No account yet? Ask an administrator to create one in Authentik.
+          </p>
+        ) : (
           <p className="mt-6 text-center text-sm text-white/40">
             Don&apos;t have an account?{" "}
-            <Link href="/signup" className="font-medium text-brand-300 transition hover:text-brand-200">
+            <Link href={`/signup${next && next !== "/dashboard" ? `?next=${encodeURIComponent(next)}` : ""}`} className="font-medium text-brand-300 transition hover:text-brand-200">
               Sign up
             </Link>
           </p>
-        </div>
+        )}
       </div>
     </div>
   );

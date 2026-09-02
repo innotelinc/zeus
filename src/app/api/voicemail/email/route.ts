@@ -56,7 +56,7 @@ export async function POST(req: Request) {
 
   // Build plain-text body
   const lines = [
-    "Innotel Voicemail",
+    "Zeus Voicemail",
     "────────────────",
     "Caller: " + caller,
     "Duration: " + duration,
@@ -68,13 +68,13 @@ export async function POST(req: Request) {
     lines.push(transcript);
   }
   lines.push("");
-  lines.push("Manage your voicemail: https://pbx.innotel.us/dashboard/voicemail");
+  lines.push("Manage your voicemail: https://app.zeus.innotel.us/dashboard/voicemail");
   const text = lines.join("\n");
 
   // Build HTML body
   const htmlLines = [
     '<div style="font-family:-apple-system,BlinkMacSystemFont,sans-serif;max-width:560px;margin:0 auto;padding:24px;background:#0a0a12;color:#f4f4f8;border-radius:12px">',
-    '<h2 style="margin:0 0 16px;color:#a5a1ff">📞 Innotel Voicemail</h2>',
+    '<h2 style="margin:0 0 16px;color:#a5a1ff">📞 Zeus Voicemail</h2>',
     '<table style="width:100%;border-collapse:collapse">',
     '<tr><td style="padding:8px 0;color:#ffffff55">Caller</td><td style="color:#f4f4f8;font-weight:600">' + caller + '</td></tr>',
     '<tr><td style="padding:8px 0;color:#ffffff55">Duration</td><td style="color:#f4f4f8">' + duration + '</td></tr>',
@@ -90,7 +90,7 @@ export async function POST(req: Request) {
   }
   htmlLines.push(
     '<p style="margin-top:24px;text-align:center">',
-    '<a href="https://pbx.innotel.us/dashboard/voicemail" style="display:inline-block;padding:10px 24px;background:#635bff;color:#fff;text-decoration:none;border-radius:8px;font-weight:600">Manage Voicemail</a>',
+    '<a href="https://app.zeus.innotel.us/dashboard/voicemail" style="display:inline-block;padding:10px 24px;background:#635bff;color:#fff;text-decoration:none;border-radius:8px;font-weight:600">Manage Voicemail</a>',
     '</p>',
     '</div>',
   );

@@ -1,6 +1,6 @@
 #!/bin/bash
 # ═══════════════════════════════════════════════════════════════
-#  Innotel PBX — Stage Fax-Stack Source Tarballs
+#  Zeus VOIP — Stage Fax-Stack Source Tarballs
 # ═══════════════════════════════════════════════════════════════
 #  Downloads the phase-11 (fax) source archives into /usr/src so
 #  scripts/setup.sh can build IAXModem + HylaFAX + AvantFax + OCR.

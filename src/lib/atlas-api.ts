@@ -1,8 +1,8 @@
 /**
  * Atlas cross-system API client.
  *
- * The PBX portal calls Atlas for customer signup coordination.
- * When a user signs up for phone service on the PBX portal,
+ * The Zeus portal calls Atlas for customer signup coordination.
+ * When a user signs up for phone service on the Zeus portal,
  * Atlas is notified to create a corresponding account or company.
  *
  * Required env vars:
@@ -29,7 +29,7 @@ async function callAtlas<T = unknown>(
     headers: {
       "Content-Type": "application/json",
       "X-API-Key": apiKey(),
-      "X-PBX-Origin": "pbx-portal",
+      "X-PBX-Origin": "zeus-portal",
     },
     ...options,
   });

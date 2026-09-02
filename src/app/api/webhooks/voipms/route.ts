@@ -10,7 +10,7 @@ export const dynamic = "force-dynamic";
  *
  * Configure this URL in your VoIP.ms portal under
  * DID Settings → SMS → SMS URL Callback:
- *   https://pbx.innotel.us/api/webhooks/voipms
+ *   https://app.zeus.innotel.us/api/webhooks/voipms
  *
  * VoIP.ms POSTs SMS data as application/x-www-form-urlencoded:
  *   did, dst, from, message, date, id
@@ -76,7 +76,7 @@ export async function GET(req: NextRequest) {
   // Return 200 to confirm the webhook is alive
   return NextResponse.json({
     status: "ok",
-    service: "Innotel PBX VoIP.ms SMS Webhook",
+    service: "Zeus VOIP — VoIP.ms SMS Webhook",
     endpoints: ["POST /api/webhooks/voipms"],
   });
 }

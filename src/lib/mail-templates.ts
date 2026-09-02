@@ -7,13 +7,24 @@ const TEXT = "#f4f4f8";
 const TEXT_MUTED = "#ffffff55";
 const SURFACE = "#ffffff08";
 
+/** Public portal origin used in email links (override for white-label). */
+function portalUrl(path = ""): string {
+  const base = (process.env.NEXT_PUBLIC_URL ?? "https://app.zeus.innotel.us").replace(/\/+$/, "");
+  return base + path;
+}
+
+/** Brand name shown in email headers (override for white-label). */
+function brandName(): string {
+  return process.env.NEXT_PUBLIC_BRAND_NAME ?? "Zeus";
+}
+
 function wrapHtml(body: string): string {
   return [
     '<div style="font-family:-apple-system,BlinkMacSystemFont,sans-serif;max-width:560px;margin:0 auto;padding:24px;background:' + BG + ';color:' + TEXT + ';border-radius:12px">',
-    '<h2 style="margin:0 0 16px;color:' + BRAND_LIGHT + '">📞 Innotel PBX</h2>',
+    '<h2 style="margin:0 0 16px;color:' + BRAND_LIGHT + '">📞 ' + brandName() + '</h2>',
     body,
     '<hr style="margin:24px 0 16px;border:none;border-top:1px solid #ffffff10">',
-    '<p style="margin:0;font-size:12px;color:#ffffff40">Innotel PBX Portal &bull; <a href="https://pbx.innotel.us" style="color:#ffffff40">pbx.innotel.us</a></p>',
+    '<p style="margin:0;font-size:12px;color:#ffffff40">' + brandName() + ' VOIP Platform &bull; <a href="' + portalUrl() + '" style="color:#ffffff40">' + portalUrl().replace("https://", "") + '</a></p>',
     '</div>',
   ].join("\n");
 }
@@ -22,10 +33,10 @@ function wrapHtml(body: string): string {
 
 export function buildWelcomeEmail(opts: { name: string; email: string; plan: string }) {
   const planLabel = opts.plan === "business" ? "Business" : "Consumer";
-  const dashboardUrl = "https://pbx.innotel.us/dashboard";
+  const dashboardUrl = portalUrl("/dashboard");
 
   const text = [
-    "Welcome to Innotel PBX, " + opts.name + "!",
+    "Welcome to " + brandName() + ", " + opts.name + "!",
     "",
     "Your " + planLabel + " plan is now active.",
     "",
@@ -34,7 +45,7 @@ export function buildWelcomeEmail(opts: { name: string; email: string; plan: str
     "• Connect a softphone — " + dashboardUrl,
     "• Send your first fax — " + dashboardUrl + "/fax",
     "",
-    "Questions? Contact support@innotel.us",
+    "Questions? Contact support@zeus.innotel.us",
   ].join("\n");
 
   const html = wrapHtml(
@@ -55,7 +66,7 @@ export function buildWelcomeEmail(opts: { name: string; email: string; plan: str
 
   return sendEmail({
     to: opts.email,
-    subject: "Welcome to Innotel PBX, " + opts.name + "!",
+    subject: "Welcome to " + brandName() + ", " + opts.name + "!",
     text,
     html,
   });
@@ -71,7 +82,7 @@ export function buildInvoiceEmail(opts: {
   periodStart: string;
   periodEnd: string;
 }) {
-  const billingUrl = "https://pbx.innotel.us/dashboard/billing";
+  const billingUrl = portalUrl("/dashboard/billing");
   const amount = "$" + opts.amountPaid.toFixed(2);
   const period =
     new Date(opts.periodStart).toLocaleDateString("en-US", { month: "short", day: "numeric" }) +
@@ -79,7 +90,7 @@ export function buildInvoiceEmail(opts: {
     new Date(opts.periodEnd).toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" });
 
   const text = [
-    "Invoice Paid — Innotel PBX",
+    "Invoice Paid — " + brandName(),
     "─────────────────────",
     "Invoice: " + opts.invoiceNumber,
     "Amount: " + amount,
@@ -121,7 +132,7 @@ export function buildFaxReceivedEmail(opts: {
   subject?: string | null;
   receivedAt: string;
 }) {
-  const faxUrl = "https://pbx.innotel.us/dashboard/fax";
+  const faxUrl = portalUrl("/dashboard/fax");
   const pagesLabel = opts.pages + " page" + (opts.pages !== 1 ? "s" : "");
   const date = new Date(opts.receivedAt).toLocaleString("en-US", {
     month: "short",
@@ -131,7 +142,7 @@ export function buildFaxReceivedEmail(opts: {
   });
 
   const text = [
-    "Fax Received — Innotel PBX",
+    "Fax Received — " + brandName(),
     "─────────────────────────",
     "From: " + opts.fromNumber,
     "To: " + opts.toNumber,

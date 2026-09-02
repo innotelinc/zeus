@@ -1,6 +1,6 @@
 #!/bin/sh
 # ═══════════════════════════════════════════════════════════════
-# Innotel PBX Portal — Docker Entrypoint
+# Zeus — VOIP Platform Portal — Docker Entrypoint
 # Auto-seeds the database on first container start.
 # Runs as root to repair volume ownership, then drops privileges
 # to the nextjs app user before seeding / starting the server.
@@ -21,7 +21,7 @@ fi
 if [ ! -f "$DB_PATH" ]; then
   echo ">>> First run detected — seeding database..."
   su-exec nextjs:nodejs node scripts/seed.mjs
-  echo ">>> Database ready. Demo login: demo@innotel.us / 8dpWR8wl4eYncm5v"
+  echo ">>> Database ready. Demo login: demo@zeus.innotel.us / 8dpWR8wl4eYncm5v"
 else
   echo ">>> Database exists — skipping seed."
 fi

@@ -1,0 +1,20 @@
+{
+  "name": "Zeus VOIP Platform",
+  "short_name": "Zeus",
+  "description": "Business VoIP, SMS, fax, and voicemail — phone numbers, extensions, and unified messaging.",
+  "start_url": "/dashboard",
+  "scope": "/",
+  "display": "standalone",
+  "orientation": "portrait-primary",
+  "background_color": "#0a0a12",
+  "theme_color": "#0a0a12",
+  "categories": ["business", "communication", "telephony"],
+  "icons": [
+    {
+      "src": "/icons/zeus-icon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any maskable"
+    }
+  ]
+}

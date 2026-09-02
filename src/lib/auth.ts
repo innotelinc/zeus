@@ -62,7 +62,7 @@ function detectDomain(host: string): string | undefined {
     return undefined;
   }
 
-  // Prepend dot for subdomain portability (e.g. voice.innotel.us → .innotel.us)
+  // Prepend dot for subdomain portability (e.g. app.zeus.innotel.us → .zeus.innotel.us)
   return `.${hostname}`;
 }
 

@@ -22,7 +22,7 @@ const DEMO_PASSWORD = "8dpWR8wl4eYncm5v";
 // Hash generated at runtime so it can never drift from DEMO_PASSWORD.
 const passwordHash = bcrypt.hashSync(DEMO_PASSWORD, 10);
 
-const existing = db.prepare("SELECT id, password_hash FROM users WHERE email = ?").get("demo@innotel.us");
+const existing = db.prepare("SELECT id, password_hash FROM users WHERE email = ?").get("demo@zeus.innotel.us");
 if (existing) {
   // Self-healing: if the stored hash doesn't match the documented password,
   // repair it. This fixes any drift (manual edits, older seeds with a bad
@@ -33,7 +33,7 @@ if (existing) {
     db.close();
     process.exit(0);
   }
-  db.prepare("UPDATE users SET password_hash = ? WHERE email = ?").run(passwordHash, "demo@innotel.us");
+  db.prepare("UPDATE users SET password_hash = ? WHERE email = ?").run(passwordHash, "demo@zeus.innotel.us");
   console.log("🔧 Repaired demo password hash to the documented password. Login now works.");
   db.close();
   process.exit(0);
@@ -41,7 +41,7 @@ if (existing) {
 
 db.prepare(
   "INSERT INTO users (id, email, name, password_hash, phone, plan) VALUES (?, ?, ?, ?, ?, ?)"
-).run(userId, "demo@innotel.us", "Demo User", passwordHash, "+1 555 100 2000", "business");
+).run(userId, "demo@zeus.innotel.us", "Demo User", passwordHash, "+1 555 100 2000", "business");
 
 // ── Seed demo phone numbers ──
 const numId1 = randomUUID();
@@ -105,7 +105,7 @@ db.prepare(
 ).run(randomUUID(), userId);
 
 console.log("✅ Seed complete!");
-console.log("   Email:    demo@innotel.us");
+console.log("   Email:    demo@zeus.innotel.us");
 console.log("   Password: 8dpWR8wl4eYncm5v");
 console.log("   Plan:     Business");
 console.log("   Numbers:  13025551001, 13025551002");

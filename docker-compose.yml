@@ -1,14 +1,14 @@
 # ═══════════════════════════════════════════════════════════════
-# Innotel PBX Portal — Docker Compose
+# Zeus — VOIP Platform Portal — Docker Compose
 # ═══════════════════════════════════════════════════════════════
-# Deploys the PBX portal standalone (no Asterisk/FreePBX).
+# Deploys the Zeus portal standalone (no Asterisk/FreePBX).
 # Requires a running VoIP infrastructure on the network.
 #
 # Quick start:
 #   cp .env.docker.example .env   # then fill in your values
 #   docker compose up -d
 #
-# Demo login: demo@innotel.us / 8dpWR8wl4eYncm5v
+# Demo login: demo@zeus.innotel.us / 8dpWR8wl4eYncm5v
 # ═══════════════════════════════════════════════════════════════
 
 services:
@@ -16,7 +16,7 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
-    container_name: pbx-portal
+    container_name: zeus-portal
     restart: unless-stopped
     # AppArmor was removed from the host (apt purge), but the kernel LSM may
     # still be active — keep apparmor=unconfined so the docker-default profile
@@ -73,7 +73,7 @@ services:
 
 volumes:
   pbx-data:
-    name: pbx-portal-data
+    name: zeus-portal-data
 
 networks:
   pbx-net:

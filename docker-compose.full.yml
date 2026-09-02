@@ -1,21 +1,21 @@
 # ═══════════════════════════════════════════════════════════════
-# Innotel PBX — Full Stack Docker Compose
+# Zeus — VOIP Platform Full Stack Docker Compose
 # ═══════════════════════════════════════════════════════════════
 # Deploys the complete VoIP infrastructure:
-#   Asterisk 22.10 + FreePBX 17 + AvantFax + PBX Portal
+#   Asterisk 22.10 + FreePBX 17 + AvantFax + Zeus Portal
 #
 # Prerequisites:
 #   1. Configure your env vars:
 #      cp .env.docker.example .env   # then fill in real values
 #   2. Start the stack — the Asterisk/FreePBX image is pulled from GHCR
-#      (ghcr.io/innotelinc/pbx-portal:latest-fullstack, published by the
+#      (ghcr.io/innotelinc/zeus-voip-platform:latest-fullstack, published by the
 #      GitHub Actions release workflow on every push to master). To build it
 #      locally instead (dev/offline), add the build override:
 #      docker compose -f docker-compose.full.yml -f docker-compose.full.build.yml up -d
 #
 # Ports exposed:
 #   80        FreePBX web UI
-#   3000      PBX Customer Portal (Next.js)
+#   3000      Zeus Customer Portal (Next.js)
 #   5060/udp  SIP signalling
 #   5038      Asterisk AMI
 #   8080      AvantFax web UI
@@ -39,8 +39,8 @@ services:
     # No pull_policy set — the default (`missing`) pulls only when the image
     # is not present locally. The build override below relies on that default
     # to build instead of pull on offline servers.
-    image: ghcr.io/innotelinc/pbx-portal:latest-fullstack
-    container_name: pbx-freepbx
+    image: ghcr.io/innotelinc/zeus-voip-platform:latest-fullstack
+    container_name: zeus-freepbx
     restart: unless-stopped
     security_opt:
       - apparmor=unconfined
@@ -54,7 +54,7 @@ services:
       - "10000:10000"     # Webmin admin panel
       - "10000:20000/udp" # RTP
     environment:
-      HOSTNAME: ${HOSTNAME:-voice.innotel.us}
+      HOSTNAME: ${HOSTNAME:-pbx.zeus.innotel.us}
       # VoIP.ms SIP trunk auto-configuration
       VOIPMS_SIP_USER: ${VOIPMS_SIP_USER:-}
       VOIPMS_SIP_PASS: ${VOIPMS_SIP_PASS:-}
@@ -71,7 +71,7 @@ services:
       SMTP_PORT: ${SMTP_PORT:-587}
       SMTP_USER: ${SMTP_USER:-}
       SMTP_PASS: ${SMTP_PASS:-}
-      SMTP_FROM: ${SMTP_FROM:-pbx@innotel.us}
+      SMTP_FROM: ${SMTP_FROM:-pbx@zeus.innotel.us}
       SMTP_SECURE: ${SMTP_SECURE:-false}
       # Asterisk watchdog (see docker-entrypoint-full.sh) — self-heals
       # a dropped control socket by running `fwconsole reload`.
@@ -103,12 +103,12 @@ services:
   # The actual fax UI is at http://freepbx/fax (port 80).
   # For external access, use the HOSTNAME:80/fax path.
 
-  # ── PBX Customer Portal (Next.js) ──────────────────────────
+  # ── Zeus Customer Portal (Next.js) ─────────────────────────
   portal:
     build:
       context: .
       dockerfile: Dockerfile
-    container_name: pbx-portal
+    container_name: zeus-portal
     restart: unless-stopped
     security_opt:
       - apparmor=unconfined
@@ -154,16 +154,16 @@ services:
       ASTERISK_AMI_SECRET: ${FREEPBX_AMI_SECRET:-}
 
       # ── WebRTC / TURN ──
-      # WSS URL for softphone: use dedicated ws.innotel.us hostname by default.
-      # Override via FREEPBX_WSS_HOST env var (e.g. voice.innotel.us or an IP).
-      NEXT_PUBLIC_FREEPBX_WSS_URL: wss://${FREEPBX_WSS_HOST:-ws.innotel.us}:8089/ws
+      # WSS URL for softphone: use dedicated ws.zeus.innotel.us hostname by default.
+      # Override via FREEPBX_WSS_HOST env var (e.g. pbx.zeus.innotel.us or an IP).
+      NEXT_PUBLIC_FREEPBX_WSS_URL: wss://${FREEPBX_WSS_HOST:-ws.zeus.innotel.us}:8089/ws
       NEXT_PUBLIC_TURN_SERVER: ${TURN_SERVER:-}
       NEXT_PUBLIC_TURN_USERNAME: ${TURN_USERNAME:-}
       NEXT_PUBLIC_TURN_CREDENTIAL: ${TURN_CREDENTIAL:-}
 
       # ── AvantFax (runs inside freepbx container at /fax) ──
       AVANTFAX_URL: http://freepbx/fax
-      NEXT_PUBLIC_AVANTFAX_URL: http://${HOSTNAME:-voice.innotel.us}/fax
+      NEXT_PUBLIC_AVANTFAX_URL: http://${HOSTNAME:-pbx.zeus.innotel.us}/fax
 
       # ── Atlas integration ──
       ATLAS_API_URL: ${ATLAS_API_URL:-http://atlas-server:3000}
@@ -177,16 +177,16 @@ services:
       NEXT_PUBLIC_STRIPE_PUBLISHABLE_KEY: ${NEXT_PUBLIC_STRIPE_PUBLISHABLE_KEY:-}
 
       # ── Email (SMTP for voicemail/invoice/fax notifications) ──
-      ADMIN_EMAIL: ${ADMIN_EMAIL:-admin@innotel.us}
+      ADMIN_EMAIL: ${ADMIN_EMAIL:-admin@zeus.innotel.us}
       SMTP_HOST: ${SMTP_HOST:-}
       SMTP_PORT: ${SMTP_PORT:-587}
       SMTP_USER: ${SMTP_USER:-}
       SMTP_PASS: ${SMTP_PASS:-}
-      SMTP_FROM: ${SMTP_FROM:-pbx@innotel.us}
+      SMTP_FROM: ${SMTP_FROM:-pbx@zeus.innotel.us}
       SMTP_SECURE: ${SMTP_SECURE:-false}
 
       # ── Public URL ──
-      NEXT_PUBLIC_URL: https://${HOSTNAME:-voice.innotel.us}:3000
+      NEXT_PUBLIC_URL: ${NEXT_PUBLIC_URL:-https://app.zeus.innotel.us}
     volumes:
       - portal-data:/app/data
       - asterisk-config:/etc/asterisk:rw
@@ -221,17 +221,17 @@ services:
 
 volumes:
   asterisk-config:
-    name: pbx-asterisk-config
+    name: zeus-asterisk-config
   asterisk-sounds:
-    name: pbx-asterisk-sounds
+    name: zeus-asterisk-sounds
   asterisk-spool:
-    name: pbx-asterisk-spool
+    name: zeus-asterisk-spool
   freepbx-www:
-    name: pbx-freepbx-www
+    name: zeus-freepbx-www
   mariadb-data:
-    name: pbx-mariadb-data
+    name: zeus-mariadb-data
   portal-data:
-    name: pbx-portal-data
+    name: zeus-portal-data
 
 networks:
   pbx-net:

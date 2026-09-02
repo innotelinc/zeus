@@ -31,7 +31,7 @@ export async function syncStripePrice(plan: Plan): Promise<string> {
   const stripe = new Stripe(process.env.STRIPE_SECRET_KEY ?? "");
 
   // Create a new Stripe product if we don't have one stored
-  const productName = `Innotel ${plan.name} Plan`;
+  const productName = `Zeus ${plan.name} Plan`;
 
   // Check if we already have a price in Stripe
   if (plan.stripe_price_id) {
@@ -50,7 +50,7 @@ export async function syncStripePrice(plan: Plan): Promise<string> {
   if (!productId) {
     const product = await stripe.products.create({
       name: productName,
-      statement_descriptor: "INNOTEL PBX",
+      statement_descriptor: "ZEUS VOIP",
     });
     productId = product.id;
   }

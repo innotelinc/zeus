@@ -2,11 +2,23 @@ import { NextResponse } from "next/server";
 import { getCurrentUser } from "@/lib/auth";
 import db from "@/lib/db";
 import bcrypt from "bcryptjs";
+import { oidcEnabled } from "@/lib/oidc";
 
 export async function POST(req: Request) {
   const user = await getCurrentUser();
   if (!user) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  }
+
+  // Passwords are managed in Authentik, not the portal DB.
+  if (oidcEnabled()) {
+    return NextResponse.json(
+      {
+        error: "Passwords are managed by Authentik — change it in your Authentik profile.",
+        sso: true,
+      },
+      { status: 403 },
+    );
   }
 
   const { currentPassword, newPassword } = (await req.json()) as {

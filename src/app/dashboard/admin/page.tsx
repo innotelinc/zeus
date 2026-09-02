@@ -5,6 +5,7 @@ import { api } from "@/lib/client-api";
 import type { User, PlanInfo } from "@/lib/types";
 import { useToast } from "@/components/ToastProvider";
 import { PlusIcon, XIcon, TrashIcon } from "@/components/icons";
+import { ResellersSection } from "@/components/dashboard/ResellersSection";
 
 export default function AdminPage() {
   const { toast } = useToast();
@@ -210,6 +211,9 @@ export default function AdminPage() {
           ))}
         </div>
       </div>
+
+      {/* Resellers & white-label */}
+      <ResellersSection />
 
       {/* Users table */}
       <div className="rounded-2xl border border-white/[0.06] bg-white/[0.02] p-6">

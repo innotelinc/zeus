@@ -2,7 +2,7 @@
 
 import { useState, useRef } from "react";
 import { api, fmtDate, fmtDuration } from "@/lib/client-api";
-import { VoicemailIcon, PlayIcon, MailIcon, PauseIcon } from "@/components/icons";
+import { VoicemailIcon, PlayIcon, MailIcon, PauseIcon, SparklesIcon } from "@/components/icons";
 import { useToast } from "@/components/ToastProvider";
 import type { Voicemail } from "@/lib/types";
 
@@ -15,6 +15,7 @@ export default function VoicemailSection({ voicemails: initial }: Props) {
   const [voicemails, setVoicemails] = useState(initial);
   const [playingId, setPlayingId] = useState<string | null>(null);
   const [emailingId, setEmailingId] = useState<string | null>(null);
+  const [summarizingId, setSummarizingId] = useState<string | null>(null);
   const audioRef = useRef<HTMLAudioElement | null>(null);
 
   function togglePlay(vm: Voicemail) {
@@ -45,18 +46,32 @@ export default function VoicemailSection({ voicemails: initial }: Props) {
     } finally { setEmailingId(null); }
   }
 
+  async function handleSummarize(vm: Voicemail) {
+    setSummarizingId(vm.id);
+    try {
+      const res = await api<{ summary: string }>("/api/voicemail/summary", {
+        method: "POST",
+        body: JSON.stringify({ voicemail_id: vm.id }),
+      });
+      setVoicemails(prev => prev.map(v => v.id === vm.id ? { ...v, summary: res.summary } : v));
+      toast.success("AI summary ready.");
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : "Failed to summarise");
+    } finally { setSummarizingId(null); }
+  }
+
   return (
     <div className="space-y-6">
       <div>
         <h1 className="text-2xl font-semibold tracking-tight text-white">Voicemail</h1>
-        <p className="mt-1 text-sm text-white/45">Listen to your voicemails with transcriptions.</p>
+        <p className="mt-1 text-sm text-white/45">Listen to your voicemails with transcriptions and AI summaries.</p>
       </div>
 
       {voicemails.length === 0 ? (
         <div className="flex flex-col items-center rounded-3xl border border-white/[0.06] bg-white/[0.02] p-12 text-center">
           <div className="flex h-16 w-16 items-center justify-center rounded-2xl bg-brand-500/15 text-brand-300"><VoicemailIcon size={30} /></div>
           <h3 className="mt-5 text-lg font-semibold text-white">No voicemails</h3>
-          <p className="mt-2 max-w-md text-sm text-white/45">You don't have any voicemails yet. Voicemails will appear here when someone leaves a message on your extension.</p>
+          <p className="mt-2 max-w-md text-sm text-white/45">You don&apos;t have any voicemails yet. Voicemails will appear here when someone leaves a message on your extension.</p>
         </div>
       ) : (
         <div className="space-y-3">
@@ -76,7 +91,15 @@ export default function VoicemailSection({ voicemails: initial }: Props) {
                       {vm.caller_id && <span>{vm.caller_id} · </span>}{fmtDuration(vm.duration_seconds)} · {fmtDate(vm.created_at)}
                     </p>
                     {vm.transcript && (
-                      <p className="mt-2 text-sm text-white/60 line-clamp-2 italic">"{vm.transcript}"</p>
+                      <p className="mt-2 text-sm text-white/60 line-clamp-2 italic">&ldquo;{vm.transcript}&rdquo;</p>
+                    )}
+                    {vm.summary && (
+                      <div className="mt-3 rounded-xl border border-brand-500/20 bg-brand-500/[0.05] px-4 py-3">
+                        <div className="flex items-center gap-1.5 text-[11px] font-semibold uppercase tracking-wide text-brand-300">
+                          <SparklesIcon size={13} /> AI Summary
+                        </div>
+                        <p className="mt-1 text-sm text-white/75">{vm.summary}</p>
+                      </div>
                     )}
                   </div>
                 </div>
@@ -90,6 +113,11 @@ export default function VoicemailSection({ voicemails: initial }: Props) {
                     className={`rounded-lg border p-2 transition ${emailingId === vm.id ? "border-mint-500/50 bg-mint-500/10 text-mint-400" : "border-white/[0.08] bg-white/[0.03] text-white/50 hover:text-white"}`}
                     title="Email to me">
                     <MailIcon size={16} />
+                  </button>
+                  <button type="button" onClick={() => handleSummarize(vm)} disabled={summarizingId === vm.id}
+                    className={`rounded-lg border p-2 transition ${summarizingId === vm.id ? "border-brand-500/50 bg-brand-500/10 text-brand-300" : "border-white/[0.08] bg-white/[0.03] text-white/50 hover:text-white"}`}
+                    title={vm.summary ? "Regenerate AI summary" : "AI summary"}>
+                    <SparklesIcon size={16} />
                   </button>
                 </div>
               </div>

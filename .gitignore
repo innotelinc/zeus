@@ -4,3 +4,4 @@ data/
 .env
 pbx.env
 *.tsbuildinfo
+__pycache__/

@@ -173,7 +173,7 @@ export default function SettingsSection({ user }: Props) {
             className="flex-1 rounded-xl border border-white/[0.08] bg-white/[0.04] px-4 py-2.5 text-sm font-mono text-white placeholder:text-white/20 focus:border-brand-500/50 focus:outline-none"
             value={wssUrl}
             onChange={(e) => { setWssUrl(e.target.value); setWssSaved(false); }}
-            placeholder="wss://ws.innotel.us:8089/ws"
+            placeholder="wss://ws.zeus.innotel.us:8089/ws"
           />
           <button type="button" onClick={saveWssUrl} disabled={wssSaved}
             className={`btn-primary px-4 py-2 text-sm ${wssSaved ? "opacity-50" : ""}`}>

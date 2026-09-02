@@ -31,6 +31,8 @@ const SoftphoneSection = dynamic(
 interface Props {
   user: User;
   extensions: FreePBXExtension[];
+  /** White-label brand name (reseller domain override) — null = platform brand. */
+  brand?: string | null;
   children: React.ReactNode;
 }
 
@@ -81,7 +83,7 @@ function ThemeToggle() {
   );
 }
 
-export function DashboardShell({ user, extensions, children }: Props) {
+export function DashboardShell({ user, extensions, brand, children }: Props) {
   const pathname = usePathname();
   const [mobileOpen, setMobileOpen] = useState(false);
   const [amiConnected, setAmiConnected] = useState<boolean | null>(null);
@@ -119,7 +121,7 @@ export function DashboardShell({ user, extensions, children }: Props) {
       <header className="sticky top-0 z-40 border-b border-white/[0.06] bg-ink-950/85 backdrop-blur-xl">
         <div className="mx-auto flex h-16 max-w-7xl items-center justify-between px-5 sm:px-8">
           <div className="flex items-center gap-4">
-            <Logo size="sm" />
+            <Logo size="sm" name={brand ?? undefined} />
             <span className="hidden rounded-full border border-white/[0.08] bg-white/[0.04] px-2.5 py-0.5 text-xs font-medium text-white/40 sm:inline-block">
               {planLabel(user.plan)}
             </span>

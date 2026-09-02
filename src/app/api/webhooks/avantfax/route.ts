@@ -22,7 +22,7 @@ export const dynamic = "force-dynamic";
  *     'file_path'  => $file_path,
  *     'subject'    => $subject ?? '',
  *   ]);
- *   file_get_contents('https://pbx.innotel.us/api/webhooks/avantfax', false,
+ *   file_get_contents('https://app.zeus.innotel.us/api/webhooks/avantfax', false,
  *     stream_context_create([
  *       'http' => [
  *         'method'  => 'POST',

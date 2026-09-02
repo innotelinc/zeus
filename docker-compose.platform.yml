@@ -1,0 +1,151 @@
+# ═══════════════════════════════════════════════════════════════
+# Zeus — VOIP Platform Services (auth)
+# ═══════════════════════════════════════════════════════════════
+# Self-hosted identity provider for the whole platform. Authentik is the
+# single source of truth for authentication and user management: every user
+# signs in through https://auth.zeus.innotel.us and the portal (and any
+# other service) trusts its OIDC tokens.
+#
+# Quick start:
+#   cp .env.docker.example .env   # set the AUTHENTIK_* secrets first
+#   docker compose -f docker-compose.platform.yml up -d
+#   # Authentik web UI: http://<host>:9000  (proxy it as auth.<your-domain>)
+#
+# The portal connects to this stack via OIDC — point AUTHENTIK_ISSUER_URL
+# at the Authentik application endpoint (e.g.
+# https://auth.zeus.innotel.us/application/o/zeus), register the portal
+# redirect URI http(s)://app.zeus.innotel.us/api/auth/authentik/callback
+# in the Authentik application, and the SSO flow just works.
+# ═══════════════════════════════════════════════════════════════
+
+services:
+  # ── Authentik Postgres ─────────────────────────────────────
+  authentik-postgres:
+    image: postgres:16-alpine
+    container_name: authentik-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${AUTHENTIK_POSTGRES_DB:-authentik}
+      POSTGRES_USER: ${AUTHENTIK_POSTGRES_USER:-authentik}
+      POSTGRES_PASSWORD: ${AUTHENTIK_POSTGRES_PASSWORD:-}
+    volumes:
+      - authentik-postgres:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${AUTHENTIK_POSTGRES_USER:-authentik} -d ${AUTHENTIK_POSTGRES_DB:-authentik}"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
+    networks:
+      - zeus-net
+
+  # ── Authentik Redis ────────────────────────────────────────
+  authentik-redis:
+    image: redis:7-alpine
+    container_name: authentik-redis
+    restart: unless-stopped
+    command: ["redis-server", "--requirepass", "${AUTHENTIK_REDIS_PASSWORD:-}"]
+    volumes:
+      - authentik-redis:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "-a", "${AUTHENTIK_REDIS_PASSWORD:-}", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    networks:
+      - zeus-net
+
+  # ── Authentik server ───────────────────────────────────────
+  # Web UI + SSO endpoints. Bound to 0.0.0.0 so Nginx Proxy Manager can
+  # forward auth.<your-domain>:9000 → host:9000; disable external access
+  # on the firewall if you only reach it through the proxy.
+  authentik-server:
+    image: ghcr.io/goauthentik/server:${AUTHENTIK_VERSION:-2025.6.3}
+    container_name: authentik-server
+    restart: unless-stopped
+    command: server
+    ports:
+      - "9000:9000"    # HTTP  — NPM proxies auth.<domain> → this port
+      - "9443:9443"    # HTTPS — direct TLS (optional; NPM terminates TLS)
+    environment:
+      AUTHENTIK_SECRET_KEY: ${AUTHENTIK_SECRET_KEY:-}
+      AUTHENTIK_TOKEN: ${AUTHENTIK_TOKEN:-}
+      AUTHENTIK_BOOTSTRAP_EMAIL: ${AUTHENTIK_BOOTSTRAP_EMAIL:-}
+      AUTHENTIK_BOOTSTRAP_PASSWORD: ${AUTHENTIK_BOOTSTRAP_PASSWORD:-}
+      AUTHENTIK_ERROR_REPORTING__ENABLED: "false"
+      AUTHENTIK_POSTGRESQL__HOST: authentik-postgres
+      AUTHENTIK_POSTGRESQL__NAME: ${AUTHENTIK_POSTGRES_DB:-authentik}
+      AUTHENTIK_POSTGRESQL__USER: ${AUTHENTIK_POSTGRES_USER:-authentik}
+      AUTHENTIK_POSTGRESQL__PASSWORD: ${AUTHENTIK_POSTGRES_PASSWORD:-}
+      AUTHENTIK_REDIS__HOST: authentik-redis
+      AUTHENTIK_REDIS__PASSWORD: ${AUTHENTIK_REDIS_PASSWORD:-}
+      AUTHENTIK_DEFAULT_TOKEN_LENGTH: "64"
+      AUTHENTIK_AVATAR: "none"
+      # Public-facing URL Authentik emits in redirects/mails. Leave unset to
+      # use the request host; set explicitly behind the reverse proxy, e.g.
+      #   AUTHENTIK_PUBLIC_URL: https://auth.zeus.innotel.us
+      # (compose interpolates ${AUTHENTIK_PUBLIC_URL:-} to empty when unset,
+      # which makes Authentik fall back to the Host header).
+    volumes:
+      - authentik-media:/media
+      - authentik-templates:/templates
+      - authentik-certs:/certs
+    depends_on:
+      authentik-postgres:
+        condition: service_healthy
+      authentik-redis:
+        condition: service_healthy
+    healthcheck:
+      # The health (not live) endpoint also validates the DB connection.
+      test: ["CMD-SHELL", "wget -qO- http://localhost:9000/-/health/ | grep -q 'status: ok' || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 120s
+    networks:
+      - zeus-net
+
+  # ── Authentik worker ───────────────────────────────────────
+  authentik-worker:
+    image: ghcr.io/goauthentik/server:${AUTHENTIK_VERSION:-2025.6.3}
+    container_name: authentik-worker
+    restart: unless-stopped
+    command: worker
+    environment:
+      AUTHENTIK_SECRET_KEY: ${AUTHENTIK_SECRET_KEY:-}
+      AUTHENTIK_TOKEN: ${AUTHENTIK_TOKEN:-}
+      AUTHENTIK_ERROR_REPORTING__ENABLED: "false"
+      AUTHENTIK_POSTGRESQL__HOST: authentik-postgres
+      AUTHENTIK_POSTGRESQL__NAME: ${AUTHENTIK_POSTGRES_DB:-authentik}
+      AUTHENTIK_POSTGRESQL__USER: ${AUTHENTIK_POSTGRES_USER:-authentik}
+      AUTHENTIK_POSTGRESQL__PASSWORD: ${AUTHENTIK_POSTGRES_PASSWORD:-}
+      AUTHENTIK_REDIS__HOST: authentik-redis
+      AUTHENTIK_REDIS__PASSWORD: ${AUTHENTIK_REDIS_PASSWORD:-}
+      AUTHENTIK_DEFAULT_TOKEN_LENGTH: "64"
+    volumes:
+      - authentik-media:/media
+      - authentik-templates:/templates
+      - authentik-certs:/certs
+    depends_on:
+      authentik-postgres:
+        condition: service_healthy
+      authentik-redis:
+        condition: service_healthy
+    networks:
+      - zeus-net
+
+volumes:
+  authentik-postgres:
+    name: zeus-authentik-postgres
+  authentik-redis:
+    name: zeus-authentik-redis
+  authentik-media:
+    name: zeus-authentik-media
+  authentik-templates:
+    name: zeus-authentik-templates
+  authentik-certs:
+    name: zeus-authentik-certs
+
+networks:
+  zeus-net:
+    name: zeus-net

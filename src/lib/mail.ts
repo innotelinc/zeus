@@ -79,7 +79,7 @@ export async function sendEmail(opts: EmailOptions): Promise<{
     const from =
       process.env.SMTP_FROM ??
       process.env.ADMIN_EMAIL ??
-      "pbx@innotel.us";
+      "pbx@zeus.innotel.us";
 
     const info = await transporter.sendMail({
       from,

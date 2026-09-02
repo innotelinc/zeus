@@ -2,6 +2,19 @@ import Link from "next/link";
 import { Logo } from "@/components/Logo";
 import { PhoneIcon, MessageIcon, FaxIcon, VoicemailIcon, CheckCircleIcon, ArrowRightIcon } from "@/components/icons";
 
+/** SSO entrypoint — goes straight to Authentik when configured. */
+function signInHref(path = ""): string {
+  const oidcEnabled = Boolean(
+    process.env.AUTHENTIK_ISSUER_URL &&
+      process.env.AUTHENTIK_CLIENT_ID &&
+      process.env.AUTHENTIK_CLIENT_SECRET,
+  );
+  if (oidcEnabled) {
+    return "/api/auth/authentik/login" + (path ? `?next=${encodeURIComponent(path)}` : "");
+  }
+  return "/login" + path;
+}
+
 export default function LandingPage() {
   return (
     <div className="min-h-screen bg-ink-950">
@@ -10,10 +23,10 @@ export default function LandingPage() {
         <div className="mx-auto flex h-16 max-w-7xl items-center justify-between px-5 sm:px-8">
           <Logo size="sm" />
           <div className="flex items-center gap-4">
-            <Link href="/login" className="text-sm font-medium text-white/60 transition hover:text-white">
+            <Link href={signInHref()} className="text-sm font-medium text-white/60 transition hover:text-white">
               Sign in
             </Link>
-            <Link href="/signup" className="btn-primary px-5 py-2 text-sm">
+            <Link href={signInHref("/dashboard")} className="btn-primary px-5 py-2 text-sm">
               Get started
               <ArrowRightIcon size={15} />
             </Link>
@@ -46,14 +59,14 @@ export default function LandingPage() {
             </p>
             <div className="mt-8 flex flex-wrap items-center justify-center gap-4">
               <Link
-                href="/signup?plan=consumer"
+                href={signInHref("/dashboard")}
                 className="btn-primary min-w-[180px] px-8 py-3 text-base"
               >
                 Consumer Plan
                 <span className="ml-1 text-xs font-normal text-white/60">$19.99/mo</span>
               </Link>
               <Link
-                href="/signup?plan=business"
+                href={signInHref("/dashboard")}
                 className="btn-ghost min-w-[180px] px-8 py-3 text-base"
               >
                 Business Plan
@@ -95,7 +108,7 @@ export default function LandingPage() {
             <FeatureCard
               icon={<VoicemailIcon size={28} className="text-brand-300" />}
               title="Voicemail"
-              desc="Voicemail with transcription. Listen online or get messages delivered to your email."
+              desc="Voicemail with transcription and AI summaries. Listen online or get messages delivered to your email."
             />
           </div>
         </div>
@@ -129,11 +142,11 @@ export default function LandingPage() {
                 <PlanFeature text="VoIP.ms DID" />
                 <PlanFeature text="FreePBX extension" />
                 <PlanFeature text="SMS messaging" />
-                <PlanFeature text="Voicemail with transcription" />
+                <PlanFeature text="Voicemail with transcription & AI summaries" />
                 <PlanFeature text="Basic fax (1 page/mo)" />
               </ul>
               <Link
-                href="/signup?plan=consumer"
+                href={signInHref("/dashboard")}
                 className="btn-primary w-full py-2.5 text-sm"
               >
                 Get Consumer
@@ -158,13 +171,13 @@ export default function LandingPage() {
                 <PlanFeature text="VoIP.ms DIDs" />
                 <PlanFeature text="Multiple FreePBX extensions" />
                 <PlanFeature text="SMS on all numbers" />
-                <PlanFeature text="Voicemail with transcription" />
+                <PlanFeature text="Voicemail with transcription & AI summaries" />
                 <PlanFeature text="Full fax (unlimited pages)" />
                 <PlanFeature text="Call history & recordings" />
                 <PlanFeature text="Priority support" />
               </ul>
               <Link
-                href="/signup?plan=business"
+                href={signInHref("/dashboard")}
                 className="btn-primary w-full py-2.5 text-sm"
               >
                 Get Business
@@ -181,18 +194,15 @@ export default function LandingPage() {
             Ready to get connected?
           </h2>
           <p className="mx-auto mt-3 max-w-lg text-white/45">
-            Sign up in under 2 minutes. Get your phone number, set up your extension, and start communicating.
+            Get your phone number, set up your extension, and start communicating in minutes.
           </p>
           <Link
-            href="/signup"
+            href={signInHref("/dashboard")}
             className="btn-primary mt-8 inline-flex px-8 py-3 text-base"
           >
             Get started now
             <ArrowRightIcon size={18} />
           </Link>
-          <p className="mt-4 text-xs text-white/25">
-
-          </p>
         </div>
       </section>
 
@@ -201,7 +211,7 @@ export default function LandingPage() {
         <div className="mx-auto flex max-w-7xl flex-wrap items-center justify-between gap-4 px-5 sm:px-8">
           <Logo size="sm" />
           <p className="text-xs text-white/30">
-            &copy; {new Date().getFullYear()} Innotel. Powered by VoIP.ms, FreePBX &amp; AvantFax.
+            &copy; {new Date().getFullYear()} Zeus VOIP Platform. Powered by VoIP.ms, FreePBX &amp; AvantFax.
           </p>
         </div>
       </footer>

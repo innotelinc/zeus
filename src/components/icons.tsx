@@ -118,6 +118,10 @@ export function PrinterIcon({ size = 24, ...p }: IconProps) {
   return <svg {...mks(size)} {...p}><polyline points="6 9 6 2 18 2 18 9"/><path d="M6 12H4a2 2 0 0 0-2 2v5h4v-7h12v7h4v-5a2 2 0 0 0-2-2h-2"/><rect x="6" y="14" width="12" height="8"/></svg>;
 }
 
+export function SparklesIcon({ size = 24, ...p }: IconProps) {
+  return <svg {...mks(size)} {...p}><path d="M12 3l1.9 5.1L19 10l-5.1 1.9L12 17l-1.9-5.1L5 10l5.1-1.9z"/><path d="M19 15l.8 2.2L22 18l-2.2.8L19 21l-.8-2.2L16 18l2.2-.8z"/></svg>;
+}
+
 export function HeartPulseIcon({ size = 24, ...p }: IconProps) {
   return <svg {...mks(size)} {...p}><path d="M19.5 12.572 12 20l-7.5-7.428A5 5 0 1 1 12 6.006a5 5 0 1 1 7.5 6.572"/><line x1="12" x2="12" y1="6" y2="20"/></svg>;
 }

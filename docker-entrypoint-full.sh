@@ -1,6 +1,6 @@
 #!/bin/bash
 # ═══════════════════════════════════════════════════════════════
-# Innotel PBX Full Stack — Docker Entrypoint
+# Zeus VOIP — FreePBX Full Stack — Docker Entrypoint
 # Starts MariaDB/helpers, then Asterisk in the background, waits for it to
 # become ready, and only then starts the web stack (PHP-FPM + Apache) so the
 # FreePBX UI can never trigger a reload before Asterisk is up. Asterisk runs
@@ -8,7 +8,7 @@
 # ═══════════════════════════════════════════════════════════════
 set -e
 
-echo ">>> Starting Innotel PBX Full Stack..."
+echo ">>> Starting Zeus Full Stack..."
 
 # Start MariaDB (FreePBX database) — must run before OAuth2 client registration
 mkdir -p /var/run/mysqld && chown mysql:mysql /var/run/mysqld 2>/dev/null || true
@@ -227,7 +227,7 @@ fi
 # Replace DB password placeholder in local_config.php
 if [ -f /var/www/html/fax/includes/local_config.php ]; then
   sed -i "s/define('AFDB_PASS',.*/define('AFDB_PASS',     '${AVANTFAX_DB_PASS}');/" /var/www/html/fax/includes/local_config.php
-  sed -i "s/define('ADMIN_EMAIL',.*/define('ADMIN_EMAIL', '${FAX_EMAIL:-fax@innotel.us}');/" /var/www/html/fax/includes/local_config.php
+  sed -i "s/define('ADMIN_EMAIL',.*/define('ADMIN_EMAIL', '${FAX_EMAIL:-fax@zeus.innotel.us}');/" /var/www/html/fax/includes/local_config.php
   sed -i "s|AVANTFAX_HOSTNAME|${HOSTNAME:-fax.innotel.us}|g" /var/www/html/fax/includes/local_config.php
 fi
 
@@ -524,9 +524,9 @@ if [ "$START_WEB_UI" = "1" ]; then
   CERT_SUBJECT=$(openssl x509 -in "$CERT_FILE" -noout -subject 2>/dev/null | grep -o 'CN = [^,\n]*' | cut -d' ' -f3-)
   if [ "$CERT_SUBJECT" = "buildkitsandbox" ] || [ ! -f "$CERT_FILE" ]; then
     echo ">>> Regenerating self-signed TLS cert with proper SANs..."
-    HOSTNAME_VAL="${HOSTNAME:-voice.innotel.us}"
+    HOSTNAME_VAL="${HOSTNAME:-pbx.zeus.innotel.us}"
     # Build SAN list with all expected hostnames
-    SAN_LIST="DNS:${HOSTNAME_VAL},DNS:voice.innotel.us,DNS:pbx.innotel.us,DNS:ws.innotel.us,DNS:freepbx"
+    SAN_LIST="DNS:${HOSTNAME_VAL},DNS:pbx.zeus.innotel.us,DNS:app.zeus.innotel.us,DNS:ws.zeus.innotel.us,DNS:freepbx"
     SAN_LIST="${SAN_LIST},IP:127.0.0.1"
 
     mkdir -p /etc/asterisk/keys/integration

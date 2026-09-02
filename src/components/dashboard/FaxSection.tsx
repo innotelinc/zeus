@@ -37,7 +37,7 @@ export default function FaxSection({ faxAccount, faxes: initialFaxes, numbers }:
   const [dragOver, setDragOver] = useState(false);
   const [previewFax, setPreviewFax] = useState<Fax | null>(null);
 
-  const avantfaxUrl = process.env.NEXT_PUBLIC_AVANTFAX_URL ?? "https://voice.innotel.us/fax";
+  const avantfaxUrl = process.env.NEXT_PUBLIC_AVANTFAX_URL ?? "https://pbx.zeus.innotel.us/fax";
   const IS_DONE = (s: string) => s === "completed" || s === "success" || s === "sent" || s === "received" || s === "scheduled";
 
   async function setupAccount() {

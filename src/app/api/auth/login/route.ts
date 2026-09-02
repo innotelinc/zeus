@@ -5,10 +5,24 @@ import db from "@/lib/db";
 import { loginSchema } from "@/lib/validators";
 import { createSessionToken, SESSION_COOKIE, getSessionCookieOptions } from "@/lib/auth";
 import { rateLimitByIp } from "@/lib/rate-limit";
+import { oidcEnabled } from "@/lib/oidc";
 
 export const dynamic = "force-dynamic";
 
 export async function POST(req: Request) {
+  // Authentik is the identity provider — password login is disabled when SSO
+  // is configured. Local password auth remains only for dev/offline runs
+  // without Authentik (e.g. the seeded demo account).
+  if (oidcEnabled()) {
+    return NextResponse.json(
+      {
+        error: "Password login is disabled — sign in with Authentik.",
+        sso: true,
+      },
+      { status: 403 },
+    );
+  }
+
   const headersList = await headers();
   const ip =
     headersList.get("x-forwarded-for") ??
