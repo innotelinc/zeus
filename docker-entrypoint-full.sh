@@ -11,6 +11,7 @@ set -e
 echo ">>> Starting Zeus Full Stack..."
 
 # Start MariaDB (FreePBX database) — must run before OAuth2 client registration
+# shellcheck disable=SC2015 # best-effort dir prep, non-fatal on failure
 mkdir -p /var/run/mysqld && chown mysql:mysql /var/run/mysqld 2>/dev/null || true
 service mariadb start
 
@@ -289,6 +290,7 @@ if [ -f /usr/local/sbin/hfaxd ]; then
     /usr/local/sbin/hfaxd -i hylafax > /dev/null 2>&1 &
   fi
   sleep 2
+  # shellcheck disable=SC2009 # ps|grep pid check (intentional, [h] trick)
   if ps aux | grep -v grep | grep -q '[h]faxd'; then
     echo ">>> hfaxd is running (uucp)"
   else
@@ -484,10 +486,17 @@ patch_api_module() {
 
   # Fix 1: getFlattenedScopes() crashes when a scope module (e.g.
   # "framework") is not in $activeModules — add a guard to skip it.
+  # $module/$scope are literal PHP in the grep/sed patterns — kept in
+  # variables with the directive so shellcheck doesn't treat them as shell
+  # expansions (a `a\` continuation cannot carry its own directive).
+  # shellcheck disable=SC2016
+  grep_guard='if (!isset($activeModules[$module])) { continue; }'
   if [ -f "$api_dir/Api.class.php" ] && \
-     ! grep -q 'if (!isset($activeModules\[$module\])) { continue; }' "$api_dir/Api.class.php"; then
-    sed -i '/foreach (\$validScopes\[\$type\] as \$module => \$scope) {/a\
-\t\t\t\t\tif (!isset($activeModules[$module])) { continue; }' "$api_dir/Api.class.php"
+     ! grep -q "$grep_guard" "$api_dir/Api.class.php"; then
+    # shellcheck disable=SC2016
+    sed_guard='/foreach (\$validScopes\[\$type\] as \$module => \$scope) {/a\
+\t\t\t\t\tif (!isset($activeModules[$module])) { continue; }'
+    sed -i "$sed_guard" "$api_dir/Api.class.php"
     echo ">>> [api] Fix 1 applied — getFlattenedScopes guard (Api.class.php)"
   fi
 

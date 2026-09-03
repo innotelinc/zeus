@@ -1,0 +1,32 @@
+# ═══════════════════════════════════════════════════════════════════════════
+# ci.yml — static analysis on push and pull requests.
+#
+# The ShellCheck job runs over every tracked shell script (scripts/*.sh,
+# pbx/*.sh, the entrypoint shims, and the .githooks helpers) with bash
+# semantics. The repo is maintained at zero findings: intentional patterns
+# (dynamic .env source, literal-PHP grep/sed patterns, node -e template
+# literals) are documented with inline shellcheck directives, so this job
+# fails the build if a commit reintroduces any warning, error, or note.
+# ═══════════════════════════════════════════════════════════════════════════
+
+name: CI
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+
+jobs:
+  shellcheck:
+    name: ShellCheck
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: ShellCheck tracked shell scripts
+        run: |
+          set -euo pipefail
+          mapfile -t scripts < <(git ls-files '*.sh' '.githooks/*')
+          echo "Checking ${#scripts[@]} scripts"
+          docker run --rm -v "$PWD":/mnt:ro -w /mnt \
+            koalaman/shellcheck:v0.10.0 -s bash "${scripts[@]}"

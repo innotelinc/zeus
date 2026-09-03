@@ -323,6 +323,7 @@ if [ -f /usr/src/dahdi-linux-complete-3.4.0+3.4.0.tar.gz ]; then
 # Proxmox VE: build dahdi-linux from git against the running kernel
 elif [ -f /usr/src/install-dahdi-on-proxmox.sh ]; then
   cd /usr/src
+  # shellcheck disable=SC2015 # best-effort DAHDI install, non-fatal on failure
   chmod +x install-dahdi-on-proxmox.sh && ./install-dahdi-on-proxmox.sh || true
 else
   warn "No DAHDI source found in /usr/src — skipping DAHDI install"
@@ -494,7 +495,7 @@ if [ ! -f /usr/lib64/asterisk/modules/codec_g729.so ]; then
   if [ ! -d asterisk-g72x ]; then git clone https://github.com/innotelinc/asterisk-g72x.git; fi
   cd asterisk-g72x
   ./autogen.sh
-  ./configure --libdir=/usr/lib64 --with-bcg729 --with-asterisk-includes=/usr/src/asterisk-${ASTERISK_VER}/include/
+  ./configure --libdir=/usr/lib64 --with-bcg729 --with-asterisk-includes=/usr/src/asterisk-"${ASTERISK_VER}"/include/
   make && make install
   chmod +x /usr/lib64/asterisk/modules/codec_g729.so
   chown asterisk:asterisk /usr/lib64/asterisk/modules/codec_g729.so
@@ -1269,6 +1270,7 @@ if [ -f tesseract-5.5.2.tar.gz ]; then
   tar zxf tesseract-5.5.2.tar.gz && cd tesseract-5.5.2
   ./autogen.sh && ./configure --libdir=/usr/lib64 && make && make install && cd /usr/src
 fi
+# shellcheck disable=SC2015 # best-effort model copy, non-fatal on failure
 [ -f eng.traineddata ] && mv eng.traineddata /usr/local/share/tessdata/ 2>/dev/null || true
 
 # ─── IAXModem 1.3.5 ──────────────────────────────────────────
@@ -1467,6 +1469,7 @@ fi
 # tarball is extracted above). Don't create a stray /var/www/html/fax
 # directory here — that would break the `ln -sf` symlink on a re-run.
 if [ -d /var/www/html/fax/includes ]; then
+# shellcheck disable=SC2154 # hylafax config template vars (escaped $ in heredoc)
 cat > /var/www/html/fax/includes/local_config.php <<PHP
 <?php
         define('AFDB_USER',     'avantfax');
@@ -1600,7 +1603,7 @@ fi
 cd vosk-asterisk
 ./bootstrap
 ./configure \
-  --with-asterisk=/usr/src/asterisk-${ASTERISK_VER} \
+  --with-asterisk=/usr/src/asterisk-"${ASTERISK_VER}" \
   --prefix=/usr --libdir=/usr/lib64
 make && make install
 
@@ -1640,7 +1643,6 @@ apt -y install \
 #   "Assembler messages: Error: can't open /tmp/ccXXXX.s for reading"
 # Guards below: use a temp dir with room, cap jobs by RAM, and skip the whole
 # section on re-runs once vosk-api has built (marker file).
-KALDI_MKL=0
 
 if [ ! -f /opt/vosk-api/.built ]; then
   TMPDIR="${TMPDIR:-/tmp}"
@@ -2014,6 +2016,7 @@ export PATH="$PATH:/usr/local/go/bin"
 if [ ! -d fail2ban-for-asterisk ]; then
   git clone https://github.com/vvampirius/fail2ban-for-asterisk.git
 fi
+# shellcheck disable=SC2015 # asterban build is best-effort; failure handled below
 cd fail2ban-for-asterisk && go build -o /usr/sbin/asterban 2>/dev/null || true
 
 if [ -f /usr/sbin/asterban ]; then
