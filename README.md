@@ -1,8 +1,26 @@
-# Zeus — VOIP Platform &bull; [app.zeus.innotel.us](https://app.zeus.innotel.us)
+<div align="center">
 
-A cloud-native telecommunications platform providing VoIP services, SIP routing, customer self-service portals, instant phone number provisioning, messaging, billing, and business communications.
+# ⚡ Zeus — VOIP Platform
 
-Built on **FreePBX/Asterisk**, **VoIP.ms**, and **AvantFax**, with a **Next.js 16 portal (App Router + React 19 + Tailwind v4)**, **SQLite** (better-sqlite3), **Authentik** for authentication and user management, and **Nginx Proxy Manager** for the HTTPS front-end.
+**Cloud-native telecommunications — VoIP services, SIP routing, self-service portals, instant number provisioning, messaging, fax, and billing.**
+
+Zeus delivers business communications on your own infrastructure: phone numbers ordered
+and provisioned through VoIP.ms in seconds, a web + PWA softphone over WebRTC, SMS and
+unified messaging, AvantFax digital faxing, AI voicemail summaries, Stripe billing, and
+reseller white-label — fronted by a **Next.js 16 portal** with **Authentik** SSO and
+**Nginx Proxy Manager** HTTPS.
+
+[![Docker publish](https://github.com/innotelinc/zeus/actions/workflows/docker-publish.yml/badge.svg)](https://github.com/innotelinc/zeus/actions/workflows/docker-publish.yml)
+[![Release](https://github.com/innotelinc/zeus/actions/workflows/release.yml/badge.svg)](https://github.com/innotelinc/zeus/actions/workflows/release.yml)
+[![Latest release](https://img.shields.io/github/v/release/innotelinc/zeus?color=6366f1)](https://github.com/innotelinc/zeus/releases)
+
+</div>
+
+> **About Zeus** — the cloud-native VOIP platform for VoIP services, SIP routing,
+> customer self-service portals, instant phone-number provisioning, messaging, fax,
+> billing, and business communications — built on FreePBX/Asterisk, VoIP.ms, and
+> AvantFax, with a Next.js 16 customer portal, Authentik SSO, and Nginx Proxy Manager.
+> **Landing page:** [github.com/innotelinc/zeus](https://github.com/innotelinc/zeus)
 
 ---
 
