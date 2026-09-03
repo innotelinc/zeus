@@ -10,9 +10,9 @@ unified messaging, AvantFax digital faxing, AI voicemail summaries, Stripe billi
 reseller white-label — fronted by a **Next.js 16 portal** with **Authentik** SSO and
 **Nginx Proxy Manager** HTTPS.
 
-[![Docker publish](https://github.com/innotelinc/zeus/actions/workflows/docker-publish.yml/badge.svg)](https://github.com/innotelinc/zeus/actions/workflows/docker-publish.yml)
-[![Release](https://github.com/innotelinc/zeus/actions/workflows/release.yml/badge.svg)](https://github.com/innotelinc/zeus/actions/workflows/release.yml)
-[![Latest release](https://img.shields.io/github/v/release/innotelinc/zeus?color=6366f1)](https://github.com/innotelinc/zeus/releases)
+[![Docker publish](https://innotelinc.github.io/zeus/actions/workflows/docker-publish.yml/badge.svg)](https://innotelinc.github.io/zeus/actions/workflows/docker-publish.yml)
+[![Release](https://innotelinc.github.io/zeus/actions/workflows/release.yml/badge.svg)](https://innotelinc.github.io/zeus/actions/workflows/release.yml)
+[![Latest release](https://img.shields.io/github/v/release/innotelinc/zeus?color=6366f1)](https://innotelinc.github.io/zeus/releases)
 
 </div>
 
@@ -20,7 +20,7 @@ reseller white-label — fronted by a **Next.js 16 portal** with **Authentik** S
 > customer self-service portals, instant phone-number provisioning, messaging, fax,
 > billing, and business communications — built on FreePBX/Asterisk, VoIP.ms, and
 > AvantFax, with a Next.js 16 customer portal, Authentik SSO, and Nginx Proxy Manager.
-> **Landing page:** [github.com/innotelinc/zeus](https://github.com/innotelinc/zeus)
+> **Landing page:** [innotelinc.github.io/zeus](https://innotelinc.github.io/zeus)
 
 ---
 
@@ -133,7 +133,7 @@ npm run dev            # runs on http://localhost:3000
 ### Option 1: Docker — Portal Only
 
 ```bash
-git clone https://github.com/innotelinc/zeus.git
+git clone https://innotelinc.github.io/zeus.git
 cd zeus
 cp .env.docker.example .env   # edit with your server addresses
 docker compose up -d          # portal at http://localhost:3000
