@@ -11,7 +11,8 @@ name: GitHub Pages
 
 on:
   push:
-    branches: [main]
+    # [main, master]: repos default to either branch across the portfolio.
+    branches: [main, master]
     paths:
       - "web/landing/**"
       - ".github/workflows/pages.yml"
