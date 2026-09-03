@@ -40,6 +40,8 @@ provides, and explicitly does not own.
 
 
 > **Current state:** Capstone consuming Zeus as its voice plane is the target integration.
+> See the [**Capstone ↔ Zeus convergence plan**](https://github.com/innotelinc/innotel-platform-stack/blob/main/docs/convergence-capstone-zeus.md)
+> for the target architecture and the structural-parity checklist Zeus mirrors from Capstone.
 
 ## Secrets (Infisical)
 
