@@ -1,0 +1,75 @@
+# ═══════════════════════════════════════════════════════════════════════════
+# Infisical (SecretOps) — opt-in compose profile.
+#
+# The Innotel Platform Stack treats Infisical as the single source of truth
+# for secrets. This profile adds a self-hosted Infisical instance
+# (backend + PostgreSQL + Redis) to a stack WITHOUT touching the main
+# compose file. Enable it with:
+#
+#   docker compose -f docker-compose.yml -f compose.infisical.yml \
+#     --profile infisical up -d
+#
+# Then run scripts/infisical-setup.sh once to create the admin, the
+# workspace, and import the stack's .env values as secrets.
+#
+# Required .env keys (generate with the commands shown):
+#   INFISICAL_ENCRYPTION_KEY   (openssl rand -base64 32)
+#   INFISICAL_AUTH_SECRET      (openssl rand -hex 16)
+#   INFISICAL_DB_PASSWORD      (openssl rand -hex 16)
+# Optional:
+#   INFISICAL_PORT             (default 8383)
+#   INFISICAL_DB_NAME / _USER  (default infisical)
+#   INFISICAL_SITE_URL         (default http://localhost:<INFISICAL_PORT>)
+# ═══════════════════════════════════════════════════════════════════════════
+
+services:
+  infisical-db:
+    image: postgres:16-alpine
+    profiles: ["infisical"]
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${INFISICAL_DB_NAME:-infisical}
+      POSTGRES_USER: ${INFISICAL_DB_USER:-infisical}
+      POSTGRES_PASSWORD: ${INFISICAL_DB_PASSWORD:?set INFISICAL_DB_PASSWORD}
+    volumes:
+      - infisical-db-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${INFISICAL_DB_USER:-infisical} -d ${INFISICAL_DB_NAME:-infisical}"]
+      interval: 5s
+      timeout: 3s
+      retries: 15
+
+  infisical-redis:
+    image: redis:7-alpine
+    profiles: ["infisical"]
+    restart: unless-stopped
+    volumes:
+      - infisical-redis-data:/data
+
+  infisical:
+    image: ghcr.io/infisical/infisical:latest
+    profiles: ["infisical"]
+    restart: unless-stopped
+    depends_on:
+      infisical-db:
+        condition: service_healthy
+      infisical-redis:
+        condition: service_started
+    ports:
+      - "${INFISICAL_PORT:-8383}:8080"
+    environment:
+      # ── required bootstrap keys ─────────────────────────────────────
+      ENCRYPTION_KEY: ${INFISICAL_ENCRYPTION_KEY:?set INFISICAL_ENCRYPTION_KEY (openssl rand -base64 32)}
+      AUTH_SECRET: ${INFISICAL_AUTH_SECRET:?set INFISICAL_AUTH_SECRET (openssl rand -hex 16)}
+      SITE_URL: ${INFISICAL_SITE_URL:-http://localhost:${INFISICAL_PORT:-8383}}
+      # ── database ────────────────────────────────────────────────────
+      DB_CONNECTION_URI: postgresql://${INFISICAL_DB_USER:-infisical}:${INFISICAL_DB_PASSWORD}@infisical-db:5432/${INFISICAL_DB_NAME:-infisical}
+      # ── cache / queue ───────────────────────────────────────────────
+      REDIS_URL: redis://infisical-redis:6379
+      # ── runtime ─────────────────────────────────────────────────────
+      NODE_ENV: production
+      TELEMETRY_ENABLED: "false"
+
+volumes:
+  infisical-db-data:
+  infisical-redis-data:
