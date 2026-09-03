@@ -28,6 +28,8 @@ ALLOWED_ATTRIBUTIONS=(
   'Darnel Hunter <dhunter@innotel.us>'
   'Darnel Hunter <darnelhunter@gmail.com>'
   'Darnel Hunter <68697450+innotelinc@users.noreply.github.com>'
+  # GitHub's own dependency bot — its automated commits carry a Signed-off-by.
+  'dependabot[bot] <support@github.com>'
 )
 
 # Git-trailer credit prefixes (case-insensitive, ERE as used by grep -E).
