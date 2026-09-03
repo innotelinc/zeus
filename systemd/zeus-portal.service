@@ -1,0 +1,25 @@
+# Zeus — VOIP Platform Customer Portal
+# Template installed by scripts/setup-portal.sh; @APP_DIR@ is rewritten to
+# the real portal directory at install time (same convention as Capstone's
+# systemd units — never hard-code a host path here).
+[Unit]
+Description=Zeus VOIP Platform Customer Portal
+After=network.target mariadb.service freepbx.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=@APP_DIR@
+Environment=NODE_ENV=production
+Environment=PORT=3000
+Environment=HOSTNAME=0.0.0.0
+ExecStart=/usr/bin/node @APP_DIR@/node_modules/.bin/next start -H 0.0.0.0 -p 3000
+Restart=always
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=zeus-portal
+
+[Install]
+WantedBy=multi-user.target

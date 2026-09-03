@@ -1,0 +1,11 @@
+# Zeus — periodic PBX fragment reconciliation (15 min + on boot).
+[Unit]
+Description=Zeus — periodic PBX fragment sync
+
+[Timer]
+OnBootSec=5min
+OnUnitActiveSec=15min
+Unit=zeus-pbx-sync.service
+
+[Install]
+WantedBy=timers.target

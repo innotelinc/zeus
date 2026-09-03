@@ -175,30 +175,26 @@ npm run seed 2>&1 || true
 
 echo ">>> [4/4] Systemd service + firewall"
 
-cat > /etc/systemd/system/zeus-portal.service <<EOF
-[Unit]
-Description=Zeus VOIP Platform Customer Portal
-After=network.target mariadb.service freepbx.service
-[Service]
-Type=simple
-User=root
-WorkingDirectory=${APP_DIR}
-Environment=NODE_ENV=production
-Environment=PORT=3000
-ExecStart=/usr/bin/node ${APP_DIR}/node_modules/.bin/next start -H 0.0.0.0 -p 3000
-Environment=HOSTNAME=0.0.0.0
-Restart=always
-RestartSec=5
-StandardOutput=journal
-StandardError=journal
-SyslogIdentifier=zeus-portal
-[Install]
-WantedBy=multi-user.target
-EOF
+# Version-controlled unit templates live in systemd/ (the Capstone
+# convention); rewrite @APP_DIR@ and the placeholder repo path at install
+# time — never hand-edit the live unit.
+for unit in zeus-portal.service zeus-pbx-sync.service zeus-pbx-sync.timer; do
+  sed \
+    -e "s|@APP_DIR@|${APP_DIR}|g" \
+    -e "s|/PATH/TO/ZEUS|${REPO_DIR}|g" \
+    "${REPO_DIR}/systemd/${unit}" > "/etc/systemd/system/${unit}"
+done
 
 systemctl daemon-reload
 systemctl enable zeus-portal
 systemctl start  zeus-portal
+# PBX fragment reconciliation — enabled when scripts/pbx.env exists
+if [ -f "${SCRIPT_DIR}/pbx.env" ]; then
+  systemctl enable --now zeus-pbx-sync.timer
+  info "zeus-pbx-sync timer enabled (PBX fragment drift check every 15 min)"
+else
+  info "no scripts/pbx.env — PBX sync timer skipped (create it to enable)"
+fi
 
 # ─── Firewall ────────────────────────────────────────────────
 if command -v ufw &>/dev/null; then

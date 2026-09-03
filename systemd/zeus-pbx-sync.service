@@ -1,0 +1,21 @@
+# Zeus — reconcile PBX fragments (AMI/ARI/WSS/dialplan) with the FreePBX box
+# Runs pbx/bootstrap-zeus-pbx.sh --check and re-applies on drift, then
+# reloads the dialplan. Installed by scripts/setup-portal.sh (or manually);
+# WorkingDirectory is rewritten to the real repo root at install time.
+[Unit]
+Description=Zeus — sync PBX fragments into FreePBX
+Documentation=https://github.com/innotelinc/zeus
+Requires=docker.service
+After=docker.service network-online.target zeus-portal.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+WorkingDirectory=/PATH/TO/ZEUS
+Environment=PBX_ENV_FILE=/PATH/TO/ZEUS/scripts/pbx.env
+# --check exits 1 when drifted; apply (idempotent) otherwise. A slow PBX
+# boot after reboot gets a generous window so the timer run doesn't fail.
+ExecStart=/usr/bin/env bash pbx/bootstrap-zeus-pbx.sh
+TimeoutStartSec=120s
+StandardOutput=journal
+StandardError=journal

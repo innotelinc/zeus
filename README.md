@@ -295,10 +295,18 @@ scripts/
   setup-portal.sh         # Zeus Customer Portal installer
   npm-proxy-hosts.py      # NPM proxy-host sync + wildcard cert automation
   build-release-artifacts.sh  # source bundle + deployment payload for releases
+  smoke-test.sh           # live-stack smoke test (portal, PBX, fax, numbers)
+  zeus-pbx-sync.sh        # PBX fragment drift re-apply (timer-driven)
   schema.sql              # SQLite schema
   seed.mjs                # Demo account seed
   migrations/             # Schema migrations
   pbx.env.example         # Bare-metal secrets template
+pbx/
+  bootstrap-zeus-pbx.sh   # render + apply Asterisk fragments (--check drift)
+  asterisk/               # AMI, ARI, HTTP/WSS, dialplan fragments
+systemd/
+  zeus-portal.service     # portal unit (installed by setup-portal.sh)
+  zeus-pbx-sync.service/.timer  # PBX fragment reconciliation every 15 min
 patches/
   next+16.3.0.patch       # patch-package: skips static generation of synthetic
                           # error routes (see "Build notes" below)

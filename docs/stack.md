@@ -43,6 +43,17 @@ provides, and explicitly does not own.
 > See the [**Capstone ↔ Zeus convergence plan**](https://github.com/innotelinc/innotel-platform-stack/blob/main/docs/convergence-capstone-zeus.md)
 > for the target architecture and the structural-parity checklist Zeus mirrors from Capstone.
 
+### Phase 1 parity (shipped)
+
+- `pbx/` — version-controlled Asterisk/FreePBX fragments (AMI, ARI, WSS
+  transport, portal dialplan) + `pbx/bootstrap-zeus-pbx.sh` (idempotent apply,
+  `--check` drift mode; `PBX_TARGET=local|container`).
+- `systemd/` — `zeus-portal.service`, `zeus-pbx-sync.service` + `.timer`
+  (drift re-apply every 15 min); installed by `scripts/setup-portal.sh` from
+  the templates.
+- `scripts/smoke-test.sh` — live-stack smoke (portal, NPM hosts, PBX/AMI/ARI,
+  AvantFax, VoIP.ms); `scripts/zeus-pbx-sync.sh` journal-friendly wrapper.
+
 ## Secrets (Infisical)
 
 Secrets for this platform live in **Infisical** (SecretOps): credentials are imported
