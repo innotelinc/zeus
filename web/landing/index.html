@@ -1,0 +1,458 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Zeus — VOIP Platform</title>
+  <meta name="description" content="Zeus is a cloud-native VoIP platform: number provisioning, WebRTC softphone, SIP routing, SMS, digital fax, AI voicemail summaries and Stripe billing.">
+  <meta property="og:title" content="Zeus — VOIP Platform">
+  <meta property="og:description" content="Cloud-native telecommunications — VoIP, SIP, SMS, fax and a WebRTC softphone, self-hosted.">
+  <meta property="og:type" content="website">
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='14' fill='%230b0d10'/%3E%3Ctext x='32' y='44' font-size='34' text-anchor='middle'%3E⚡%3C/text%3E%3C/svg%3E">
+  <style>
+    /* ---- Product theme (Zeus landing, modeled on the ONYX outline) ---- */
+    :root {
+      color-scheme: dark;
+      --p-bg: #0b0d10;
+      --p-bg-elevated: #12151a;
+      --p-surface: #181c22;
+      --p-surface-hover: #1f242c;
+      --p-border: #262c35;
+      --p-text: #f4f7fb;
+      --p-text-secondary: #cdd6e0;
+      --p-text-muted: #a8b2bf;
+      --p-accent: #fbbf24;
+      --p-accent-hover: #fcd34d;
+      --p-accent-tint: rgba(251, 191, 36, 0.12);
+      --p-success: #3ddc84;
+      --p-warning: #f5b544;
+      --p-danger: #f25f5f;
+      --p-info: #5ac8fa;
+      --radius-sm: 6px;
+      --radius-md: 10px;
+      --radius-lg: 16px;
+      --ease: cubic-bezier(.2, .8, .2, 1);
+    }
+
+    * { box-sizing: border-box; }
+
+    html { scroll-behavior: smooth; }
+
+    body {
+      margin: 0;
+      background: var(--p-bg);
+      color: var(--p-text);
+      font-family: ui-sans-serif, system-ui, "Segoe UI", Roboto, "Helvetica Neue", sans-serif;
+      font-size: 16px;
+      line-height: 1.6;
+      -webkit-font-smoothing: antialiased;
+    }
+
+    ::selection { background: var(--p-accent-tint); }
+
+    a { color: var(--p-accent); text-decoration: none; }
+    a:hover { color: var(--p-accent-hover); }
+
+    code, pre {
+      font-family: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    }
+
+    .wrap { max-width: 1080px; margin: 0 auto; padding: 0 24px; }
+
+    /* ---- Top bar --------------------------------------------------------- */
+    .topbar {
+      position: sticky; top: 0; z-index: 10;
+      background: rgba(11, 13, 16, 0.72);
+      backdrop-filter: blur(24px);
+      -webkit-backdrop-filter: blur(24px);
+      border-bottom: 1px solid var(--p-border);
+    }
+    .topbar-inner {
+      display: flex; align-items: center; gap: 20px;
+      height: 60px;
+    }
+    .brand {
+      display: flex; align-items: center; gap: 10px;
+      font-weight: 650; letter-spacing: 0.04em;
+      color: var(--p-text);
+    }
+    .brand:hover { color: var(--p-text); }
+    .brand .mark {
+      display: grid; place-items: center;
+      width: 26px; height: 26px; border-radius: 8px;
+      background: var(--p-bg-elevated);
+      border: 1px solid var(--p-border);
+      font-size: 15px;
+    }
+    .brand .dot { color: var(--p-accent); }
+    .topbar nav { margin-left: auto; display: flex; align-items: center; gap: 4px; }
+    .topbar nav a {
+      color: var(--p-text-secondary);
+      padding: 6px 12px; border-radius: var(--radius-sm);
+      font-size: 14px;
+      transition: color .15s var(--ease), background .15s var(--ease);
+    }
+    .topbar nav a:hover { color: var(--p-text); background: var(--p-surface-hover); }
+    .topbar .gh {
+      display: inline-flex; align-items: center; gap: 8px;
+      margin-left: 8px;
+      border: 1px solid var(--p-border);
+      border-radius: var(--radius-md);
+      padding: 7px 14px;
+      color: var(--p-text);
+      font-size: 14px;
+      transition: border-color .15s var(--ease), background .15s var(--ease);
+    }
+    .topbar .gh:hover { border-color: var(--p-accent); background: var(--p-accent-tint); color: var(--p-text); }
+
+    /* ---- Hero ------------------------------------------------------------ */
+    .hero { position: relative; overflow: hidden; padding: 96px 0 72px; }
+    .hero::before {
+      content: "";
+      position: absolute; inset: 0;
+      background:
+        radial-gradient(600px 320px at 70% -10%, rgba(251, 191, 36, 0.14), transparent 70%),
+        radial-gradient(500px 300px at 15% 110%, rgba(252, 211, 77, 0.08), transparent 70%);
+      pointer-events: none;
+    }
+    .hero-inner { position: relative; max-width: 760px; }
+    .kicker {
+      display: inline-flex; align-items: center; gap: 8px;
+      font-size: 13px; letter-spacing: 0.08em; text-transform: uppercase;
+      color: var(--p-accent-hover);
+      background: var(--p-accent-tint);
+      border: 1px solid rgba(251, 191, 36, 0.25);
+      border-radius: 999px;
+      padding: 5px 14px;
+      margin: 0 0 24px;
+    }
+    .kicker .pulse {
+      width: 7px; height: 7px; border-radius: 50%;
+      background: var(--p-success);
+      box-shadow: 0 0 0 0 rgba(61, 220, 132, 0.5);
+      animation: pulse 2.4s var(--ease) infinite;
+    }
+    @keyframes pulse {
+      0% { box-shadow: 0 0 0 0 rgba(61, 220, 132, 0.45); }
+      70% { box-shadow: 0 0 0 9px rgba(61, 220, 132, 0); }
+      100% { box-shadow: 0 0 0 0 rgba(61, 220, 132, 0); }
+    }
+    h1 {
+      font-size: clamp(2.2rem, 5.5vw, 3.4rem);
+      line-height: 1.08;
+      letter-spacing: -0.02em;
+      margin: 0 0 20px;
+      font-weight: 700;
+    }
+    h1 .accent { color: var(--p-accent); }
+    .lede {
+      font-size: 1.125rem;
+      color: var(--p-text-secondary);
+      max-width: 640px;
+      margin: 0 0 32px;
+    }
+    .cta-row { display: flex; flex-wrap: wrap; gap: 12px; margin-bottom: 28px; }
+    .btn {
+      display: inline-flex; align-items: center; gap: 8px;
+      border-radius: var(--radius-md);
+      padding: 11px 20px;
+      font-size: 15px; font-weight: 550;
+      border: 1px solid transparent;
+      cursor: pointer;
+      transition: background .15s var(--ease), border-color .15s var(--ease), transform .15s var(--ease);
+    }
+    .btn-primary { background: var(--p-accent); color: #071018; font-weight: 600; }
+    .btn-primary:hover { background: var(--p-accent-hover); color: #071018; }
+    .btn-secondary { border-color: var(--p-border); color: var(--p-text); background: transparent; }
+    .btn-secondary:hover { border-color: var(--p-accent); background: var(--p-accent-tint); color: var(--p-text); }
+    .quickstart {
+      display: flex; align-items: center; gap: 14px;
+      background: var(--p-bg-elevated);
+      border: 1px solid var(--p-border);
+      border-radius: var(--radius-md);
+      padding: 12px 16px;
+      max-width: 640px;
+      font-size: 13.5px;
+    }
+    .quickstart code { color: var(--p-text); white-space: nowrap; overflow-x: auto; }
+    .quickstart code .c { color: var(--p-text-muted); }
+    .quickstart .copy {
+      margin-left: auto; flex: 0 0 auto;
+      background: transparent; border: 1px solid var(--p-border);
+      color: var(--p-text-secondary);
+      border-radius: var(--radius-sm);
+      font: inherit; font-size: 12px;
+      padding: 4px 10px; cursor: pointer;
+      transition: border-color .15s var(--ease), color .15s var(--ease);
+    }
+    .quickstart .copy:hover { border-color: var(--p-accent); color: var(--p-text); }
+    .quickstart .copy.copied { color: var(--p-success); border-color: var(--p-success); }
+
+    /* ---- Stat strip ------------------------------------------------------ */
+    .stats {
+      display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+      gap: 12px; margin: 56px 0 0;
+    }
+    .stat {
+      background: var(--p-bg-elevated);
+      border: 1px solid var(--p-border);
+      border-radius: var(--radius-md);
+      padding: 16px 18px;
+    }
+    .stat b { display: block; font-size: 1.35rem; font-variant-numeric: tabular-nums; }
+    .stat span { color: var(--p-text-secondary); font-size: 13px; }
+
+    /* ---- Sections -------------------------------------------------------- */
+    section { padding: 64px 0; }
+    section h2 {
+      font-size: 1.7rem; letter-spacing: -0.01em;
+      margin: 0 0 8px;
+    }
+    section .section-sub { color: var(--p-text-secondary); margin: 0 0 32px; max-width: 620px; }
+
+    .grid { display: grid; gap: 14px; }
+    .grid-3 { grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); }
+    .grid-2 { grid-template-columns: repeat(auto-fit, minmax(340px, 1fr)); }
+
+    .card {
+      background: var(--p-bg-elevated);
+      border: 1px solid var(--p-border);
+      border-radius: var(--radius-lg);
+      padding: 22px;
+      transition: border-color .15s var(--ease), transform .15s var(--ease);
+    }
+    .card:hover { border-color: #34404f; }
+    .card h3 { margin: 0 0 6px; font-size: 1.02rem; }
+    .card p { margin: 0; color: var(--p-text-secondary); font-size: 14px; }
+    .card .icon {
+      display: inline-flex; align-items: center; justify-content: center;
+      width: 34px; height: 34px;
+      border-radius: var(--radius-md);
+      background: var(--p-accent-tint);
+      margin-bottom: 14px;
+      font-size: 16px;
+    }
+    .card ul { margin: 10px 0 0; padding-left: 18px; color: var(--p-text-secondary); font-size: 14px; }
+    .card ul li { margin: 3px 0; }
+    .card ul li b { color: var(--p-text); font-weight: 600; }
+
+    /* ---- Surfaces table -------------------------------------------------- */
+    .surfaces { display: grid; gap: 10px; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); }
+    .surface {
+      display: flex; flex-direction: column; gap: 2px;
+      background: var(--p-bg-elevated);
+      border: 1px solid var(--p-border);
+      border-radius: var(--radius-md);
+      padding: 14px 16px;
+      transition: border-color .15s var(--ease);
+    }
+    .surface:hover { border-color: var(--p-accent); }
+    .surface b { font-size: 14.5px; }
+    .surface small { color: var(--p-text-secondary); font-size: 12.5px; }
+    .surface .live {
+      margin-left: auto;
+      font-size: 11px; letter-spacing: 0.06em; text-transform: uppercase;
+      color: var(--p-success);
+      border: 1px solid rgba(61, 220, 132, 0.3);
+      border-radius: 999px;
+      padding: 1px 8px;
+    }
+
+    /* ---- Stack / code ---------------------------------------------------- */
+    .split { display: grid; grid-template-columns: 1fr 1fr; gap: 28px; align-items: center; }
+    @media (max-width: 900px) { .split { grid-template-columns: 1fr; } }
+    pre.terminal {
+      margin: 0;
+      background: var(--p-bg-elevated);
+      border: 1px solid var(--p-border);
+      border-radius: var(--radius-lg);
+      padding: 20px;
+      font-size: 13px;
+      line-height: 1.75;
+      overflow-x: auto;
+      color: var(--p-text-secondary);
+    }
+    pre.terminal .p { color: var(--p-accent); }
+    pre.terminal .o { color: var(--p-text); }
+    pre.terminal .ok { color: var(--p-success); }
+    pre.terminal .cmt { color: var(--p-text-muted); }
+
+    /* ---- Roadmap --------------------------------------------------------- */
+    .roadmap { display: grid; gap: 12px; }
+    .mile {
+      display: flex; align-items: baseline; gap: 16px;
+      border: 1px solid var(--p-border);
+      background: var(--p-bg-elevated);
+      border-radius: var(--radius-md);
+      padding: 14px 18px;
+    }
+    .mile .tag {
+      flex: 0 0 130px;
+      font-weight: 650; font-size: 14px;
+      color: var(--p-text);
+    }
+    .mile .tag em {
+      font-style: normal; color: var(--p-accent);
+      display: block; font-size: 12px; font-weight: 500;
+    }
+    .mile p { margin: 0; color: var(--p-text-secondary); font-size: 14px; }
+    .mile .state {
+      margin-left: auto; flex: 0 0 auto;
+      font-size: 11px; letter-spacing: 0.06em; text-transform: uppercase;
+      border-radius: 999px; padding: 2px 10px;
+    }
+    .mile .state.done { color: var(--p-success); border: 1px solid rgba(61, 220, 132, 0.3); }
+    .mile .state.next { color: var(--p-warning); border: 1px solid rgba(245, 181, 68, 0.3); }
+    .mile .state.later { color: var(--p-text-muted); border: 1px solid var(--p-border); }
+
+    /* ---- Footer ----------------------------------------------------------- */
+    footer {
+      border-top: 1px solid var(--p-border);
+      padding: 32px 0 40px;
+      color: var(--p-text-muted);
+      font-size: 13.5px;
+    }
+    .foot-inner {
+      display: flex; flex-wrap: wrap; gap: 16px; align-items: center;
+      justify-content: space-between;
+    }
+    footer a { color: var(--p-text-secondary); }
+    footer a:hover { color: var(--p-text); }
+    .foot-links { display: flex; gap: 18px; flex-wrap: wrap; }
+
+    @media (prefers-reduced-motion: reduce) {
+      *, *::before, *::after { animation: none !important; transition: none !important; }
+      html { scroll-behavior: auto; }
+    }
+  </style>
+</head>
+<body>
+  <header class="topbar">
+    <div class="wrap topbar-inner">
+      <a class="brand" href="#">
+        <span class="mark" aria-hidden="true">⚡</span>
+        Zeus<span class="dot">.</span>
+      </a>
+      <nav aria-label="Main">
+        <a href="#features">Features</a>
+        <a href="#stack">Stack</a>
+        <a href="#platform">Platform</a>
+        <a href="#roadmap">Roadmap</a>
+        <a href="https://github.com/innotelinc/zeus/tree/main/docs">Docs</a>
+        <a class="gh" href="https://github.com/innotelinc/zeus">
+          <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27s1.36.09 2 .27c1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.01 8.01 0 0 0 16 8c0-4.42-3.58-8-8-8z"/></svg>
+          GitHub
+        </a>
+      </nav>
+    </div>
+  </header>
+
+  <main>
+    <!-- Hero -->
+    <div class="hero">
+      <div class="wrap hero-inner">
+        <p class="kicker"><span class="pulse" aria-hidden="true"></span> v1.0.0 · VoiceOps live</p>
+        <h1>Business communications<br>on <span class="accent">your infrastructure</span>.</h1>
+        <p class="lede">Zeus delivers business communications on your own infrastructure: phone numbers ordered and provisioned through VoIP.ms in seconds, a web + PWA softphone over WebRTC, SMS and unified messaging, AvantFax digital faxing, AI voicemail summaries, Stripe billing and reseller white-label — fronted by a Next.js portal with Authentik SSO and Nginx Proxy Manager HTTPS.</p>
+        <div class="cta-row">
+          <a class="btn btn-primary" href="https://github.com/innotelinc/zeus#quick-start">Get started</a>
+          <a class="btn btn-secondary" href="https://github.com/innotelinc/zeus/tree/main/docs">Docs</a>
+        </div>
+        <div class="quickstart">
+          <code><span class="c">$</span> git clone https://github.com/innotelinc/zeus.git && cd zeus && cp .env.example .env && npm run dev</code>
+          <button class="copy" id="copy-btn" type="button" aria-label="Copy quick start command">copy</button>
+        </div>
+        <div class="stats">
+          <div class="stat"><b>VoIP.ms</b><span>instant number provisioning</span></div><div class="stat"><b>WebRTC</b><span>softphone PWA, SIP.js</span></div><div class="stat"><b>SMS + Fax</b><span>AvantFax digital faxing</span></div><div class="stat"><b>AI</b><span>voicemail summaries</span></div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Features -->
+    <section id="features">
+      <div class="wrap">
+        <h2>Voice, fax and SMS from one portal<span class="accent">.</span></h2>
+        <p class="section-sub">Order numbers, route calls, message, fax and bill — all from a Next.js portal on your own stack.</p>
+        <div class="grid grid-3">
+          <div class="card"><span class="icon" aria-hidden="true">📞</span><h3>Number provisioning</h3><p>Order and provision numbers through VoIP.ms in seconds — plan-based limits.</p></div><div class="card"><span class="icon" aria-hidden="true">📱</span><h3>WebRTC softphone</h3><p>SIP.js dial pad in the dashboard, connectable over WSS through ws.zeus.innotel.us — a mobile-ready PWA.</p></div><div class="card"><span class="icon" aria-hidden="true">💬</span><h3>SMS + unified messaging</h3><p>SMS from the portal with conversation history.</p></div><div class="card"><span class="icon" aria-hidden="true">📠</span><h3>AvantFax digital faxing</h3><p>Send faxes digitally from the portal; fax history with status tracking.</p></div><div class="card"><span class="icon" aria-hidden="true">🤖</span><h3>AI voicemail summaries</h3><p>Voicemail transcribed and summarized automatically.</p></div><div class="card"><span class="icon" aria-hidden="true">💳</span><h3>Stripe billing + white-label</h3><p>Stripe billing with reseller white-label support.</p></div>
+        </div>
+      </div>
+    </section>
+
+    <!-- Stack -->
+    <section id="stack">
+      <div class="wrap">
+        <h2>The Voice layer of the stack<span class="accent">.</span></h2>
+        <p class="section-sub">Zeus consumes Authentik (identity), Infisical (secrets) and Magnate (revenue) — and hosts Capstone agents as an add-on.</p>
+        <div class="split">
+          <div>
+            <div class="grid" style="gap:14px">
+              <div class="card"><span class="icon" aria-hidden="true">📞</span><h3>Customer portal</h3><p>Next.js portal — numbers, calls, SMS, fax, billing.</p></div><div class="card"><span class="icon" aria-hidden="true">📱</span><h3>Softphone</h3><p>SIP.js WebRTC dial pad, WSS signaling, PWA.</p></div><div class="card"><span class="icon" aria-hidden="true">📠</span><h3>Fax + messaging</h3><p>AvantFax integration and unified messaging.</p></div><div class="card"><span class="icon" aria-hidden="true">🤖</span><h3>AI layer</h3><p>Voicemail summaries — and Capstone agents as an add-on.</p></div>
+            </div>
+          </div>
+          <pre class="terminal"><span class="cmt"># dev: portal + seed account</span>
+$ <span class="p">npm run seed && npm run dev</span>
+<span class="ok">>> demo@zeus.innotel.us seeded (8dpWR8wl4eYncm5v)</span>
+<span class="ok">>> Portal → http://localhost:3000</span>
+$ <span class="p">curl</span> https://api.zeus.innotel.us/api/numbers
+<span class="ok">{"numbers":[{"did":"+15125550123","status":"active"}]}</span></pre>
+        </div>
+      </div>
+    </section>
+
+    <!-- Platform surfaces -->
+    <section id="platform">
+      <div class="wrap">
+        <h2>Every communications surface<span class="accent">.</span></h2>
+        <p class="section-sub">Fixed hostnames under zeus.innotel.us, kept in sync with NPM by an API-driven provisioning script.</p>
+        <div class="surfaces">
+          <a class="surface" href="https://zeus.innotel.us"><b>Portal</b><small>zeus.innotel.us · customer portal (apex)</small><span class="live">live</span></a><a class="surface" href="https://app.zeus.innotel.us"><b>App / PWA</b><small>app.zeus.innotel.us · softphone + portal</small><span class="live">live</span></a><a class="surface" href="https://api.zeus.innotel.us"><b>API</b><small>api.zeus.innotel.us · portal API</small><span class="live">live</span></a><a class="surface" href="https://auth.zeus.innotel.us"><b>Identity</b><small>auth.zeus.innotel.us · Authentik SSO</small><span class="live">live</span></a><a class="surface" href="https://pbx.zeus.innotel.us"><b>PBX</b><small>pbx.zeus.innotel.us · FreePBX</small><span class="live">live</span></a><a class="surface" href="https://ws.zeus.innotel.us"><b>Signaling</b><small>ws.zeus.innotel.us · WebRTC WSS</small><span class="live">live</span></a>
+        </div>
+      </div>
+    </section>
+
+    <!-- Roadmap -->
+    <section id="roadmap">
+      <div class="wrap">
+        <h2>Roadmap<span class="accent">.</span></h2>
+        <p class="section-sub">Shipped as v1.0.0; Capstone's agent platform lands as a Zeus add-on next.</p>
+        <div class="roadmap">
+          <div class="mile"><span class="tag">v1.0.0 <em>"VoiceOps"</em></span><p>Portal, number provisioning, softphone, SMS, fax, AI voicemail, billing.</p><span class="state done">done</span></div><div class="mile"><span class="tag">v1.1.0 <em>"Agents"</em></span><p>Capstone add-on — voice AI agents and personal assistants in the portal.</p><span class="state next">next</span></div><div class="mile"><span class="tag">v2.0 <em>"LTS"</em></span><p>Security audit, hardening, LTS channel.</p><span class="state later">later</span></div>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <footer>
+    <div class="wrap foot-inner">
+      <span>Zeus — VOIP Platform · Innotel Labs</span>
+      <span class="foot-links">
+        <a href="https://github.com/innotelinc/zeus">GitHub</a>
+        <a href="https://github.com/innotelinc/zeus/tree/main/docs">Docs</a>
+        <a href="https://github.com/innotelinc/zeus/releases">Releases</a>
+      </span>
+    </div>
+  </footer>
+
+  <script>
+    // Copy-to-clipboard for the quick-start one-liner (progressive enhancement).
+    document.getElementById('copy-btn').addEventListener('click', function () {
+      var cmd = 'git clone https://github.com/innotelinc/zeus.git && cd zeus && cp .env.example .env && npm run dev';
+      var self = this;
+      function done() {
+        self.textContent = 'copied';
+        self.classList.add('copied');
+        setTimeout(function () {
+          self.textContent = 'copy';
+          self.classList.remove('copied');
+        }, 2000);
+      }
+      if (navigator.clipboard && navigator.clipboard.writeText) {
+        navigator.clipboard.writeText(cmd).then(done, done);
+      } else {
+        done();
+      }
+    });
+  </script>
+</body>
+</html>
