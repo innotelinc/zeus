@@ -10,8 +10,8 @@ unified messaging, AvantFax digital faxing, AI voicemail summaries, Stripe billi
 reseller white-label — fronted by a **Next.js 16 portal** with **Authentik** SSO and
 **Nginx Proxy Manager** HTTPS.
 
-[![Docker publish](https://innotelinc.github.io/zeus/actions/workflows/docker-publish.yml/badge.svg)](https://innotelinc.github.io/zeus/actions/workflows/docker-publish.yml)
-[![Release](https://innotelinc.github.io/zeus/actions/workflows/release.yml/badge.svg)](https://innotelinc.github.io/zeus/actions/workflows/release.yml)
+[![Docker publish](https://github.com/innotelinc/zeus/actions/workflows/docker-publish.yml/badge.svg)](https://github.com/innotelinc/zeus/actions/workflows/docker-publish.yml)
+[![Release](https://github.com/innotelinc/zeus/actions/workflows/release.yml/badge.svg)](https://github.com/innotelinc/zeus/actions/workflows/release.yml)
 [![Latest release](https://img.shields.io/github/v/release/innotelinc/zeus?color=6366f1)](https://innotelinc.github.io/zeus/releases)
 
 </div>
