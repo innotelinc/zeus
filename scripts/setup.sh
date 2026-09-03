@@ -31,6 +31,7 @@ info() { echo -e "${CYAN}[i]${NC} $*"; }
 # PBX_ENV_FILE=/path/to/pbx.env and fill in the real values. The file is
 # sourced below so its values override the defaults that follow.
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 PBX_ENV_FILE="${PBX_ENV_FILE:-${SCRIPT_DIR}/pbx.env}"
 if [ -f "$PBX_ENV_FILE" ]; then
   set -a
@@ -41,6 +42,13 @@ if [ -f "$PBX_ENV_FILE" ]; then
 else
   warn "No secrets file at ${PBX_ENV_FILE}"
   warn "Copy scripts/pbx.env.example to pbx.env and fill in the values."
+fi
+
+# Enable the version-controlled commit-guard hooks (.githooks) if this is a
+# git checkout (blocks attribution to anyone but Darnel Hunter).
+if [ -d "${REPO_ROOT}/.githooks" ] && git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+  git config core.hooksPath "${REPO_ROOT}/.githooks"
+  info "commit guard hook enabled (core.hooksPath -> .githooks)"
 fi
 
 # ─── VARIABLES ────────────────────────────────────────────────
