@@ -154,7 +154,8 @@ info "Installing Webmin"
 WEBMIN_VER="2.653"
 WEBMIN_SHA256="e7698812d5fe79268202c6051dbfb140c94a43df0d28509b894511b27e5f0b15"
 if ! command -v webmin >/dev/null 2>&1; then
-  curl -fsSL "https://download.webmin.com/download/repository/pool/contrib/w/webmin/webmin_${WEBMIN_VER}_all.deb" \
+  curl -fsSL --retry 5 --retry-all-errors --retry-delay 5 \
+    "https://download.webmin.com/download/repository/pool/contrib/w/webmin/webmin_${WEBMIN_VER}_all.deb" \
     -o /tmp/webmin.deb
   echo "${WEBMIN_SHA256}  /tmp/webmin.deb" | sha256sum -c -
   apt-get -y install --install-recommends /tmp/webmin.deb

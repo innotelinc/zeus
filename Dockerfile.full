@@ -116,7 +116,8 @@ RUN chmod +x /usr/local/bin/systemctl
 # doesn't depend on the legacy "sarge" repo + GPG key. Matches setup.sh.
 # Version + SHA256 are pinned; bump both together when upgrading.
 RUN apt update && \
-    wget -q "https://download.webmin.com/download/repository/pool/contrib/w/webmin/webmin_2.653_all.deb" -O /tmp/webmin.deb && \
+    wget -q --tries=5 --retry-connrefused --waitretry=5 --timeout=60 \
+      "https://download.webmin.com/download/repository/pool/contrib/w/webmin/webmin_2.653_all.deb" -O /tmp/webmin.deb && \
     echo "e7698812d5fe79268202c6051dbfb140c94a43df0d28509b894511b27e5f0b15  /tmp/webmin.deb" | sha256sum -c - && \
     apt -y install /tmp/webmin.deb && \
     rm -f /tmp/webmin.deb && \
