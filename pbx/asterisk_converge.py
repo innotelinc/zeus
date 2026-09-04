@@ -76,16 +76,15 @@ def split_blocks(text: str):
     def comment_run_start(header_idx: int) -> int:
         """First line of the comment/blank run directly above a header."""
         j = header_idx - 1
-        while j >= 0 and COMMENT_LINE_RE.match(lines[j]):
+        # stop the walk at ownership markers: an owner's '; >>> end <owner>' is
+        # the tail of the *previous* segment, so a doc comment that follows it
+        # must never be merged with it into one "prefix" run
+        while j >= 0 and COMMENT_LINE_RE.match(lines[j]) and not MARKER_LINE_RE.match(lines[j]):
             j -= 1
         start = j + 1
-        # attach only when the run is a genuine doc comment for the section:
-        # it must carry a real ';' comment and contain no ownership markers
-        # (an owner's '; >>> end <owner>' line is the tail of the *previous*
-        # context's segment, never a prefix of the next one)
-        has_comment = any(lines[k].lstrip().startswith(";") for k in range(start, header_idx))
-        has_marker = any(MARKER_LINE_RE.match(lines[k]) for k in range(start, header_idx))
-        if has_comment and not has_marker:
+        # attach only when the run is a genuine doc comment (carries a real
+        # ';' line); a blank-only separator stays as trailing whitespace
+        if any(lines[k].lstrip().startswith(";") for k in range(start, header_idx)):
             return start
         return header_idx
 
@@ -146,23 +145,22 @@ def _source_contexts(source_text: str):
     return seen
 
 
-def _strip_owned_segment(body: list[str], owner: str) -> list[str]:
-    """Remove an existing '; >>> begin owner ... ; >>> end owner' segment."""
+def _find_owned_segment(body: list[str], owner: str):
+    """Return (start, end_excl) line indices of the owner's marked segment,
+    or None when the owner has no segment in this body yet."""
     begin = BEGIN_MARK.format(owner=owner)
     end = END_MARK.format(owner=owner)
-    out: list[str] = []
-    skipping = False
-    for line in body:
+    start = end_idx = None
+    for i, line in enumerate(body):
         stripped = line.strip()
-        if not skipping and stripped == begin:
-            skipping = True
-            continue
-        if skipping:
-            if stripped == end:
-                skipping = False
-            continue
-        out.append(line)
-    return out
+        if start is None and stripped == begin:
+            start = i
+        elif start is not None and stripped == end:
+            end_idx = i + 1
+            break
+    if start is not None and end_idx is not None:
+        return start, end_idx
+    return None
 
 
 def _marked_segment(owner: str, body: list[str]) -> list[str]:
@@ -192,21 +190,40 @@ def merge_into(target_text: str, source_text: str, owner: str,
     return serialize(blocks)
 
 
+def _split_prefix(lines: list[str]):
+    """Split a context block into (above, header_and_body).
+
+    `above` is everything before the section header — the doc/blank run the
+    parser attributed to it. `header_and_body` starts at the header line."""
+    hdr = next((i for i, ln in enumerate(lines) if SECTION_RE.match(ln)), 0)
+    return lines[:hdr], lines[hdr:]
+
+
 def _replace_context(blocks, name: str, src_body: list[str]) -> list:
-    """Replace target's context `name` (and its attributed comment run) with
-    the source body, in place. Append at EOF when absent."""
+    """Replace target's context `name` with the source body, in place.
+    Append at EOF when absent.
+
+    The comment/blank run already sitting above the header is *preserved*:
+    it may document this section, or it may trail the previous owner's block
+    (an appended context can pick up the file's trailing comments as its
+    attributed prefix). Deleting it would eat another owner's text, so the
+    source's own doc prefix is installed only when the target has none."""
     idxs = [i for i, blk in enumerate(blocks) if blk[0] == "ctx" and blk[1] == name]
+    src_above, src_hdr_body = _split_prefix(src_body)
     if not idxs:
         blocks.append(("ctx", name, src_body))
         return blocks
     first = idxs[0]
-    # absorb comment-only text blocks directly above the context
-    if first > 0 and blocks[first - 1][0] == "text":
-        above = blocks[first - 1][1]
-        if all(COMMENT_LINE_RE.match(l) for l in above):
-            del blocks[first - 1]
-            first -= 1
-    blocks[first] = ("ctx", name, src_body)
+    blk_type, _, body = blocks[first]
+    tgt_above, _tgt_hdr = _split_prefix(body)
+    has_comment = any(l.lstrip().startswith(";") for l in tgt_above)
+    if has_comment:
+        # foreign or previously-installed doc comment: keep it untouched
+        new_body = tgt_above + src_hdr_body
+    else:
+        # blank-only prefix: swap in the source's own doc comment
+        new_body = src_above + src_hdr_body
+    blocks[first] = (blk_type, name, _ensure_trailing_newline(new_body))
     # drop any duplicate definitions of the same context (later ones)
     for idx in sorted(idxs[1:], reverse=True):
         del blocks[idx]
@@ -215,7 +232,12 @@ def _replace_context(blocks, name: str, src_body: list[str]) -> list:
 
 def _append_shared(blocks, name: str, owner: str, src_body: list[str]) -> list:
     """Add the source body inside target context `name` under owner markers.
-    Creates the context when absent; never touches other owners' lines."""
+    Creates the context when absent; never touches other owners' lines.
+
+    An owner's existing marked segment is replaced *in place* — never
+    stripped and re-appended at the tail — so repeated applies by either
+    product leave the other owner's segment exactly where it was (each
+    owner is byte-idempotent alone, not just the pair together)."""
     idxs = [i for i, blk in enumerate(blocks) if blk[0] == "ctx" and blk[1] == name]
     marked = _marked_segment(owner, src_body)
     if not idxs:
@@ -226,13 +248,65 @@ def _append_shared(blocks, name: str, owner: str, src_body: list[str]) -> list:
         idxs = [len(blocks) - 1]
     idx = idxs[0]
     blk_type, _, body = blocks[idx]
-    body = _strip_owned_segment(body, owner)
+    seg = _find_owned_segment(body, owner)
+    if seg:
+        # in-place refresh of our own segment, preserving the position of
+        # every other owner's content. Splice then normalize blank runs
+        # (collapse to one, strip edges) — deterministic, so refreshing
+        # repeatedly with unchanged content is byte-identical.
+        start, end_excl = seg
+        new_body = _collapse_blank_runs(body[:start] + marked + body[end_excl:])
+        blocks[idx] = (blk_type, name, _ensure_trailing_newline(new_body))
+        return blocks
+    # no existing segment yet: append at the tail, collapsing legacy blanks
     body = _collapse_blank_runs(body)
+    # Migration cleanup: pre-converge entrypoints injected this fragment into
+    # the shared context WITHOUT ownership markers. Drop any byte-identical
+    # legacy copy of our own body before appending the marked segment, so a
+    # first boot after adopting converge doesn't duplicate the definitions.
+    body = _strip_legacy_duplicates(body, _collapse_blank_runs(src_body))
     if body and body[-1].strip() != "":  # blank-line separation from foreign content
         body.append("\n")
     body.extend(marked)
     blocks[idx] = (blk_type, name, body)
     return blocks
+
+
+def _strip_legacy_duplicates(body: list[str], src_body: list[str]) -> list[str]:
+    """Remove legacy unmarked copies of the fragment body being appended.
+
+    Only contiguous runs that byte-match the (blank-collapsed) source body
+    are dropped, and only outside other owners' marked segments, so foreign
+    lines and GUI-added entries always survive."""
+    if not src_body:
+        return body
+    out: list[str] = []
+    i, n = 0, len(body)
+    while i < n:
+        line = body[i]
+        stripped = line.strip()
+        if stripped.startswith("; >>> begin "):
+            # a *foreign* marked segment (ours was already stripped above):
+            # copy it through untouched, including its end marker
+            out.append(line)
+            i += 1
+            while i < n and not body[i].strip().startswith("; >>> end "):
+                out.append(body[i])
+                i += 1
+            if i < n:  # the end marker
+                out.append(body[i])
+                i += 1
+            continue
+        if stripped.startswith("; >>> end "):
+            out.append(line)
+            i += 1
+            continue
+        if body[i:i + len(src_body)] == src_body:
+            i += len(src_body)
+            continue
+        out.append(line)
+        i += 1
+    return out
 
 
 def _collapse_blank_runs(lines: list[str]) -> list[str]:

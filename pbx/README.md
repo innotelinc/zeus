@@ -25,11 +25,20 @@ agents (`[dograh-inbound]`, `8000`–`8007` dialing) live in that file, a
 wholesale copy by either product silently drops the other's contexts — so
 zeus's bootstrap routes it through `pbx/asterisk_converge.py`:
 
-- contexts zeus owns (`[from-zeus-portal]`) **replace** wholesale;
+- contexts zeus owns (`[from-zeus-portal]`) **replace** wholesale. The
+  comment/blank run already above the replaced header is preserved (it may
+  document the section or trail the previous owner's block), so a re-apply
+  never eats another product's comments; the source's own doc prefix is
+  installed only when the target has none.
 - `[from-internal-custom]` is **append-shared**: each product's lines are
   added under `; >>> begin <owner>` / `; >>> end <owner>` markers so a
-  product only ever rewrites its own segment. Idempotent by construction —
-  re-applying any owner changes nothing.
+  product only ever rewrites its own segment. An existing segment is
+  refreshed **in place** — never stripped and re-appended at the tail — so
+  re-applying either owner alone is byte-idempotent and leaves the other
+  owner's segment exactly where it was. When adopting converge on a PBX that
+  predates it (legacy entrypoints injected the fragment with no markers), a
+  byte-identical legacy copy of the owner's own body is absorbed into the
+  marked segment instead of being duplicated.
 
 On a shared PBX run the tool once per product (the zeus half is already
 wired into `bootstrap-zeus-pbx.sh`):
