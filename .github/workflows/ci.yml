@@ -30,3 +30,24 @@ jobs:
           echo "Checking ${#scripts[@]} scripts"
           docker run --rm -v "$PWD":/mnt:ro -w /mnt \
             koalaman/shellcheck:v0.10.0 -s bash "${scripts[@]}"
+
+  pbx-converge:
+    name: PBX converge tool
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Unit tests for the per-context dialplan merge tool
+        run: python3 -m unittest discover -s pbx/tests -v
+
+      - name: Convergence smoke (zeus fragments are self-stable)
+        run: |
+          set -euo pipefail
+          tmp=$(mktemp -d)
+          touch "$tmp/extensions_custom.conf"
+          python3 pbx/asterisk_converge.py --target "$tmp/extensions_custom.conf" \
+            --source pbx/asterisk/extensions_custom.conf --owner zeus \
+            --append from-internal-custom
+          python3 pbx/asterisk_converge.py --target "$tmp/extensions_custom.conf" \
+            --source pbx/asterisk/extensions_custom.conf --owner zeus \
+            --append from-internal-custom --check

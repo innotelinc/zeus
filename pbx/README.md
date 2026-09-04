@@ -13,6 +13,37 @@ operational shape.
 | `asterisk/http_custom.conf` | Asterisk HTTP server + WebSocket transport for the WebRTC softphone |
 | `asterisk/extensions_custom.conf` | Portal dialplan context (`[from-zeus-portal]`) |
 | `bootstrap-zeus-pbx.sh` | Render + apply the fragments idempotently; `--check` drift mode |
+| `asterisk_converge.py` | Per-context merge for the **shared** `extensions_custom.conf` (ownership markers) |
+| `tests/test_asterisk_converge.py` | Unit tests for the converge tool (`python3 -m unittest discover -s pbx/tests`) |
+
+## Shared voice plane (`asterisk_converge.py`)
+
+`extensions_custom.conf` is the one file both Zeus and Capstone write into:
+FreePBX regenerates `extensions.conf` on Apply Config but never the
+`*_custom.conf` include, so contexts in it survive GUI reloads. Once capstone
+agents (`[dograh-inbound]`, `8000`–`8007` dialing) live in that file, a
+wholesale copy by either product silently drops the other's contexts — so
+zeus's bootstrap routes it through `pbx/asterisk_converge.py`:
+
+- contexts zeus owns (`[from-zeus-portal]`) **replace** wholesale;
+- `[from-internal-custom]` is **append-shared**: each product's lines are
+  added under `; >>> begin <owner>` / `; >>> end <owner>` markers so a
+  product only ever rewrites its own segment. Idempotent by construction —
+  re-applying any owner changes nothing.
+
+On a shared PBX run the tool once per product (the zeus half is already
+wired into `bootstrap-zeus-pbx.sh`):
+
+```bash
+# zeus half (secret-rendered, drift-checked, reloads the PBX)
+pbx/bootstrap-zeus-pbx.sh
+
+# capstone half — point --source at the capstone checkout's fragment
+python3 pbx/asterisk_converge.py \
+  --target /etc/asterisk/extensions_custom.conf \
+  --source <capstone-repo>/pbx/asterisk/extensions_custom.conf \
+  --owner capstone --append from-internal-custom
+```
 
 ## How it fits the stack
 
