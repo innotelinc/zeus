@@ -163,7 +163,7 @@ To build the full-stack image locally instead (45-90 min, one-time): `docker com
 | Service | Image | Ports |
 |---|---|---|
 | MariaDB | inside full-stack image | 3306 (internal) |
-| Asterisk + FreePBX | `ghcr.io/innotelinc/zeus:latest-fullstack` | 80, 5060/udp, 8088, 8089, 5038, 10000, 10000-20000/udp |
+| Asterisk + FreePBX | `ghcr.io/innotelinc/zeus:latest-fullstack` | 80, 5060/udp, 8088, 8089, 5038, 10000, 10101-10120/udp (RTP) |
 | AvantFax | inside full-stack image (`/fax`) | via :80 |
 | Zeus Portal | built from `Dockerfile` | 3000 |
 

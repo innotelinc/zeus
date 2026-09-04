@@ -22,7 +22,7 @@
 #   8088      Asterisk HTTP (ARI)
 #   8089      PJSIP WebSocket (WSS) for WebRTC
 #   10000     Webmin admin panel
-#   10000:20000/udp  RTP media
+#   10101-10120/udp  RTP media (matches the capstone shared-PBX convention)
 # ═══════════════════════════════════════════════════════════════
 
 services:
@@ -52,7 +52,7 @@ services:
       - "8089:8089"       # PJSIP WebSocket (WSS)
       - "5038:5038"       # Asterisk AMI
       - "10000:10000"     # Webmin admin panel
-      - "10000:20000/udp" # RTP
+      - "10101-10120:10101-10120/udp" # RTP media
     environment:
       HOSTNAME: ${HOSTNAME:-pbx.zeus.innotel.us}
       # VoIP.ms SIP trunk auto-configuration
