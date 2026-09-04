@@ -51,3 +51,36 @@ jobs:
           python3 pbx/asterisk_converge.py --target "$tmp/extensions_custom.conf" \
             --source pbx/asterisk/extensions_custom.conf --owner zeus \
             --append from-internal-custom --check
+
+  # Regression guard: user-facing hosts (landing pages, env templates) must
+  # never be localhost or docker bridge IPs — the same bug class that shipped
+  # in capstone's .env and dashboard fallback data. Server-side code defaults
+  # (src/lib, src/app) are legitimately localhost for local dev and excluded.
+  config-guard:
+    name: No docker-IP / localhost leaks
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Landing pages have no docker-bridge IPs or localhost links
+        run: |
+          set -euo pipefail
+          bad=0
+          while IFS= read -r f; do
+            if grep -nE "10\.42\.|172\.(1[6-9]|2[0-9]|3[01])\.|http://localhost:[0-9]+" "$f"; then
+              echo "::error file=$f::docker-bridge IP or localhost link in landing page"
+              bad=1
+            fi
+          done < <(git ls-files 'web/**')
+          exit $bad
+
+      - name: Env template has no docker-bridge IPs outside comments
+        run: |
+          set -euo pipefail
+          bad=0
+          if hits=$(grep -nE '10\.42\.|172\.(1[6-9]|2[0-9]|3[01])\.' <(grep -vE '^\s*#' .env.example)); then
+            echo "$hits"
+            echo "::error file=.env.example::docker-bridge IP in env template value"
+            bad=1
+          fi
+          exit $bad
