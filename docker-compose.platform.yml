@@ -60,6 +60,7 @@ services:
   # forward auth.<your-domain>:9000 → host:9000; disable external access
   # on the firewall if you only reach it through the proxy.
   authentik-server:
+    profiles: ["authentik"]
     image: ghcr.io/goauthentik/server:${AUTHENTIK_VERSION:-2025.6.3}
     container_name: authentik-server
     restart: unless-stopped
@@ -107,6 +108,7 @@ services:
 
   # ── Authentik worker ───────────────────────────────────────
   authentik-worker:
+    profiles: ["authentik"]
     image: ghcr.io/goauthentik/server:${AUTHENTIK_VERSION:-2025.6.3}
     container_name: authentik-worker
     restart: unless-stopped
