@@ -115,9 +115,19 @@ RUN chmod +x /usr/local/bin/systemctl
 # Installed from the official .deb (not the apt repository) so the build
 # doesn't depend on the legacy "sarge" repo + GPG key. Matches setup.sh.
 # Version + SHA256 are pinned; bump both together when upgrading.
+# NOTE: download.webmin.com round-robins across backends, and one of them
+# (45.76.69.64) returns 404 for the .deb while another (104.207.151.13)
+# serves it — so plain wget/curl can fail ~half the time regardless of
+# --retry (a 404 is never retried). Try each resolved IPv4 backend until
+# the checksum validates instead.
 RUN apt update && \
-    wget -q --tries=5 --retry-connrefused --waitretry=5 --timeout=60 \
-      "https://download.webmin.com/download/repository/pool/contrib/w/webmin/webmin_2.653_all.deb" -O /tmp/webmin.deb && \
+    for IP in $(getent ahostsv4 download.webmin.com | cut -d' ' -f1 | sort -u); do \
+      curl -fsSL --connect-timeout 20 --max-time 600 \
+        --resolve "download.webmin.com:443:${IP}" \
+        "https://download.webmin.com/download/repository/pool/contrib/w/webmin/webmin_2.653_all.deb" \
+        -o /tmp/webmin.deb && break; \
+    done && \
+    test -s /tmp/webmin.deb && \
     echo "e7698812d5fe79268202c6051dbfb140c94a43df0d28509b894511b27e5f0b15  /tmp/webmin.deb" | sha256sum -c - && \
     apt -y install /tmp/webmin.deb && \
     rm -f /tmp/webmin.deb && \

@@ -154,9 +154,18 @@ info "Installing Webmin"
 WEBMIN_VER="2.653"
 WEBMIN_SHA256="e7698812d5fe79268202c6051dbfb140c94a43df0d28509b894511b27e5f0b15"
 if ! command -v webmin >/dev/null 2>&1; then
-  curl -fsSL --retry 5 --retry-all-errors --retry-delay 5 \
-    "https://download.webmin.com/download/repository/pool/contrib/w/webmin/webmin_${WEBMIN_VER}_all.deb" \
-    -o /tmp/webmin.deb
+  # download.webmin.com round-robins across backends, and one of them
+  # (45.76.69.64) returns 404 for the .deb while another (104.207.151.13)
+  # serves it — so a single request can fail ~half the time no matter the
+  # retry flags (a 404 is never retried). Try each resolved IPv4 backend
+  # until the checksum validates instead.
+  for IP in $(getent ahostsv4 download.webmin.com | cut -d' ' -f1 | sort -u); do
+    curl -fsSL --connect-timeout 20 --max-time 600 \
+      --resolve "download.webmin.com:443:${IP}" \
+      "https://download.webmin.com/download/repository/pool/contrib/w/webmin/webmin_${WEBMIN_VER}_all.deb" \
+      -o /tmp/webmin.deb && break
+  done
+  test -s /tmp/webmin.deb
   echo "${WEBMIN_SHA256}  /tmp/webmin.deb" | sha256sum -c -
   apt-get -y install --install-recommends /tmp/webmin.deb
   rm -f /tmp/webmin.deb
