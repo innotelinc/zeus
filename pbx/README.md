@@ -8,12 +8,12 @@ operational shape.
 
 | Path | Purpose |
 |---|---|
-| `asterisk/manager_custom.conf` | AMI user for the portal (`pbxportal`) with a deny-by-default permit list |
-| `asterisk/ari_custom.conf` | ARI user for portal call control (Stasis apps) |
-| `asterisk/http_custom.conf` | Asterisk HTTP server + WebSocket transport for the WebRTC softphone |
-| `asterisk/extensions_custom.conf` | Portal dialplan context (`[from-zeus-portal]`) |
+| `asterisk/manager_custom.conf` | AMI user for the portal (`pbxportal`) with a deny-by-default permit list (genuinely included) |
+| `asterisk/ari.conf` | `[pbxportal]` ARI user section — **converged into the real `/etc/asterisk/ari.conf`** (see below) |
+| `asterisk/http_custom.conf` | Asterisk HTTP server + WebSocket transport for the WebRTC softphone (genuinely included) |
+| `asterisk/extensions_custom.conf` | Portal dialplan context (`[from-zeus-portal]`) — converge-owned |
 | `bootstrap-zeus-pbx.sh` | Render + apply the fragments idempotently; `--check` drift mode |
-| `asterisk_converge.py` | Per-context merge for the **shared** `extensions_custom.conf` (ownership markers) |
+| `asterisk_converge.py` | Per-section merge for the **shared** `extensions_custom.conf` / `ari.conf` (ownership markers) |
 | `tests/test_asterisk_converge.py` | Unit tests for the converge tool (`python3 -m unittest discover -s pbx/tests`) |
 
 ## Shared voice plane (`asterisk_converge.py`)
@@ -40,6 +40,18 @@ zeus's bootstrap routes it through `pbx/asterisk_converge.py`:
   byte-identical legacy copy of the owner's own body is absorbed into the
   marked segment instead of being duplicated.
 
+### Shared `ari.conf`
+
+`ari.conf` is the second converge-owned file. On the pbx-portal fullstack
+image `ari.conf` is a **plain file with no `#include`** of any
+`ari_*_custom.conf` — verified live: `fwconsole reload` never regenerates it
+and Asterisk reads it as-is. Copying a rendered `ari_custom.conf` next to it
+does nothing (Capstone shipped with a dead ARI user this way until it was
+converged). Zeus's fragment therefore carries only its own `[pbxportal]`
+section and converges it **into** the real file, so FreePBX's `[general]` and
+any other product's ARI users (e.g. capstone's `[dograh]`) pass through
+untouched.
+
 On a shared PBX run the tool once per product (the zeus half is already
 wired into `bootstrap-zeus-pbx.sh`):
 
@@ -52,6 +64,12 @@ python3 pbx/asterisk_converge.py \
   --target /etc/asterisk/extensions_custom.conf \
   --source <capstone-repo>/pbx/asterisk/extensions_custom.conf \
   --owner capstone --append from-internal-custom
+
+# capstone ARI half (same pattern, ari.conf target)
+python3 pbx/asterisk_converge.py \
+  --target /etc/asterisk/ari.conf \
+  --source <capstone-repo>/pbx/asterisk/ari.conf \
+  --owner capstone
 ```
 
 ## How it fits the stack

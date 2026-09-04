@@ -91,22 +91,36 @@ pbx_asterisk_dir() {
   fi
 }
 
-EXT_NAME="extensions_custom.conf"
-EXT_FRAG="${STAGE_DIR}/${EXT_NAME}"
 CONVERGE_PY="${SCRIPT_DIR}/asterisk_converge.py"
+# Files converge OWNS: never copied wholesale, merged per-section instead.
+#   extensions_custom.conf — the shared dialplan (capstone's [dograh-inbound]
+#       must survive), zeus contexts replace, [from-internal-custom] append-shared.
+#   ari.conf — the real ARI config Asterisk reads; zeus's [<user>] section
+#       converges in while [general] and other products' ARI users pass through.
+#       (ari.conf on these FreePBX builds is a plain file with NO #include of
+#       a *_custom.conf, so ari_custom.conf would never be read.)
+CONVERGE_OWNED="extensions_custom.conf ari.conf"
+
+_is_converge_owned() {
+  local name="$1" owned
+  for owned in $CONVERGE_OWNED; do
+    [ "$name" = "$owned" ] && return 0
+  done
+  return 1
+}
 
 apply_target() {
   local dest
   dest="$(pbx_asterisk_dir)"
   if [ "$PBX_TARGET" = "container" ]; then
     for f in "$STAGE_DIR"/*.conf; do
-      [ "$(basename "$f")" = "$EXT_NAME" ] && continue  # converge tool owns it
+      _is_converge_owned "$(basename "$f")" && continue  # converge tool owns it
       docker compose -f "$REPO_ROOT/docker-compose.full.yml" cp \
         "$f" "freepbx:${dest}/$(basename "$f")"
     done
   else
     for f in "$STAGE_DIR"/*.conf; do
-      [ "$(basename "$f")" = "$EXT_NAME" ] && continue  # converge tool owns it
+      _is_converge_owned "$(basename "$f")" && continue  # converge tool owns it
       cp "$f" "${dest}/$(basename "$f")"
       chown asterisk:asterisk "${dest}/$(basename "$f")" 2>/dev/null || true
       chmod 640 "${dest}/$(basename "$f")" 2>/dev/null || true
@@ -127,20 +141,20 @@ reload_pbx() {
 
 render_fragments
 
-# extensions_custom.conf is the SHARED dialplan file: once another product
-# (capstone's [dograh-inbound] / agent dialing) lives in it, a wholesale
-# copy would clobber their contexts. It therefore goes through the
-# per-context converge tool instead: zeus contexts replace wholesale, and
+# extensions_custom.conf / ari.conf are SHARED files: once another product
+# (capstone's [dograh-inbound] dialplan, [dograh] ARI user) lives in them, a
+# wholesale copy would clobber their content. They go through the per-context
+# converge tool instead: contexts zeus owns replace wholesale and
 # [from-internal-custom] is append-shared — zeus's entries are added under
 # ownership markers and never touch other owners' lines. In a shared
 # deployment run the tool once per product (see pbx/README.md).
 
-# Drift check: rendered vs applied (extensions_custom.conf handled below).
+# Drift check: rendered vs applied (converge-owned files handled below).
 drift=0
 dest="$(pbx_asterisk_dir)"
 for f in "$STAGE_DIR"/*.conf; do
   name="$(basename "$f")"
-  [ "$name" = "$EXT_NAME" ] && continue
+  _is_converge_owned "$name" && continue
   if [ "$PBX_TARGET" = "container" ]; then
     current="$STAGE_DIR/current-${name}"
     docker compose -f "$REPO_ROOT/docker-compose.full.yml" exec -T freepbx \
@@ -154,26 +168,28 @@ for f in "$STAGE_DIR"/*.conf; do
   fi
 done
 
-# Pull the live extensions_custom.conf to a host path the converge tool can
-# read (for the container target) so drift is detected against real state.
-ext_work=""
+# Pull each converge-owned live file to a host path the converge tool can
+# read (container target), then drift-check against the rendered fragment.
+work=""
 if [ "$PBX_TARGET" = "container" ]; then
-  ext_work="$(mktemp -d)"
-  trap 'rm -rf "$ext_work"' EXIT
+  work="$(mktemp -d)"
+  trap 'rm -rf "$work"' EXIT
 fi
-ext_host="${ext_work:+${ext_work}/}${EXT_NAME}"
-if [ "$PBX_TARGET" = "container" ]; then
-  docker compose -f "$REPO_ROOT/docker-compose.full.yml" exec -T freepbx \
-    cat "${dest}/${EXT_NAME}" > "$ext_host" 2>/dev/null || : > "$ext_host"
-else
-  ext_host="${dest}/${EXT_NAME}"
-fi
-[ -f "$ext_host" ] || : > "$ext_host"
-if ! python3 "$CONVERGE_PY" --target "$ext_host" --source "$EXT_FRAG" \
-     --owner zeus --append from-internal-custom --check 2>/dev/null; then
-  echo "drift: ${EXT_NAME} (shared dialplan)" >&2
-  drift=1
-fi
+for name in $CONVERGE_OWNED; do
+  host="${work:+${work}/}${name}"
+  if [ "$PBX_TARGET" = "container" ]; then
+    docker compose -f "$REPO_ROOT/docker-compose.full.yml" exec -T freepbx \
+      cat "${dest}/${name}" > "$host" 2>/dev/null || : > "$host"
+  else
+    host="${dest}/${name}"
+  fi
+  [ -f "$host" ] || : > "$host"
+  if ! python3 "$CONVERGE_PY" --target "$host" --source "${STAGE_DIR}/${name}" \
+       --owner zeus --append from-internal-custom --check 2>/dev/null; then
+    echo "drift: ${name} (shared config)" >&2
+    drift=1
+  fi
+done
 
 if [ "$CHECK" = 1 ]; then
   if [ "$drift" = 1 ]; then
@@ -186,15 +202,19 @@ fi
 
 if [ "$drift" = 1 ] || [ "$RELOAD" = 1 ]; then
   apply_target
-  python3 "$CONVERGE_PY" --target "$ext_host" --source "$EXT_FRAG" \
-    --owner zeus --append from-internal-custom
-  if [ "$PBX_TARGET" = "container" ]; then
-    docker compose -f "$REPO_ROOT/docker-compose.full.yml" cp \
-      "$ext_host" "freepbx:${dest}/${EXT_NAME}"
-  else
-    chown asterisk:asterisk "$ext_host" 2>/dev/null || true
-    chmod 640 "$ext_host" 2>/dev/null || true
-  fi
+  for name in $CONVERGE_OWNED; do
+    host="${work:+${work}/}${name}"
+    [ "$PBX_TARGET" = "container" ] || host="${dest}/${name}"
+    python3 "$CONVERGE_PY" --target "$host" --source "${STAGE_DIR}/${name}" \
+      --owner zeus --append from-internal-custom
+    if [ "$PBX_TARGET" = "container" ]; then
+      docker compose -f "$REPO_ROOT/docker-compose.full.yml" cp \
+        "$host" "freepbx:${dest}/${name}"
+    else
+      chown asterisk:asterisk "$host" 2>/dev/null || true
+      chmod 640 "$host" 2>/dev/null || true
+    fi
+  done
   reload_pbx
   echo "zeus-pbx: applied (${PBX_TARGET})"
 else
