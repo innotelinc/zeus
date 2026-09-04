@@ -153,6 +153,13 @@ class AppendSharedTest(unittest.TestCase):
         self.assertIn("[from-internal-custom]", merged)
         self.assertIn("; >>> begin zeus", merged)
 
+    def test_empty_target_is_stable_across_applies(self):
+        once = ac.merge_into("", self.ZEUS_FRAG, owner="zeus",
+                             append_shared={"from-internal-custom"})
+        twice = ac.merge_into(once, self.ZEUS_FRAG, owner="zeus",
+                              append_shared={"from-internal-custom"})
+        self.assertEqual(once, twice)
+
 
 class CliTest(unittest.TestCase):
     def test_check_reports_drift_and_exit_code(self):

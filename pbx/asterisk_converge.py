@@ -219,8 +219,11 @@ def _append_shared(blocks, name: str, owner: str, src_body: list[str]) -> list:
     idxs = [i for i, blk in enumerate(blocks) if blk[0] == "ctx" and blk[1] == name]
     marked = _marked_segment(owner, src_body)
     if not idxs:
-        blocks.append(("ctx", name, [name_block_header(name)] + marked))
-        return blocks
+        # create a bare context and fall through: the same normalization
+        # below (separator blank + marked segment) keeps an empty-target
+        # first apply byte-identical to every later apply
+        blocks.append(("ctx", name, [name_block_header(name)]))
+        idxs = [len(blocks) - 1]
     idx = idxs[0]
     blk_type, _, body = blocks[idx]
     body = _strip_owned_segment(body, owner)
