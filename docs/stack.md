@@ -77,7 +77,7 @@ See [compose.infisical.yml](../compose.infisical.yml) and
 ## Golden rules
 
 - **Authentik = Identity** · **Infisical = Secrets** · **Cerulean = Trust** ·
-  **ONYX = Storage** · **Magnate = Revenue** — everything else is a business function.
+  **ONYX = Storage** · **Magnate = Revenue** · **NPM Edge = Edge** — everything else is a business function.
 - No platform duplicates another's responsibility.
 - No credit in commits, footers, or headers to anyone but the project owner.
 
