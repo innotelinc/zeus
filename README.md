@@ -6,8 +6,8 @@
 
 Zeus delivers business communications on your own infrastructure: phone numbers ordered
 and provisioned through VoIP.ms in seconds, a web + PWA softphone over WebRTC, SMS and
-unified messaging, AvantFax digital faxing, AI voicemail summaries, Stripe billing, and
-reseller white-label — fronted by a **Next.js 16 portal** with **Authentik** SSO and
+unified messaging, AvantFax digital faxing, AI voicemail summaries, Magnate
+(RevenueOps) subscription billing, and reseller white-label — fronted by a **Next.js 16 portal** with **Authentik** SSO and
 **Nginx Proxy Manager** HTTPS.
 
 [![Docker publish](https://github.com/innotelinc/zeus/actions/workflows/docker-publish.yml/badge.svg)](https://github.com/innotelinc/zeus/actions/workflows/docker-publish.yml)
@@ -85,7 +85,8 @@ Every service has a fixed hostname under your base domain (default `zeus.innotel
 - Full CRUD; auto-syncs conversation names; deep-links to messages
 
 ### 💰 Billing
-- Stripe checkout + invoice processing, invoice history, plan management
+- **Magnate (RevenueOps)** is the billing platform: checkout, plans, and invoices run through the shared Magnate storefront (`MAGNATE_PUBLIC_URL`)
+- The bundled `STRIPE_*` self-billing path is a **deprecated legacy mode** — only active when Stripe keys are set, empty by default
 
 ### 🏷️ Reseller & White-Label
 - **White-label branding** via `NEXT_PUBLIC_BRAND_NAME` (UI + emails)
@@ -265,7 +266,8 @@ Templates: `.env.example` (npm/dev), `.env.docker.example` (Docker). Key groups:
 | `ASTERISK_AMI_HOST` / `_PORT` / `_USERNAME` / `_SECRET` | Real-time AMI monitoring |
 | `NEXT_PUBLIC_FREEPBX_WSS_URL` | WebRTC softphone WSS endpoint |
 | `AVANTFAX_URL` / `NEXT_PUBLIC_AVANTFAX_URL` | Fax UI |
-| `STRIPE_*` | Billing |
+| `MAGNATE_PUBLIC_URL` | Magnate (RevenueOps) storefront base URL — routes dashboard billing & cancellations to Magnate (default when set) |
+| `STRIPE_*` | Legacy self-billing mode — deprecated; leave empty when Magnate owns billing |
 | `SMTP_*` | Voicemail/fax/invoice email |
 | `NEXT_PUBLIC_URL` | Portal origin (default `https://app.zeus.innotel.us`) |
 

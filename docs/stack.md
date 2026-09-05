@@ -28,7 +28,7 @@ provides, and explicitly does not own.
 ## Consumes
 
 - Authentik — identity, SSO
-- Infisical — secrets, VoIP.ms credentials, Stripe keys
+- Infisical — secrets, VoIP.ms credentials, Magnate storefront URL; legacy Stripe keys (deprecated)
 - Magnate — subscriptions and entitlements
 - Cerulean — certificates and trust
 - NPM Edge — public routing, TLS termination at the edge
