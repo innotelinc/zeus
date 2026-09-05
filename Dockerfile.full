@@ -189,6 +189,11 @@ RUN apt update && apt -y install --no-install-recommends --ignore-missing \
     ./install -n || true && \
     fwconsole ma installlocal || true && \
     fwconsole reload && \
+    # FreePBX installs /var/lib/asterisk/bin/fwconsole WITHOUT the exec bit
+    # (mode 644) and symlinks /usr/sbin/fwconsole to it, so `fwconsole`
+    # dies with "not executable" until someone chmods the target. Bake the
+    # fix in so the CLI works in every layer and every boot.
+    chmod +x /var/lib/asterisk/bin/fwconsole /usr/sbin/fwconsole && \
     cd /usr/src && rm -rf freepbx
 
 # ─── FreePBX API + UCP modules ───────────────────────────────
