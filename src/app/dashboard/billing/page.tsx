@@ -8,5 +8,11 @@ export default async function BillingPage() {
   const user = await requireDashboardUser();
   const dash = getUserDashboard(user.id);
 
-  return <BillingSection user={user} invoices={dash.invoices} />;
+  return (
+    <BillingSection
+      user={user}
+      invoices={dash.invoices}
+      magnateUrl={process.env.MAGNATE_PUBLIC_URL ?? ""}
+    />
+  );
 }

@@ -10,14 +10,22 @@ import type { User, BillingInvoice } from "@/lib/types";
 interface Props {
   user: User;
   invoices: BillingInvoice[];
+  magnateUrl: string;
 }
 
-export default function BillingSection({ user, invoices }: Props) {
+export default function BillingSection({ user, invoices, magnateUrl }: Props) {
   const router = useRouter();
   const { toast } = useToast();
   const [loading, setLoading] = useState(false);
 
   async function handlePlanAction() {
+    if (magnateUrl) {
+      // Magnate (RevenueOps) owns billing — send the user to the storefront.
+      // The legacy /api/billing/checkout path is only a standalone fallback
+      // (deprecated; requires STRIPE_SECRET_KEY).
+      window.location.href = magnateUrl;
+      return;
+    }
     setLoading(true);
     try {
       const res = await api<{ url: string }>("/api/billing/checkout", {
@@ -33,6 +41,11 @@ export default function BillingSection({ user, invoices }: Props) {
 
   async function handleCancelPlan() {
     if (!confirm("Are you sure you want to cancel your plan? Service continues until end of billing period.")) return;
+    if (magnateUrl) {
+      // Cancellation runs through Magnate's Stripe customer portal (/manage).
+      window.location.href = `${magnateUrl}/manage`;
+      return;
+    }
     setLoading(true);
     try {
       await api("/api/billing/cancel", { method: "POST" });
@@ -84,7 +97,16 @@ export default function BillingSection({ user, invoices }: Props) {
           <div className="flex flex-col items-center rounded-2xl bg-white/[0.02] p-8 text-center">
             <CreditCardIcon size={32} className="text-white/10 mb-3" />
             <p className="text-sm text-white/45">No invoices yet.</p>
-            <p className="mt-1 text-xs text-white/30">Invoices will appear here after your billing cycle starts.</p>
+            <p className="mt-1 text-xs text-white/30">
+              {magnateUrl ? (
+                <>
+                  Billing and invoices are managed by Magnate.{" "}
+                  <a href={`${magnateUrl}/manage`} className="underline text-white/50 hover:text-white/80">Manage subscription</a>.
+                </>
+              ) : (
+                "Invoices will appear here after your billing cycle starts."
+              )}
+            </p>
           </div>
         ) : (
           <div className="space-y-2">
