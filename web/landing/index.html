@@ -3,12 +3,15 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Geist:wght@450;500;600;700&display=swap" rel="stylesheet">
   <title>Zeus — VOIP Platform</title>
   <meta name="description" content="Zeus is a cloud-native VoIP platform: number provisioning, WebRTC softphone, SIP routing, SMS, digital fax, AI voicemail summaries and Magnate-powered subscription billing.">
   <meta property="og:title" content="Zeus — VOIP Platform">
   <meta property="og:description" content="Cloud-native telecommunications — VoIP, SIP, SMS, fax and a WebRTC softphone, self-hosted.">
   <meta property="og:type" content="website">
-  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='14' fill='%230b0d10'/%3E%3Ctext x='32' y='44' font-size='34' text-anchor='middle'%3E⚡%3C/text%3E%3C/svg%3E">
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='14' fill='%23fbbf24'/%3E%3Cpath fill='%230b0d10' d='M37.6 8 13.5 37.4h13.1l-1.8 18.6L50.5 25.8H36.9z'/%3E%3C/svg%3E">
   <style>
     /* ---- Product theme (Zeus landing, modeled on the ONYX outline) ---- */
     :root {
@@ -42,7 +45,7 @@
       margin: 0;
       background: var(--p-bg);
       color: var(--p-text);
-      font-family: ui-sans-serif, system-ui, "Segoe UI", Roboto, "Helvetica Neue", sans-serif;
+      font-family: "Geist", ui-sans-serif, system-ui, "Segoe UI", Roboto, "Helvetica Neue", sans-serif;
       font-size: 16px;
       line-height: 1.6;
       -webkit-font-smoothing: antialiased;
@@ -80,10 +83,12 @@
     .brand .mark {
       display: grid; place-items: center;
       width: 26px; height: 26px; border-radius: 8px;
-      background: var(--p-bg-elevated);
+      background: var(--p-accent);
       border: 1px solid var(--p-border);
+      color: var(--p-bg);
       font-size: 15px;
     }
+    .brand .mark svg { display: block; }
     .brand .dot { color: var(--p-accent); }
     .topbar nav { margin-left: auto; display: flex; align-items: center; gap: 4px; }
     .topbar nav a {
@@ -104,6 +109,29 @@
       transition: border-color .15s var(--ease), background .15s var(--ease);
     }
     .topbar .gh:hover { border-color: var(--p-accent); background: var(--p-accent-tint); color: var(--p-text); }
+
+    /* ---- Hero logo lockup (brand tile + wordmark, hero-scale) ---- */
+    .hero-logo {
+      display: inline-flex; align-items: center; gap: 22px;
+      margin: 0 0 30px;
+    }
+    .hero-logo .tile {
+      display: grid; place-items: center;
+      width: 92px; height: 92px; flex: none;
+      border-radius: 24px;
+      background: var(--p-accent);
+      box-shadow: 0 18px 60px -18px rgba(251, 191, 36, 0.55);
+    }
+    .hero-logo .tile svg { display: block; }
+    .hero-logo .word {
+      font-size: clamp(3rem, 7vw, 4.4rem);
+      font-weight: 700;
+      letter-spacing: -0.02em;
+      line-height: 1;
+      color: var(--p-text);
+      font-family: "Geist", ui-sans-serif, system-ui, sans-serif;
+    }
+    .hero-logo .word .dot { color: var(--p-accent); }
 
     /* ---- Hero ------------------------------------------------------------ */
     .hero { position: relative; overflow: hidden; padding: 96px 0 72px; }
@@ -330,7 +358,7 @@
   <header class="topbar">
     <div class="wrap topbar-inner">
       <a class="brand" href="#">
-        <span class="mark" aria-hidden="true">⚡</span>
+        <span class="mark" aria-hidden="true"><svg width="15" height="15" viewBox="0 0 64 64" fill="currentColor"><path d="M37.6 8 13.5 37.4h13.1l-1.8 18.6L50.5 25.8H36.9z"/></svg></span>
         Zeus<span class="dot">.</span>
       </a>
       <nav aria-label="Main">
@@ -351,6 +379,10 @@
     <!-- Hero -->
     <div class="hero">
       <div class="wrap hero-inner">
+        <div class="hero-logo">
+          <span class="tile" aria-hidden="true"><svg width="54" height="54" viewBox="0 0 64 64" fill="currentColor"><path d="M37.6 8 13.5 37.4h13.1l-1.8 18.6L50.5 25.8H36.9z"/></svg></span>
+          <span class="word">Zeus<span class="dot">.</span></span>
+        </div>
         <p class="kicker"><span class="pulse" aria-hidden="true"></span> v1.0.0 · VoiceOps live</p>
         <h1>Business communications<br>on <span class="accent">your infrastructure</span>.</h1>
         <p class="lede">Zeus delivers business communications on your own infrastructure: phone numbers ordered and provisioned through VoIP.ms in seconds, a web + PWA softphone over WebRTC, SMS and unified messaging, AvantFax digital faxing, AI voicemail summaries, Magnate subscription billing and reseller white-label — fronted by a Next.js portal with Authentik SSO and Nginx Proxy Manager HTTPS.</p>
