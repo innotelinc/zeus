@@ -1,3 +1,6 @@
+// @deprecated — legacy self-billing mode. Magnate (subscribe.innotel.us)
+// is the single billing platform for the entire Innotel ecosystem.
+// Leave STRIPE_SECRET_KEY empty when Magnate owns billing (the default).
 import { NextResponse } from "next/server";
 import { getCurrentUser } from "@/lib/auth";
 import { getOrCreateStripePriceId } from "@/lib/plans";

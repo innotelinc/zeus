@@ -1,3 +1,5 @@
+// @deprecated — legacy self-billing mode. Magnate (subscribe.innotel.us)
+// is the single billing platform for the entire Innotel ecosystem.
 import { NextResponse } from "next/server";
 import { getCurrentUser } from "@/lib/auth";
 import db from "@/lib/db";
