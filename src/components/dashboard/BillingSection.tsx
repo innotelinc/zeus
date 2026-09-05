@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import { api, fmtDate, planLabel, planPrice } from "@/lib/client-api";
 import { CreditCardIcon, CheckCircleIcon, ArrowRightIcon } from "@/components/icons";
@@ -13,10 +13,31 @@ interface Props {
   magnateUrl: string;
 }
 
+interface AddonStatus {
+  configured: boolean;
+  entitled: boolean | null;
+  reason?: string;
+  source?: string;
+}
+
 export default function BillingSection({ user, invoices, magnateUrl }: Props) {
   const router = useRouter();
   const { toast } = useToast();
   const [loading, setLoading] = useState(false);
+  const [agentsStatus, setAgentsStatus] = useState<AddonStatus | null>(null);
+
+  // Live AI-agents add-on status straight from Magnate's entitlements API
+  // (the add-on unlocks Capstone agent routing, which Capstone gates itself).
+  const refreshAddons = useCallback(async () => {
+    try {
+      const res = await api<AddonStatus>("/api/billing/entitlement?plan=agents");
+      setAgentsStatus(res);
+    } catch {
+      setAgentsStatus({ configured: false, entitled: null, reason: "unreachable" });
+    }
+  }, []);
+
+  useEffect(() => { void refreshAddons(); }, [refreshAddons]);
 
   async function handlePlanAction() {
     if (magnateUrl) {
@@ -100,13 +121,25 @@ export default function BillingSection({ user, invoices, magnateUrl }: Props) {
               routing, and Workflow Studio access. Billed monthly through
               Magnate alongside your Zeus plan.
             </p>
+            {agentsStatus && agentsStatus.configured && agentsStatus.entitled === true && (
+              <p className="mt-2 flex items-center gap-1.5 text-xs text-mint-400">
+                <CheckCircleIcon size={14} />
+                Active — agent routing is unlocked. Status checked live with Magnate.
+              </p>
+            )}
+            {agentsStatus && agentsStatus.configured && agentsStatus.entitled === false && (
+              <p className="mt-2 text-xs text-white/35">
+                Not subscribed to this add-on yet.
+              </p>
+            )}
           </div>
           {magnateUrl ? (
             <a
               href={`${magnateUrl}/signup?plan=agents`}
               className="btn-primary inline-flex items-center gap-1.5 px-4 py-2 text-xs"
             >
-              Add AI Agents <ArrowRightIcon size={14} />
+              {agentsStatus?.entitled === true ? "Manage AI Agents" : "Add AI Agents"}{" "}
+              <ArrowRightIcon size={14} />
             </a>
           ) : (
             <span className="text-xs text-white/35">Billing portal not configured</span>
