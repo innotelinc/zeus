@@ -31,6 +31,7 @@ provides, and explicitly does not own.
 - Infisical — secrets, VoIP.ms credentials, Stripe keys
 - Magnate — subscriptions and entitlements
 - Cerulean — certificates and trust
+- NPM Edge — public routing, TLS termination at the edge
 
 ## Explicitly does NOT own
 
