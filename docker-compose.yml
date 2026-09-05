@@ -54,22 +54,37 @@ services:
     networks:
       - pbx-net
 
-  # ─── Optional: Coturn TURN server for WebRTC softphone ─────
-  # Uncomment if you need a TURN server for NAT traversal.
-  # Set NEXT_PUBLIC_TURN_SERVER=turn:pbx-coturn:3478 in .env
-  # coturn:
-  #   image: coturn/coturn:latest
-  #   container_name: pbx-coturn
-  #   restart: unless-stopped
-  #   ports:
-  #     - "3478:3478"
-  #     - "3478:3478/udp"
-  #     - "5349:5349"
-  #     - "5349:5349/udp"
-  #   volumes:
-  #     - ./turnserver.conf:/etc/coturn/turnserver.conf:ro
-  #   networks:
-  #     - pbx-net
+  # ── Coturn TURN server for WebRTC softphone (enabled by default) ──
+  # Realm/credentials come from .env (TURN_USERNAME/TURN_CREDENTIAL/
+  # TURN_REALM/TURN_EXTERNAL_IP); the softphone advertises the public
+  # address coturn.zeus.innotel.us (DNS CNAME + edge proxy).
+  coturn:
+    image: coturn/coturn:latest
+    container_name: pbx-coturn
+    restart: unless-stopped
+    command:
+      - turnserver
+      - --no-cli
+      - --no-tls
+      - --no-dtls
+      - --fingerprint
+      - --lt-cred-mech
+      - --user=${TURN_USERNAME:-turnuser}:${TURN_CREDENTIAL:?set TURN_CREDENTIAL in .env}
+      - --realm=${TURN_REALM:-zeus.innotel.us}
+      - --listening-port=3478
+      - --min-port=${TURN_RELAY_PORT_START:-49152}
+      - --max-port=${TURN_RELAY_PORT_END:-49251}
+      - --listening-ip=0.0.0.0
+      - --external-ip=${TURN_EXTERNAL_IP:-127.0.0.1}
+      - --log-file=stdout
+      - --simple-log
+    ports:
+      - "3478:3478"
+      - "3478:3478/udp"
+      - "5349:5349"
+      - "5349:5349/udp"
+    networks:
+      - pbx-net
 
 volumes:
   pbx-data:

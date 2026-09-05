@@ -229,7 +229,7 @@ fi
 if [ -f /var/www/html/fax/includes/local_config.php ]; then
   sed -i "s/define('AFDB_PASS',.*/define('AFDB_PASS',     '${AVANTFAX_DB_PASS}');/" /var/www/html/fax/includes/local_config.php
   sed -i "s/define('ADMIN_EMAIL',.*/define('ADMIN_EMAIL', '${FAX_EMAIL:-fax@zeus.innotel.us}');/" /var/www/html/fax/includes/local_config.php
-  sed -i "s|AVANTFAX_HOSTNAME|${HOSTNAME:-fax.innotel.us}|g" /var/www/html/fax/includes/local_config.php
+  sed -i "s|AVANTFAX_HOSTNAME|${HOSTNAME:-fax.zeus.innotel.us}|g" /var/www/html/fax/includes/local_config.php
 fi
 
 # Import AvantFax user SQL if available

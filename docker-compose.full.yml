@@ -163,7 +163,7 @@ services:
 
       # ── AvantFax (runs inside freepbx container at /fax) ──
       AVANTFAX_URL: http://freepbx/fax
-      NEXT_PUBLIC_AVANTFAX_URL: http://${HOSTNAME:-pbx.zeus.innotel.us}/fax
+      NEXT_PUBLIC_AVANTFAX_URL: http://${HOSTNAME:-fax.zeus.innotel.us}/fax
 
       # ── Atlas integration ──
       ATLAS_API_URL: ${ATLAS_API_URL:-http://atlas-server:3000}
@@ -206,21 +206,37 @@ services:
     networks:
       - pbx-net
 
-  # ─── Optional: Coturn TURN server for WebRTC NAT traversal ──
-  # Uncomment and set TURN_SERVER=turn:pbx-coturn:3478 in .env
-  # coturn:
-  #   image: coturn/coturn:latest
-  #   container_name: pbx-coturn
-  #   restart: unless-stopped
-  #   ports:
-  #     - "3478:3478"
-  #     - "3478:3478/udp"
-  #     - "5349:5349"
-  #     - "5349:5349/udp"
-  #   volumes:
-  #     - ./turnserver.conf:/etc/coturn/turnserver.conf:ro
-  #   networks:
-  #     - pbx-net
+  # ── Coturn TURN server for WebRTC NAT traversal (enabled by default) ──
+  # Realm/credentials come from .env (TURN_USERNAME/TURN_CREDENTIAL/
+  # TURN_REALM/TURN_EXTERNAL_IP); the softphone advertises the public
+  # address coturn.zeus.innotel.us (DNS CNAME + edge proxy).
+  coturn:
+    image: coturn/coturn:latest
+    container_name: pbx-coturn
+    restart: unless-stopped
+    command:
+      - turnserver
+      - --no-cli
+      - --no-tls
+      - --no-dtls
+      - --fingerprint
+      - --lt-cred-mech
+      - --user=${TURN_USERNAME:-turnuser}:${TURN_CREDENTIAL:?set TURN_CREDENTIAL in .env}
+      - --realm=${TURN_REALM:-zeus.innotel.us}
+      - --listening-port=3478
+      - --min-port=${TURN_RELAY_PORT_START:-49152}
+      - --max-port=${TURN_RELAY_PORT_END:-49251}
+      - --listening-ip=0.0.0.0
+      - --external-ip=${TURN_EXTERNAL_IP:-127.0.0.1}
+      - --log-file=stdout
+      - --simple-log
+    ports:
+      - "3478:3478"
+      - "3478:3478/udp"
+      - "5349:5349"
+      - "5349:5349/udp"
+    networks:
+      - pbx-net
 
 volumes:
   asterisk-config:
