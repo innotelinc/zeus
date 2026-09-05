@@ -90,6 +90,30 @@ export default function BillingSection({ user, invoices, magnateUrl }: Props) {
         <p className="mt-2 text-xs text-white/35">Since {fmtDate(user.created_at)}</p>
       </div>
 
+      {/* AI Agents add-on (billed through Magnate) */}
+      <div className="rounded-2xl border border-white/[0.06] bg-white/[0.02] p-6">
+        <div className="flex flex-wrap items-center justify-between gap-4">
+          <div>
+            <h2 className="text-lg font-semibold text-white">AI Agents add-on</h2>
+            <p className="mt-1 max-w-xl text-sm text-white/45">
+              Enable AI voice agents on Capstone: an agent seat, inbound DID
+              routing, and Workflow Studio access. Billed monthly through
+              Magnate alongside your Zeus plan.
+            </p>
+          </div>
+          {magnateUrl ? (
+            <a
+              href={`${magnateUrl}/signup?plan=agents`}
+              className="btn-primary inline-flex items-center gap-1.5 px-4 py-2 text-xs"
+            >
+              Add AI Agents <ArrowRightIcon size={14} />
+            </a>
+          ) : (
+            <span className="text-xs text-white/35">Billing portal not configured</span>
+          )}
+        </div>
+      </div>
+
       {/* Invoices */}
       <div className="rounded-2xl border border-white/[0.06] bg-white/[0.02] p-6">
         <h2 className="text-lg font-semibold text-white mb-4">Invoices</h2>
