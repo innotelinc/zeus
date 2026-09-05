@@ -169,12 +169,15 @@ services:
       ATLAS_API_URL: ${ATLAS_API_URL:-http://atlas-server:3000}
       ATLAS_API_KEY: ${ATLAS_API_KEY:-}
 
-      # ── Stripe billing ──
+      # ── Stripe billing (LEGACY — Magnate owns billing) ──
+      # Leave STRIPE_* empty when Magnate is the billing platform.
       STRIPE_SECRET_KEY: ${STRIPE_SECRET_KEY:-}
       STRIPE_WEBHOOK_SECRET: ${STRIPE_WEBHOOK_SECRET:-}
       STRIPE_CONSUMER_PRICE_ID: ${STRIPE_CONSUMER_PRICE_ID:-}
       STRIPE_BUSINESS_PRICE_ID: ${STRIPE_BUSINESS_PRICE_ID:-}
       NEXT_PUBLIC_STRIPE_PUBLISHABLE_KEY: ${NEXT_PUBLIC_STRIPE_PUBLISHABLE_KEY:-}
+      # Magnate (RevenueOps) — source billing platform for all projects.
+      MAGNATE_PUBLIC_URL: ${MAGNATE_PUBLIC_URL:-}
 
       # ── Email (SMTP for voicemail/invoice/fax notifications) ──
       ADMIN_EMAIL: ${ADMIN_EMAIL:-admin@zeus.innotel.us}
