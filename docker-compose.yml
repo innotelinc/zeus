@@ -24,7 +24,7 @@ services:
     security_opt:
       - apparmor=unconfined
     ports:
-      - "3000:3000"
+      - "3001:3000"                     # Zeus portal (3001 avoids conflict with capstone portal)
     volumes:
       - pbx-data:/app/data
     env_file:
@@ -86,9 +86,27 @@ services:
     networks:
       - pbx-net
 
+  # ── OmniRoute: single AI model gateway for the entire stack ──────────
+  # All subsystems (Capstone, Rizzaura, Atlas, AthenIQ) point here.
+  omniroute:
+    image: ${OMNIROUTE_IMAGE:-diegosouzapw/omniroute:latest}
+    container_name: zeus-omniroute
+    restart: unless-stopped
+    environment:
+      OMNIROUTE_JWT_SECRET: "${OMNIROUTE_JWT_SECRET:-change-me-jwt-secret}"
+      OMNIROUTE_API_KEY_SECRET: "${OMNIROUTE_API_KEY_SECRET:-change-me-api-key-secret}"
+      OMNIROUTE_INITIAL_PASSWORD: "${OMNIROUTE_INITIAL_PASSWORD:-change-me-admin-password}"
+    ports:
+      - "${OMNIROUTE_PORT:-20128}:${OMNIROUTE_PORT:-20128}"
+    volumes:
+      - omniroute-data:/data
+    networks:
+      - pbx-net
+
 volumes:
   pbx-data:
     name: zeus-portal-data
+  omniroute-data:
 
 networks:
   pbx-net:

@@ -7,7 +7,7 @@
 Zeus delivers business communications on your own infrastructure: phone numbers ordered
 and provisioned through VoIP.ms in seconds, a web + PWA softphone over WebRTC, SMS and
 unified messaging, AvantFax digital faxing, AI voicemail summaries, Magnate
-(RevenueOps) subscription billing, and reseller white-label — fronted by a **Next.js 16 portal** with **Authentik** SSO and
+(RevenueOps) subscription billing, and reseller white-label — fronted by a **Next.js 16 portal** with **Cerulean Authentik** SSO and
 **Nginx Proxy Manager** HTTPS.
 
 [![Docker publish](https://github.com/innotelinc/zeus/actions/workflows/docker-publish.yml/badge.svg)](https://github.com/innotelinc/zeus/actions/workflows/docker-publish.yml)
@@ -19,7 +19,7 @@ unified messaging, AvantFax digital faxing, AI voicemail summaries, Magnate
 > **About Zeus** — the cloud-native VOIP platform for VoIP services, SIP routing,
 > customer self-service portals, instant phone-number provisioning, messaging, fax,
 > billing, and business communications — built on FreePBX/Asterisk, VoIP.ms, and
-> AvantFax, with a Next.js 16 customer portal, Authentik SSO, and Nginx Proxy Manager.
+> AvantFax, with a Next.js 16 customer portal, Cerulean Authentik SSO, and Nginx Proxy Manager.
 > **Landing page:** [innotelinc.github.io/zeus](https://innotelinc.github.io/zeus)
 
 ---
@@ -34,7 +34,7 @@ Every service has a fixed hostname under your base domain (default `zeus.innotel
 | `app.zeus.innotel.us` | Zeus Customer Portal / PWA | `:3000` |
 | `api.zeus.innotel.us` | Zeus Portal API | `:3000` |
 | `portal.zeus.innotel.us` | Zeus Customer Portal (alias) | `:3000` |
-| `auth.zeus.innotel.us` | Authentik (SSO / user management) | `:9000` |
+| `auth.cerulean.innotel.us` | Cerulean Authentik (SSO / user management) | (shared) |
 | `pbx.zeus.innotel.us` | FreePBX | `:80` |
 | `admin.zeus.innotel.us` | Nginx Proxy Manager admin UI | `:81` |
 | `ws.zeus.innotel.us` | WebRTC WSS signaling (softphone) | `:8089` (WSS) |
@@ -45,8 +45,8 @@ Every service has a fixed hostname under your base domain (default `zeus.innotel
 
 ## Features
 
-### 🔐 Authentik SSO & User Management
-- **Authentik is the identity provider**: all sign-in, signup, and password management happens in Authentik (`auth.zeus.innotel.us`). The portal uses the OIDC authorization-code flow with PKCE.
+### 🔐 Cerulean Authentik SSO & User Management
+- **Cerulean Authentik is the identity provider**: all sign-in, signup, and password management happens in Cerulean Authentik (`auth.zeus.innotel.us`). The portal uses the OIDC authorization-code flow with PKCE.
 - New users are **auto-provisioned** in the portal DB on first sign-in and linked by Authentik's stable subject ID.
 - Admins are flagged from `AUTHENTIK_ADMIN_EMAILS`; portal passwords are never stored.
 - Single sign-out: signing out of the portal also ends the Authentik session.
@@ -100,7 +100,7 @@ Every service has a fixed hostname under your base domain (default `zeus.innotel
 |---|---|
 | Run **just the portal** (existing FreePBX/Asterisk) | [Docker (portal only)](#option-1-docker---portal-only) or [npm](#option-3-npm-dev) |
 | Run the **entire stack** (Asterisk + FreePBX + Portal) | [Docker (full stack)](#option-2-docker---full-stack) or [setup.sh + setup-portal.sh](#option-4-bare-metal---setupsh) |
-| Add **Authentik SSO** to either | [docker-compose.platform.yml](#authentik-sso) |
+| Add **Cerulean Authentik SSO** to either | [docker-compose.platform.yml](#authentik-sso) |
 | Wire up **HTTPS subdomains** | [scripts/npm-proxy-hosts.py](#npm-proxy-hosts-automation) |
 | **Develop / contribute** | [npm dev](#option-3-npm-dev) |
 
@@ -168,7 +168,7 @@ To build the full-stack image locally instead (45-90 min, one-time): `docker com
 | AvantFax | inside full-stack image (`/fax`) | via :80 |
 | Zeus Portal | built from `Dockerfile` | 3000 |
 
-### Authentik SSO (any deployment)
+### Cerulean Authentik SSO (any deployment)
 
 ```bash
 # 1. Authentik (server + worker + postgres + redis)
