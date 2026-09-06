@@ -1,8 +1,11 @@
 /**
  * SMS message handling module.
  *
- * Uses VoIP.ms API for sending/receiving SMS messages.
- * Maintains local conversation/message store for the full messaging UI.
+ * Outbound SMS is sent over the FreePBX/Asterisk PJSIP trunk (AMI
+ * `MessageSend`, mirroring the sms-out dialplan); inbound SMS arrives via the
+ * VoIP.ms SMS URL callback webhook (the sms-in side of the trunk forwards to
+ * internal extensions). Maintains the local conversation/message store for
+ * the full messaging UI.
  */
 
 import { randomUUID } from "node:crypto";
@@ -150,12 +153,21 @@ export async function receiveMessage(params: {
     .get(msgId) as SmsMessage;
 }
 
+/** Normalize a phone number to digits so inbound (+1…) and outbound threads merge. */
+function normalizePhone(phone: string): string {
+  const digits = phone.replace(/\D/g, "");
+  return digits.length >= 5 ? digits : phone;
+}
+
 /** Get or create a conversation for a contact. */
 async function getOrCreateConversation(
   userId: string,
   contactPhone: string,
   phoneNumberId: string | null,
 ): Promise<SmsConversation> {
+  // Key conversations on the digits-only number: outbound stores “14134210134”,
+  // the inbound webhook reports “+14134210134” — they must share one thread.
+  const normalized = normalizePhone(contactPhone);
   const conv = db
     .prepare(
       `SELECT c.* FROM sms_conversations c
@@ -163,7 +175,7 @@ async function getOrCreateConversation(
        ORDER BY c.updated_at DESC
        LIMIT 1`,
     )
-    .get(userId, contactPhone) as SmsConversation | undefined;
+    .get(userId, normalized) as SmsConversation | undefined;
 
   if (conv) return conv;
 
@@ -172,13 +184,13 @@ async function getOrCreateConversation(
     .prepare(
       "SELECT name FROM contacts WHERE user_id = ? AND phone = ?",
     )
-    .get(userId, contactPhone) as { name: string } | undefined;
+    .get(userId, normalized) as { name: string } | undefined;
 
   const convId = randomUUID();
   db.prepare(
     `INSERT INTO sms_conversations (id, user_id, phone_number_id, contact_phone, contact_name)
      VALUES (?, ?, ?, ?, ?)`,
-  ).run(convId, userId, phoneNumberId, contactPhone, contact?.name ?? null);
+  ).run(convId, userId, phoneNumberId, normalized, contact?.name ?? null);
 
   return db
     .prepare("SELECT * FROM sms_conversations WHERE id = ?")
