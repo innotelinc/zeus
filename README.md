@@ -59,7 +59,9 @@ Every service has a fixed hostname under your base domain (default `zeus.innotel
 ### 💬 SMS & Unified Communications
 - Full web messaging UI: conversation list, chat bubbles, real-time compose
 - Contact name auto-population from the contacts directory
-- VoIP.ms SMS send/receive + inbound webhook (`/api/webhooks/voipms`)
+- SMS send over the FreePBX PJSIP trunk (AMI `MessageSend`, same path as the
+  `sms-out` dialplan — no VoIP.ms REST per-message fee) + inbound webhook
+  (`/api/webhooks/voipms`)
 - Voicemail-to-email, fax-to-email notifications
 
 ### 📠 Fax
