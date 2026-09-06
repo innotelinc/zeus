@@ -95,3 +95,47 @@ Notes:
   VoIP.ms whether both can be active together before enabling the callback.
 - The production portal must be running a current image — the old deployed
   image 404s every `/api/*` route (re-publish + pull on the voice host).
+
+---
+
+## Local / Docker full-stack trunk (zeus-freepbx)
+
+The `latest-fullstack` image ships FreePBX + Asterisk but **no VoIP.ms trunk**
+(nothing in the image consumes `VOIPMS_SIP_USER`/`VOIPMS_SIP_PASS` — compose
+passes them, the entrypoint does not). On bare metal `scripts/setup.sh` writes
+the trunk; for the Docker full stack apply the same config inside the
+container once (it persists in the `asterisk-config` volume):
+
+1. `docker compose -f docker-compose.full.yml up -d freepbx` (image is
+   `ghcr.io/innotelinc/zeus:latest-fullstack`).
+2. Write `/etc/asterisk/pjsip_voipms_custom.conf` (auth / registration / aor /
+   endpoint / identify) with the sub-account creds from `pbx.env`, then
+   `#include pjsip_voipms_custom.conf` in `pjsip_custom_post.conf` and the
+   PJSIP `[general]` `accept_outofcall_message=yes` block in
+   `pjsip_custom.conf`. `pjsip_custom*.conf` are operator-owned — a
+   `fwconsole reload` does **not** regenerate them (verified).
+3. Reload with `asterisk -rx "module reload res_pjsip.so"` (Asterisk 22 has no
+   `pjsip reload` CLI).
+
+Rules that matter (all bugs found live):
+
+- **Endpoint id must equal the trunk id.** Outbound SMS is
+  `pjsip:<trunk>/sip:<n>@<server>` (AMI `MessageSend` and the `sms-out`
+  dialplan); res_pjsip resolves the id before the `/sip:` suffix and errors
+  `Could not find endpoint '<trunk>/sip:…'` when the endpoint is named
+  `<trunk>-endpoint`. AOR id is `<trunk>-aor`; endpoint `aors` points there.
+- **AMI user needs the `message` class**: without it the portal's
+  `MessageSend` action returns `Permission denied`. All four AMI user sources
+  (`pbx/asterisk/manager_custom.conf`, `scripts/setup.sh`,
+  `Dockerfile.full`, `docker-entrypoint-full.sh`) now grant
+  `…,originate,message`.
+- **Invalid-on-Asterisk-22 endpoint options** that make the whole endpoint
+  section fail to load (silently — registration still succeeds because auth /
+  registration are separate objects): `send_id_inbound`, `insecure`,
+  `qualify_frequency`. Removed from `setup.sh`.
+- Portal env for the local stack: `ASTERISK_AMI_HOST=zeus-freepbx`,
+  `ASTERISK_AMI_USERNAME=pbxportal` (the image's baked AMI user),
+  `ASTERISK_AMI_SECRET` = the same value as `FREEPBX_AMI_SECRET`.
+- The FreePBX **GUI pjsip trunk editor is not installed in the image**
+  (only `sipsettings`), so `fwconsole trunks --add` is a silent no-op —
+  file-based trunk config is the supported path.

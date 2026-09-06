@@ -891,8 +891,8 @@ cat > /etc/asterisk/manager_custom.conf <<EOF
 secret = ${FREEPBX_AMI_SECRET}
 deny = 0.0.0.0/0.0.0.0
 permit = 127.0.0.1/255.255.255.0
-read = system,call,log,verbose,command,agent,user,config,dtmf,reporting,cdr,dialplan,originate
-write = system,call,log,verbose,command,agent,user,config,dtmf,reporting,cdr,dialplan,originate
+read = system,call,log,verbose,command,agent,user,config,dtmf,reporting,cdr,dialplan,originate,message
+write = system,call,log,verbose,command,agent,user,config,dtmf,reporting,cdr,dialplan,originate,message
 eventfilter=!Event: RTCP*
 eventfilter=!Event: VarSet
 eventfilter=!Event: Newexten
@@ -1112,17 +1112,20 @@ client_uri = sip:${VOIPMS_SIP_USER}@${VOIPMS_SIP_SERVER}
 retry_interval = 60
 
 ; ── AOR ───────────────────────────────────────────────────────
-[${VOIPMS_TRUNK_NAME}]
+[${VOIPMS_TRUNK_NAME}-aor]
 type = aor
 contact = sip:${VOIPMS_SIP_SERVER}
 
 ; ── Endpoint ──────────────────────────────────────────────────
-[${VOIPMS_TRUNK_NAME}-endpoint]
+; Endpoint id == trunk id — outbound SMS addresses
+; pjsip:${VOIPMS_TRUNK_NAME}/sip:<n>@<host> (AMI MessageSend and the
+; sms-out dialplan both resolve the endpoint by this id)
+[${VOIPMS_TRUNK_NAME}]
 type = endpoint
 context = from-trunk
 disallow = all
 allow = ulaw,g729
-aors = ${VOIPMS_TRUNK_NAME}
+aors = ${VOIPMS_TRUNK_NAME}-aor
 outbound_auth = ${VOIPMS_TRUNK_NAME}-auth
 from_user = ${VOIPMS_SIP_USER}
 from_domain = ${VOIPMS_SIP_SERVER}
@@ -1132,16 +1135,13 @@ force_rport = yes
 rewrite_contact = yes
 dtmf_mode = rfc4733
 trust_id_inbound = yes
-send_id_inbound = yes
-insecure = invite
-qualify_frequency = 60
 ; SMS: route out-of-call MESSAGE to the sms-in dialplan
 message_context = ${SMS_IN_CONTEXT}
 
 ; ── Identify (match inbound INVITEs) ──────────────────────────
 [${VOIPMS_TRUNK_NAME}-identify]
 type = identify
-endpoint = ${VOIPMS_TRUNK_NAME}-endpoint
+endpoint = ${VOIPMS_TRUNK_NAME}
 match = ${VOIPMS_SIP_SERVER}
 VOIPMSEOF
 

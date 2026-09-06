@@ -101,8 +101,8 @@ if ! grep -q '^\[ucp_events\]' /etc/asterisk/manager_custom.conf 2>/dev/null; th
 secret = ucp_events_secret
 deny = 0.0.0.0/0.0.0.0
 permit = 127.0.0.1/255.255.255.255
-read = system,call,log,verbose,command,agent,user,config,dtmf,reporting,cdr,dialplan,originate
-write = system,call,log,verbose,command,agent,user,config,dtmf,reporting,cdr,dialplan,originate
+read = system,call,log,verbose,command,agent,user,config,dtmf,reporting,cdr,dialplan,originate,message
+write = system,call,log,verbose,command,agent,user,config,dtmf,reporting,cdr,dialplan,originate,message
 eventfilter=!Event: RTCP*
 eventfilter=!Event: VarSet
 eventfilter=!Event: Newexten
