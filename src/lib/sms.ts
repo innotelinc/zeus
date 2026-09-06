@@ -7,8 +7,51 @@
 
 import { randomUUID } from "node:crypto";
 import db from "./db";
-import * as voipms from "./voipms";
+import { getAmiClient } from "./ami";
 import type { SmsConversation, SmsMessage } from "./types";
+
+/**
+ * SMS is sent over the FreePBX/Asterisk PJSIP trunk (SIP MESSAGE via the
+ * AMI `MessageSend` action) — the same path setup.sh wires as the `sms-out`
+ * dialplan context — instead of the VoIP.ms REST API (per-message fee).
+ *
+ * Trunk env (see setup.sh): VOIPMS_TRUNK_NAME (default voipms_pjsip),
+ * VOIPMS_SIP_SERVER, VOIPMS_SIP_USER. `SMS_TRUNK_FROM_USER` overrides the
+ * From URI user part (defaults to the trunk sub-account, matching sms-out).
+ */
+async function sendViaFreepbxTrunk(params: {
+  did: string;
+  to_number: string;
+  body: string;
+}): Promise<void> {
+  const trunk = process.env.VOIPMS_TRUNK_NAME ?? "voipms_pjsip";
+  const server = process.env.VOIPMS_SIP_SERVER ?? "newyork1.voip.ms";
+  const fromUser =
+    process.env.SMS_TRUNK_FROM_USER ?? process.env.VOIPMS_SIP_USER ?? "";
+
+  if (!fromUser) {
+    throw new Error(
+      "VOIPMS_SIP_USER not set — cannot send SMS over the FreePBX trunk",
+    );
+  }
+
+  const client = getAmiClient();
+  if (!client.isConnected) {
+    throw new Error(
+      "AMI not connected — FreePBX SMS transport unavailable (start Asterisk/AMI)",
+    );
+  }
+
+  // Mirror the sms-out dialplan context from scripts/setup.sh:
+  //   ACTUAL_TO   = pjsip:<trunk>/sip:<number>@<server>
+  //   ACTUAL_FROM = <display: the DID> <sip:<from-user>@<server>>
+  await client.sendAction({
+    Action: "MessageSend",
+    To: `pjsip:${trunk}/sip:${params.to_number}@${server}`,
+    From: `${params.did} <sip:${fromUser}@${server}>`,
+    Body: params.body,
+  });
+}
 
 /** Send an SMS message and record it. */
 export async function sendMessage(params: {
@@ -17,11 +60,11 @@ export async function sendMessage(params: {
   to_number: string;
   body: string;
 }): Promise<SmsMessage> {
-  // Send via VoIP.ms
-  await voipms.sendSMS({
+  // Send over the FreePBX trunk (no VoIP.ms REST per-message fee)
+  await sendViaFreepbxTrunk({
     did: params.did,
-    dst: params.to_number,
-    message: params.body,
+    to_number: params.to_number,
+    body: params.body,
   });
 
   // Find or create conversation. sms_conversations.phone_number_id is an FK to
