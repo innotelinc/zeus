@@ -24,11 +24,16 @@ export async function sendMessage(params: {
     message: params.body,
   });
 
-  // Find or create conversation
+  // Find or create conversation. sms_conversations.phone_number_id is an FK to
+  // phone_numbers(id), so resolve the row for this DID rather than storing the
+  // raw DID number (which violates the FK).
+  const phoneNumber = db
+    .prepare("SELECT id FROM phone_numbers WHERE user_id = ? AND did = ?")
+    .get(params.user_id, params.did) as { id: string } | undefined;
   const conv = await getOrCreateConversation(
     params.user_id,
     params.to_number,
-    params.did,
+    phoneNumber?.id ?? null,
   );
 
   // Store outbound message
@@ -66,10 +71,14 @@ export async function receiveMessage(params: {
   body: string;
   voipms_sms_id?: string;
 }): Promise<SmsMessage> {
+  // Same FK resolution as sendMessage: map the inbound DID to its row id.
+  const phoneNumber = db
+    .prepare("SELECT id FROM phone_numbers WHERE user_id = ? AND did = ?")
+    .get(params.user_id, params.to_did) as { id: string } | undefined;
   const conv = await getOrCreateConversation(
     params.user_id,
     params.from_number,
-    params.to_did,
+    phoneNumber?.id ?? null,
   );
 
   const msgId = randomUUID();
@@ -102,7 +111,7 @@ export async function receiveMessage(params: {
 async function getOrCreateConversation(
   userId: string,
   contactPhone: string,
-  phoneNumberId: string,
+  phoneNumberId: string | null,
 ): Promise<SmsConversation> {
   const conv = db
     .prepare(
