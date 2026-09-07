@@ -139,3 +139,37 @@ Rules that matter (all bugs found live):
 - The FreePBX **GUI pjsip trunk editor is not installed in the image**
   (only `sipsettings`), so `fwconsole trunks --add` is a silent no-op —
   file-based trunk config is the supported path.
+
+---
+
+## Post-fix verification (2026-09-06/07, local full stack)
+
+Re-verified live after the Asterisk 22 endpoint-id / AMI `message` class fix
+(commit `4fdc481`) on the Docker full stack (`zeus-freepbx` + `zeus-portal`):
+
+1. **Trunk registered** — `pjsip show registrations` reports
+   `voipms_pjsip-reg/sip:newyork1.voip.ms … Registered`, authenticated as
+   `235662_capstone` (endpoint `voipms_pjsip`, AOR `voipms_pjsip-aor`).
+2. **Portal send** — `POST /api/messages/send` (session cookie) returns
+   `201` with an `sms_messages` row (`status: sent`) and the AMI
+   `MessageSend` action answers `Success` (an AMI `Permission denied` would
+   reject the action and surface as `502`, so the stored row is meaningful).
+3. **Carrier leg** — with `pjsip set logger on`, Asterisk transmits the SIP
+   `MESSAGE` to `sip:newyork1.voip.ms`: the first attempt gets the expected
+   `401` digest challenge, and the authenticated retry is accepted with
+   `202 Accepted`.
+4. **Delivery** — read-only `getSMS` for the trunk DID shows the outbound
+   message with `carrier_status: "Message delivered to handset."`.
+
+Notes from the re-verification:
+
+- VoIP.ms `getSMS` can lag the live send by a few minutes and is newest-first
+  — give the carrier leg 2–5 minutes before declaring a send missing.
+- A second, immediately repeated test message was accepted (`202`) but
+  reported `undelivered`; delivery to the handset is not guaranteed per
+  message, so judge the trunk by the accepted `MESSAGE` + one delivered
+  sample rather than a single retry.
+- The out-of-dialog `MESSAGE` leg authenticates with the trunk sub-account
+  (`VOIPMS_SIP_USER`) exactly like the `sms-out` dialplan; no
+  `SMS_TRUNK_FROM_USER` override was needed for delivery from DID
+  `7745057135`.

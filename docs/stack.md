@@ -74,6 +74,25 @@ bash scripts/infisical-setup.sh
 See [compose.infisical.yml](../compose.infisical.yml) and
 [scripts/infisical-setup.py](../scripts/infisical-setup.py) for details.
 
+### Runtime resolution (`infisical://`)
+
+Portal `.env` values may be **plain text or `infisical://<name>` references**
+(same contract as Cerulean/Onyx/zapit). When `INFISICAL_ADDR`,
+`INFISICAL_TOKEN`, and `INFISICAL_WORKSPACE_ID` are set, the portal
+`docker-entrypoint.sh` resolves references **at container startup** — before
+the Next.js server boots — so every consumer reads the plain value from
+`process.env` and no application code knows about references:
+
+- `docker-entrypoint.sh` → `scripts/infisical-env.mjs` (resolver, `node --test`
+  covered) → shell-exported resolved values → `node server.js`.
+- Supported keys: `SESSION_SECRET`, `VOIPMS_SIP_PASS`, `VOIPMS_API_PASSWORD`,
+  `VOIPMS_IAX_PASS`, `VOIPMS_WEBHOOK_SECRET`, `FREEPBX_AMI_SECRET`,
+  `ASTERISK_AMI_SECRET`, `AVANTFAX_WEBHOOK_SECRET`, `STRIPE_SECRET_KEY`,
+  `STRIPE_WEBHOOK_SECRET`, `TURN_CREDENTIAL`.
+- A configured reference that cannot be resolved **fails the container** (no
+  silent boot with a literal `infisical://` value); plain values pass through
+  untouched when Infisical is not configured.
+
 ## Golden rules
 
 - **Authentik = Identity** · **Infisical = Secrets** · **Cerulean = Trust** ·
