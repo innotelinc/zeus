@@ -80,7 +80,14 @@ jobs:
 
           # ── 1. Commit messages in the range ───────────────────────────
           if [ -n "$base" ] && [ -n "$head" ]; then
-            git log --format=%B "${base}..${head}" | guard_check_stream || fail=1
+            if git rev-parse --verify --quiet "${base}^{commit}" >/dev/null 2>&1; then
+              git log --format=%B "${base}..${head}" | guard_check_stream || fail=1
+            else
+              # A force-push left the "before" SHA unreachable (history was
+              # rewritten), so the range can't be resolved. Scan the pushed
+              # head commit only, mirroring the tag-push path.
+              git log -1 --format=%B "$head" | guard_check_stream || fail=1
+            fi
           else
             git log --format=%B | guard_check_stream || fail=1
           fi
@@ -93,7 +100,11 @@ jobs:
           # ── 3. Lines added to files in the push/PR ────────────────────
           added=""
           if [ -n "$base" ] && [ -n "$head" ]; then
-            added="$(git diff --no-color -U0 "$base" "$head" -- . 2>/dev/null | grep '^+' | grep -v '^+++' || true)"
+            if git rev-parse --verify --quiet "${base}^{commit}" >/dev/null 2>&1; then
+              added="$(git diff --no-color -U0 "$base" "$head" -- . 2>/dev/null | grep '^+' | grep -v '^+++' || true)"
+            else
+              added="$(git show --format= --no-color -U0 "$head" -- . 2>/dev/null | grep '^+' | grep -v '^+++' || true)"
+            fi
           else
             added="$(git log -p --format= --no-color HEAD 2>/dev/null | grep '^+' | grep -v '^+++' || true)"
           fi
