@@ -54,6 +54,15 @@ provides, and explicitly does not own.
   the templates.
 - `scripts/smoke-test.sh` — live-stack smoke (portal, NPM hosts, PBX/AMI/ARI,
   AvantFax, VoIP.ms); `scripts/zeus-pbx-sync.sh` journal-friendly wrapper.
+- `compose.observability.yml` — **optional SigNoz profile** (OTel → SigNoz,
+  Capstone's topology with `zeus-` prefixed names so the stacks can coexist):
+  postgres metastore + ClickHouse Keeper/25.4 + unified `signoz` binary on
+  `:3301` + otel-collector writing directly to ClickHouse (OTLP ingest on
+  loopback `4317`/`4318`). Configs: `clickhouse-config.yaml`,
+  `clickhouse-keeper.yaml`, `otel-collector-config.yaml`. App-side OTel
+  instrumentation (portal traces) is not wired by default — set
+  `OTEL_EXPORTER_OTLP_ENDPOINT=http://zeus-signoz-otel-collector:4318` with
+  `OTEL_SERVICE_NAME=zeus-portal` when you want portal spans.
 
 ## Secrets (Infisical)
 
