@@ -486,18 +486,40 @@ patch_api_module() {
 
   # Fix 1: getFlattenedScopes() crashes when a scope module (e.g.
   # "framework") is not in $activeModules — add a guard to skip it.
-  # $module/$scope are literal PHP in the grep/sed patterns — kept in
-  # variables with the directive so shellcheck doesn't treat them as shell
-  # expansions (a `a\` continuation cannot carry its own directive).
-  # shellcheck disable=SC2016
-  grep_guard='if (!isset($activeModules[$module])) { continue; }'
-  if [ -f "$api_dir/Api.class.php" ] && \
-     ! grep -q "$grep_guard" "$api_dir/Api.class.php"; then
-    # shellcheck disable=SC2016
-    sed_guard='/foreach (\$validScopes\[\$type\] as \$module => \$scope) {/a\
-\t\t\t\t\tif (!isset($activeModules[$module])) { continue; }'
-    sed -i "$sed_guard" "$api_dir/Api.class.php"
-    echo ">>> [api] Fix 1 applied — getFlattenedScopes guard (Api.class.php)"
+  #
+  # History: the original sed `a\`-continuation append lost its leading
+  # tab, writing a stray `t\t\t...if` line into Api.class.php — a PHP parse
+  # error that broke fwconsole chown/reload on every boot. The patch is now
+  # corruption-tolerant: strip any malformed guard lines first, then apply
+  # the guard with perl (no shell-quoting sed continuations) only when the
+  # well-formed guard is absent.
+  if [ -f "$api_dir/Api.class.php" ]; then
+    # Repair earlier corruption: a guard line starting with `t` before the
+    # tabs (the mangled remains of the old append) — with tab or literal-t
+    # variants — and duplicate/extra guards beyond the first.
+    if grep -qE '^t+\t+if \(!isset\(\$activeModules\[\$module\]\)\)' "$api_dir/Api.class.php"; then
+      sed -i -E 's/^t+\t+(\tif \(!isset\(\$activeModules\[\$module\]\)\) \{ continue; \})$/\t\t\t\t\t\1/' "$api_dir/Api.class.php"
+      echo ">>> [api] repaired mangled guard line(s) in Api.class.php"
+    fi
+    # Deduplicate: keep only the first well-formed guard after the foreach.
+    if [ "$(grep -cF 'if (!isset($activeModules[$module])) { continue; }' "$api_dir/Api.class.php")" -gt 1 ]; then
+      awk '
+        /^\t{5}if \(!isset\(\$activeModules\[\$module\]\)\) \{ continue; \}\)$/ { c++ }
+        c > 1 { next }
+        { print }
+      ' "$api_dir/Api.class.php" > "$api_dir/Api.class.php.tmp" &&
+        mv "$api_dir/Api.class.php.tmp" "$api_dir/Api.class.php"
+      echo ">>> [api] deduplicated guard lines in Api.class.php"
+    fi
+    if ! grep -qF 'if (!isset($activeModules[$module])) { continue; }' "$api_dir/Api.class.php"; then
+      perl -i -pe '
+        s{^(\t+foreach \(\$validScopes\[\$type\] as \$module => \$scope\) \{)$}
+          {$1\n\t\t\t\t\tif (!isset(\$activeModules[\$module])) { continue; }}
+      ' "$api_dir/Api.class.php"
+      echo ">>> [api] Fix 1 applied — getFlattenedScopes guard (Api.class.php)"
+    fi
+    php -l "$api_dir/Api.class.php" >/dev/null 2>&1 \
+      || echo ">>> [api] WARNING: Api.class.php still fails php -l — check manually"
   fi
 
   # Fix 2: Gql/Api.php crashes on undefined $_GET['route'] (the portal's
@@ -594,6 +616,21 @@ WSSEOF
   # image-baked patches — re-apply them so the portal's GraphQL API
   # (extensions/voicemail provisioning) keeps working.
   patch_api_module
+  # ── fwconsole chown on init ────────────────────────────────
+  # File ownership across the freepbx-www volume drifts whenever the
+  # volume outlives the container (image upgrades, module reinstalls,
+  # manual fixes). Without it the web UI's reload button silently
+  # fails and `fwconsole restart` misbehaves — FreePBX's own chown
+  # hook (`Chown->fwcChownFiles`) also runs every module's
+  # `chownFreepbx` handler, which is what fixes those up. Run it on
+  # every boot, before Apache starts; fail open so a chown problem
+  # can never block the PBX from coming up.
+  echo ">>> Fixing FreePBX file permissions (fwconsole chown)..."
+  if timeout 180 fwconsole chown >/tmp/fwconsole-boot-chown.log 2>&1; then
+    echo ">>> fwconsole chown completed"
+  else
+    echo ">>> WARNING: fwconsole chown failed — see /tmp/fwconsole-boot-chown.log (continuing)"
+  fi
   if ! fwconsole reload >/tmp/fwconsole-boot-reload.log 2>&1; then
     echo ">>> [modules] boot reload failed — see /tmp/fwconsole-boot-reload.log"
   fi
