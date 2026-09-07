@@ -43,6 +43,7 @@ INFISICAL_KEYS="\
   TURN_CREDENTIAL"
 if [ -n "${INFISICAL_ADDR:-}" ] && [ -n "${INFISICAL_TOKEN:-}" ] && [ -n "${INFISICAL_WORKSPACE_ID:-}" ]; then
   echo ">>> Resolving Infisical secret references at boot..."
+  # shellcheck disable=SC2086  # INFISICAL_KEYS is a space-separated key list for word splitting
   eval "$(node /app/scripts/infisical-env.mjs $INFISICAL_KEYS)"
 fi
 
