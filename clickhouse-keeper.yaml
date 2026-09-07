@@ -1,0 +1,24 @@
+keeper_server:
+  tcp_port: 9181
+  server_id: 0
+  log_storage_path: /var/lib/clickhouse-keeper/coordination/log
+  snapshot_storage_path: /var/lib/clickhouse-keeper/coordination/snapshots
+  coordination_settings:
+    operation_timeout_ms: 10000
+    session_timeout_ms: 30000
+    raft_logs_level: warning
+    force_sync: false
+    snapshot_distance: 100000
+    snapshots_to_keep: 3
+  raft_configuration:
+    server:
+      - id: 0
+        hostname: zeus-signoz-clickhouse-keeper
+        port: 9234
+  four_letter_word_white_list: '*'
+
+listen_host: 0.0.0.0
+
+logger:
+  level: information
+  console: true
