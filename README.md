@@ -2,7 +2,7 @@
 
 [![CI](https://github.com/innotelinc/zeus/actions/workflows/ci.yml/badge.svg)](https://github.com/innotelinc/zeus/actions/workflows/ci.yml)
 [![Conformity](https://github.com/innotelinc/zeus/actions/workflows/conform.yml/badge.svg)](https://github.com/innotelinc/zeus/actions/workflows/conform.yml)
-[![License: AGPL-3.0-or-later](https://img.shields.io/badge/license-AGPL--3.0-or-later-brightgreen.svg)](LICENSE)
+[![License: AGPL-3.0-or-later](https://img.shields.io/badge/license-AGPL--3.0--or--later-brightgreen.svg)](LICENSE)
 
 
 # ⚡ Zeus — VOIP Platform
