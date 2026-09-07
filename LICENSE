@@ -1,0 +1,16 @@
+GNU AFFERO GENERAL PUBLIC LICENSE
+Version 3, 19 November 2007
+
+Copyright (C) 2026 Zeus contributors
+This product is distributed in the hope that it will be useful,
+but WITHOUT ANY WARRANTY; without even the implied warranty of
+MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
+GNU Affero General Public License for more details.
+
+You should have received a copy of the GNU Affero General Public License
+along with this product. If not, see <https://www.gnu.org/licenses/>.
+
+Upstream components (Asterisk, FreePBX, AvantFax, dograh, and the
+live ISO toolchain) are distributed under their own licenses; those are
+retained in their source trees. This repository itself is licensed under
+AGPL-3.0-or-later. See LICENSE for the full text.

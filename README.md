@@ -1,5 +1,9 @@
 <div align="center">
 
+[![CI](https://github.com/innotelinc/zeus/actions/workflows/ci.yml/badge.svg)](https://github.com/innotelinc/zeus/actions/workflows/ci.yml)
+[![License: AGPL-3.0-or-later](https://img.shields.io/badge/license-AGPL--3.0-or-later-brightgreen.svg)](LICENSE)
+
+
 # ⚡ Zeus — VOIP Platform
 
 **Cloud-native telecommunications — VoIP services, SIP routing, self-service portals, instant number provisioning, messaging, fax, and billing.**
@@ -15,6 +19,18 @@ unified messaging, AvantFax digital faxing, AI voicemail summaries, Magnate
 [![Latest release](https://img.shields.io/github/v/release/innotelinc/zeus?color=6366f1)](https://innotelinc.github.io/zeus/releases)
 
 </div>
+
+---
+
+## Why Zeus
+
+| Problem | Zeus answer |
+| --- | --- |
+| Cloud voice APIs leak audio + cost per minute | Local speech + local LLM over Asterisk/FreePBX; no audio leaves the box |
+| Identity per-service password stores | Cerulean Authentik-first SSO; disable a user and their telephony access dies |
+| Telephony vendor lock-in | Runs on your own FreePBX + VoIP.ms + local LLM; no cloud voice dependency |
+| Billing doesn't flow to access control | Magnate (RevenueOps) subscriptions gate paid seats; cancel and access dies |
+| Telephony recovery after host loss is manual | Zeus captures the full PBX + portal + fax + voicemail payload per release |
 
 > **About Zeus** — the cloud-native VOIP platform for VoIP services, SIP routing,
 > customer self-service portals, instant phone-number provisioning, messaging, fax,
@@ -365,6 +381,13 @@ Zeus is the ecosystem's **VoiceOps** platform — VoIP, SIP, SMS, PBX, and numbe
 [**Innotel Platform Stack**](https://github.com/innotelinc/innotel-platform-stack) — the
 canonical single-responsibility architecture where Authentik owns identity, Infisical owns
 secrets, Cerulean owns trust, ONYX owns storage, Magnate owns revenue, NPM Edge owns the edge, and every other
-platform is a business function that consumes them. See
+platform is a 
+---
+
+## License
+
+Zeus is licensed under the GNU Affero General Public License v3.0 or later (AGPL-3.0-or-later). See [LICENSE](LICENSE) for the full text.
+
+business function that consumes them. See
 [docs/stack.md](docs/stack.md) for this platform's owns/consumes boundaries and its
 Infisical secret setup.
