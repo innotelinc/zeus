@@ -26,6 +26,26 @@ else
   echo ">>> Database exists — skipping seed."
 fi
 
+# ── SecretOps (Infisical) — boot-time reference resolution ──────────────
+# .env values may be `infisical://<name>` references (same runtime contract
+# as Cerulean/Onyx/zapit, docs/stack.md). Resolve them BEFORE boot so every
+# Next.js consumer reads the plain value from process.env. Plain values are
+# left untouched; a configured reference that cannot be resolved aborts the
+# container instead of booting with a literal `infisical://` value.
+#
+# INFISICAL_* env (written by scripts/infisical-setup.py):
+#   INFISICAL_ADDR / INFISICAL_TOKEN / INFISICAL_WORKSPACE_ID /
+#   INFISICAL_ENVIRONMENT (default prod)
+INFISICAL_KEYS="\
+  SESSION_SECRET VOIPMS_SIP_PASS VOIPMS_API_PASSWORD VOIPMS_IAX_PASS \
+  VOIPMS_WEBHOOK_SECRET FREEPBX_AMI_SECRET ASTERISK_AMI_SECRET \
+  AVANTFAX_WEBHOOK_SECRET STRIPE_SECRET_KEY STRIPE_WEBHOOK_SECRET \
+  TURN_CREDENTIAL"
+if [ -n "${INFISICAL_ADDR:-}" ] && [ -n "${INFISICAL_TOKEN:-}" ] && [ -n "${INFISICAL_WORKSPACE_ID:-}" ]; then
+  echo ">>> Resolving Infisical secret references at boot..."
+  eval "$(node /app/scripts/infisical-env.mjs $INFISICAL_KEYS)"
+fi
+
 # Ensure a consistent SESSION_SECRET across all Next.js worker threads.
 # Without this, each worker independently generates its own secret (because
 # module-level variables aren't shared across workers), causing session tokens
