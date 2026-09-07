@@ -79,10 +79,14 @@ DEFAULT_API_URL = "http://127.0.0.1:81"
 DEFAULT_DNS_PROVIDER = "rfc2136"  # TSIG dynamic DNS updates (capstone convention)
 
 HOSTS: list[dict[str, Any]] = [
-    {"key": "apex", "sub": None, "scheme": "http", "port": 3000, "websocket": False, "name": "Zeus Portal (apex origin)"},
-    {"key": "app", "sub": "app", "scheme": "http", "port": 3000, "websocket": True, "name": "Zeus Customer Portal (PWA)"},
-    {"key": "api", "sub": "api", "scheme": "http", "port": 3000, "websocket": False, "name": "Zeus Portal API"},
-    {"key": "portal", "sub": "portal", "scheme": "http", "port": 3000, "websocket": False, "name": "Zeus Customer Portal (alias)"},
+    # NOTE: NPM_UPSTREAM_HOST is the Docker HOST, so these must be the
+    # host-published ports (compose maps portal 3001:3000). Pointing them at
+    # the container port 3000 routed zeus.innotel.us/app/api at whatever other
+    # service owns :3000 on the host (e.g. the Signara frontend).
+    {"key": "apex", "sub": None, "scheme": "http", "port": 3001, "websocket": False, "name": "Zeus Portal (apex origin)"},
+    {"key": "app", "sub": "app", "scheme": "http", "port": 3001, "websocket": True, "name": "Zeus Customer Portal (PWA)"},
+    {"key": "api", "sub": "api", "scheme": "http", "port": 3001, "websocket": False, "name": "Zeus Portal API"},
+    {"key": "portal", "sub": "portal", "scheme": "http", "port": 3001, "websocket": False, "name": "Zeus Customer Portal (alias)"},
     {"key": "auth", "sub": "auth", "scheme": "http", "port": 9000, "websocket": False, "name": "Authentik (SSO / user management)"},
     {"key": "pbx", "sub": "pbx", "scheme": "http", "port": 80, "websocket": False, "name": "FreePBX"},
     {"key": "admin", "sub": "admin", "scheme": "http", "port": 81, "websocket": True, "name": "Nginx Proxy Manager admin UI"},

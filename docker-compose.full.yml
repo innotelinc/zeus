@@ -115,7 +115,9 @@ services:
     depends_on:
       - freepbx
     ports:
-      - "3000:3000"
+      # Host 3001 (container 3000): matches docker-compose.yml so the full
+      # stack stays off the shared :3000 owned by the Signara frontend.
+      - "3001:3000"
     env_file:
       - path: .env
         required: false
