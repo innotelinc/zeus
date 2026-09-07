@@ -1076,14 +1076,17 @@ fi
 fwconsole reload 2>/dev/null || true
 
 # ─── Fix HTTPS bind address for WebRTC WebSocket ──────────────
-# FreePBX generates http_additional.conf with tlsbindaddr=127.0.0.1:8089
-# which prevents external browsers from connecting to the WSS endpoint.
-# Override to 0.0.0.0 so WebRTC softphones work from any network.
-info "Fixing HTTPS bind address for WebRTC WebSocket (0.0.0.0:8089)"
+# FreePBX generates http_additional.conf with bindaddr=127.0.0.1 and
+# tlsbindaddr=127.0.0.1:8089 which prevents external browsers from connecting
+# to the WSS endpoint (docker-proxy cannot forward to a loopback bind inside
+# the container). Override both to 0.0.0.0 so WebRTC softphones work from any
+# network.
+info "Fixing HTTP/HTTPS bind addresses for WebRTC WebSocket (0.0.0.0:8088, 0.0.0.0:8089)"
 if [ -f /etc/asterisk/http_additional.conf ]; then
+  sed -i 's/^bindaddr=127.0.0.1/bindaddr=0.0.0.0/' /etc/asterisk/http_additional.conf 2>/dev/null || true
   sed -i 's/tlsbindaddr=127.0.0.1:8089/tlsbindaddr=0.0.0.0:8089/' /etc/asterisk/http_additional.conf 2>/dev/null || true
   asterisk -rx 'core restart now' 2>/dev/null || true
-  log "HTTPS server now bound to 0.0.0.0:8089 for WebRTC WebSocket"
+  log "HTTP server now bound to 0.0.0.0:8088/8089 for WebRTC WebSocket"
 fi
 
 # ─── VoIP.ms trunks (SIP/PJSIP + IAX) into FreePBX ────────────
