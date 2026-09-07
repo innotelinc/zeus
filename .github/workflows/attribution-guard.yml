@@ -40,11 +40,31 @@ jobs:
           PR_HEAD: ${{ github.event.pull_request.head.sha }}
           PR_TITLE: ${{ github.event.pull_request.title }}
           PR_BODY: ${{ github.event.pull_request.body }}
+          REF_TYPE: ${{ github.ref_type }}
         run: |
           set -uo pipefail
           source .githooks/guard-lib
 
           fail=0
+
+          # ── Tag pushes introduce no new history ───────────────────────
+          # A tag push carries an all-zero "before" SHA (like a brand-new
+          # repo), but the tag itself adds only the tagged commit. Scan the
+          # tag's own commit message + diff instead of the full history, so
+          # historical trailers never block a release.
+          if [ "${REF_TYPE:-}" = "tag" ]; then
+            git log -1 --format=%B "${GITHUB_REF_NAME}" | guard_check_stream || fail=1
+            added="$(git show --format= --no-color -U0 "${GITHUB_REF_NAME}" -- . 2>/dev/null | grep '^+' | grep -v '^+++' || true)"
+            if [ -n "$added" ]; then
+              printf '%s\n' "$added" | guard_check_stream || fail=1
+            fi
+            if [ "$fail" -ne 0 ]; then
+              echo "::error::Attribution guard failed — only Darnel Hunter <dhunter@innotel.us> may be credited."
+              exit 1
+            fi
+            echo "attribution guard: clean"
+            exit 0
+          fi
 
           # ── Determine the commit range to scan ─────────────────────────
           if [ "${GITHUB_EVENT_NAME:-}" = "pull_request" ]; then
