@@ -497,11 +497,13 @@ patch_api_module() {
     # Repair earlier corruption: a guard line starting with `t` before the
     # tabs (the mangled remains of the old append) — with tab or literal-t
     # variants — and duplicate/extra guards beyond the first.
+    # shellcheck disable=SC2016  # PHP pattern: \$module etc. must stay literal for grep/sed -E
     if grep -qE '^t+\t+if \(!isset\(\$activeModules\[\$module\]\)\)' "$api_dir/Api.class.php"; then
       sed -i -E 's/^t+\t+(\tif \(!isset\(\$activeModules\[\$module\]\)\) \{ continue; \})$/\t\t\t\t\t\1/' "$api_dir/Api.class.php"
       echo ">>> [api] repaired mangled guard line(s) in Api.class.php"
     fi
     # Deduplicate: keep only the first well-formed guard after the foreach.
+    # shellcheck disable=SC2016  # literal PHP fragment for grep -cF / awk matching
     if [ "$(grep -cF 'if (!isset($activeModules[$module])) { continue; }' "$api_dir/Api.class.php")" -gt 1 ]; then
       awk '
         /^\t{5}if \(!isset\(\$activeModules\[\$module\]\)\) \{ continue; \}\)$/ { c++ }
@@ -511,6 +513,7 @@ patch_api_module() {
         mv "$api_dir/Api.class.php.tmp" "$api_dir/Api.class.php"
       echo ">>> [api] deduplicated guard lines in Api.class.php"
     fi
+    # shellcheck disable=SC2016  # literal PHP guard for grep -qF / perl -pe insertion
     if ! grep -qF 'if (!isset($activeModules[$module])) { continue; }' "$api_dir/Api.class.php"; then
       perl -i -pe '
         s{^(\t+foreach \(\$validScopes\[\$type\] as \$module => \$scope\) \{)$}
