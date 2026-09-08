@@ -92,6 +92,10 @@ services:
     image: ${OMNIROUTE_IMAGE:-diegosouzapw/omniroute:latest}
     container_name: zeus-omniroute
     restart: unless-stopped
+    # Memory posture (docs/service-audit.md): the gateway buffers model
+    # streams; cap it (measured ~0.5 GiB steady) so it never crowds the PBX.
+    mem_limit: 1g
+    memswap_limit: 1g
     environment:
       OMNIROUTE_JWT_SECRET: "${OMNIROUTE_JWT_SECRET:-change-me-jwt-secret}"
       OMNIROUTE_API_KEY_SECRET: "${OMNIROUTE_API_KEY_SECRET:-change-me-api-key-secret}"
