@@ -1,12 +1,14 @@
-import { headers } from "next/headers";
-import { SESSION_COOKIE, getSessionCookieOptions } from "@/lib/auth";
-import { discoverOidc, oidcEnabled } from "@/lib/oidc";
+import { cookies, headers } from "next/headers";
+import { SESSION_COOKIE, getSessionCookieOptions, verifySessionToken } from "@/lib/auth";
+import db from "@/lib/db";
+import { authMode, discoverOidc, ssoLoginEnabled } from "@/lib/oidc";
 import { NextResponse } from "next/server";
 
 export const dynamic = "force-dynamic";
 
 export async function GET() {
   const headersList = await headers();
+  const reqCookies = await cookies();
   const host = headersList.get("host") ?? "localhost";
   const portalOrigin = `https://${host}`;
   const opts = getSessionCookieOptions(host);
@@ -19,8 +21,22 @@ export async function GET() {
 
   const home = new URL("/", portalOrigin);
 
-  // Also end the Authentik session (single sign-out) when SSO is active.
-  if (oidcEnabled()) {
+  // Also end the Authentik session (single sign-out) when the SSO flow is
+  // the offered sign-in path. In "both" mode only Authentik-provisioned
+  // accounts (password_hash = '!oidc') get the end-session redirect — a
+  // locally-created password account has no Authentik session to end.
+  if (ssoLoginEnabled()) {
+    if (authMode() === "both") {
+      const token = reqCookies.get(SESSION_COOKIE)?.value;
+      const userId = token ? verifySessionToken(token) : null;
+      const row = userId
+        ? (db.prepare("SELECT password_hash FROM users WHERE id = ?").get(userId) as
+            { password_hash: string | null } | undefined)
+        : undefined;
+      if (!row || row.password_hash !== "!oidc") {
+        return expiredSessionResponse(home);
+      }
+    }
     try {
       const disc = await discoverOidc();
       if (disc.end_session_endpoint) {

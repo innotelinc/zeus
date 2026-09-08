@@ -354,6 +354,19 @@ RUN sed -i \
       /etc/php/8.2/fpm/pool.d/www.conf && \
     grep -E '^(user|group|listen.owner|listen.group)' /etc/php/8.2/fpm/pool.d/www.conf
 
+# ─── PHP runtime limits (FreePBX module installs / fax uploads) ──
+# 512M memory limit for PHP (cli, apache2, and both FPM SAPIs) — matches
+# scripts/setup.sh's bare-metal tuning. A drop-in keeps the distro php.ini
+# untouched and wins over every SAPI default.
+RUN for v in 8.2 7.4; do \
+      for sapi in apache2 cli fpm; do \
+        d="/etc/php/$v/$sapi/conf.d"; \
+        [ -d "$d" ] || continue; \
+        printf 'memory_limit = 512M\nupload_max_filesize = 512M\npost_max_size = 256M\n' > "$d/99-zeus-limits.ini"; \
+      done; \
+    done && \
+    grep -H 'memory_limit' /etc/php/*/apache2/conf.d/99-zeus-limits.ini /etc/php/*/cli/conf.d/99-zeus-limits.ini /etc/php/*/fpm/conf.d/99-zeus-limits.ini 2>/dev/null
+
 # ─── AvantFax 3.4.1 (fax web UI) ────────────────────────────
 # PHP 7.4 is required for AvantFax (legacy). PHP 8.2 remains the
 # default; AvantFax is served from /fax via a dedicated PHP 7.4 FPM.

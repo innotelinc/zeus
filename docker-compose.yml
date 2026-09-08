@@ -41,6 +41,11 @@ services:
       - SESSION_SECURE=${SESSION_SECURE:-false}
       - SESSION_SAMESITE=${SESSION_SAMESITE:-lax}
       - SESSION_DOMAIN=${SESSION_DOMAIN:-}
+      # ── Auth mode ──
+      # "authentik" = SSO only · "freepbx" = local password auth only ·
+      # "both" = Authentik button + password form. Default: "authentik"
+      # when the AUTHENTIK_* OIDC vars are set, "freepbx" otherwise.
+      - AUTH_MODE=${AUTH_MODE:-}
     healthcheck:
       # No `-f`: the health endpoint returns 503 when >=2 external services
       # (FreePBX/VoIP.ms/Stripe) are down. The container is healthy as long as

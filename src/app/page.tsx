@@ -1,15 +1,11 @@
 import Link from "next/link";
 import { Logo } from "@/components/Logo";
 import { PhoneIcon, MessageIcon, FaxIcon, VoicemailIcon, CheckCircleIcon, ArrowRightIcon } from "@/components/icons";
+import { ssoLoginEnabled } from "@/lib/oidc";
 
-/** SSO entrypoint — goes straight to Authentik when configured. */
+/** Sign-in entrypoint — straight to Authentik when SSO is the offered path. */
 function signInHref(path = ""): string {
-  const oidcEnabled = Boolean(
-    process.env.AUTHENTIK_ISSUER_URL &&
-      process.env.AUTHENTIK_CLIENT_ID &&
-      process.env.AUTHENTIK_CLIENT_SECRET,
-  );
-  if (oidcEnabled) {
+  if (ssoLoginEnabled()) {
     return "/api/auth/authentik/login" + (path ? `?next=${encodeURIComponent(path)}` : "");
   }
   return "/login" + path;

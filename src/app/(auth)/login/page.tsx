@@ -1,6 +1,6 @@
 import Link from "next/link";
 import { Logo } from "@/components/Logo";
-import { oidcEnabled } from "@/lib/oidc";
+import { passwordLoginEnabled, ssoLoginEnabled } from "@/lib/oidc";
 import { PasswordLoginForm } from "./password-form";
 
 export const dynamic = "force-dynamic";
@@ -11,7 +11,8 @@ export default async function LoginPage({
   searchParams: Promise<{ error?: string; next?: string }>;
 }) {
   const params = await searchParams;
-  const sso = oidcEnabled();
+  const sso = ssoLoginEnabled();
+  const password = passwordLoginEnabled();
   const next = params.next?.startsWith("/") && !params.next.startsWith("//")
     ? params.next
     : "/dashboard";
@@ -40,7 +41,7 @@ export default async function LoginPage({
             </div>
           )}
 
-          {sso ? (
+          {sso && (
             <>
               <a
                 href={`/api/auth/authentik/login?next=${encodeURIComponent(next)}`}
@@ -48,17 +49,25 @@ export default async function LoginPage({
               >
                 Continue with Authentik
               </a>
-              <p className="mt-4 text-center text-xs text-white/35">
-                Accounts are managed by Authentik — self-service registration,
-                passwords, and security live there.
-              </p>
+              {password && (
+                <div className="my-4 flex items-center gap-3 text-xs text-white/30">
+                  <span className="h-px flex-1 bg-white/10" />
+                  or
+                  <span className="h-px flex-1 bg-white/10" />
+                </div>
+              )}
             </>
-          ) : (
-            <PasswordLoginForm next={next} />
+          )}
+          {password && <PasswordLoginForm next={next} />}
+          {sso && !password && (
+            <p className="mt-4 text-center text-xs text-white/35">
+              Accounts are managed by Authentik — self-service registration,
+              passwords, and security live there.
+            </p>
           )}
         </div>
 
-        {sso ? (
+        {!password ? (
           <p className="mt-6 text-center text-xs text-white/30">
             No account yet? Ask an administrator to create one in Authentik.
           </p>

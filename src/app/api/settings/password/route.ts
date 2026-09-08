@@ -2,7 +2,7 @@ import { NextResponse } from "next/server";
 import { getCurrentUser } from "@/lib/auth";
 import db from "@/lib/db";
 import bcrypt from "bcryptjs";
-import { oidcEnabled } from "@/lib/oidc";
+import { passwordLoginEnabled } from "@/lib/oidc";
 
 export async function POST(req: Request) {
   const user = await getCurrentUser();
@@ -10,8 +10,13 @@ export async function POST(req: Request) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
 
-  // Passwords are managed in Authentik, not the portal DB.
-  if (oidcEnabled()) {
+  // Passwords are managed in Authentik when the user signed in through SSO
+  // (password_hash holds the inert "!oidc" marker) or when the portal runs
+  // SSO-only — never in freepbx/both modes for locally-created accounts.
+  const row = db
+    .prepare("SELECT password_hash FROM users WHERE id = ?")
+    .get(user.id) as { password_hash: string | null } | undefined;
+  if (!passwordLoginEnabled() || row?.password_hash === "!oidc") {
     return NextResponse.json(
       {
         error: "Passwords are managed by Authentik — change it in your Authentik profile.",
@@ -40,11 +45,7 @@ export async function POST(req: Request) {
     );
   }
 
-  const row = db
-    .prepare("SELECT password_hash FROM users WHERE id = ?")
-    .get(user.id) as { password_hash: string } | undefined;
-
-  if (!row || !bcrypt.compareSync(currentPassword, row.password_hash)) {
+  if (!row?.password_hash || !bcrypt.compareSync(currentPassword, row.password_hash)) {
     return NextResponse.json(
       { error: "Current password is incorrect" },
       { status: 401 },
