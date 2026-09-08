@@ -56,7 +56,7 @@ stack_lib_lan_ip() { # -> prints the LAN IP or empty
 
 # Resolve the forward host for NPM: explicit NPM_FORWARD_HOST wins, else the
 # LAN IP, else `host.docker.internal` (the docker-internal alias).
-stack_lib_forward_host() { # [explicit] -> prints the forward host
+stack_lib_forward_host() { # [explicit] <override> -> prints the forward host (pass "$@")
   local explicit="${1:-}"
   if [ -n "$explicit" ]; then printf '%s' "$explicit"; return 0; fi
   local lan
@@ -98,6 +98,6 @@ stack_lib_die()  { printf '\033[31merror: %s\033[0m\n' "$*" >&2; exit 1; }
 # ── self-test (./scripts/stack-lib.sh --selftest) ───────────────────────────
 if [ "${1:-}" = "--selftest" ]; then
   echo "lan_ip=$(stack_lib_lan_ip)"
-  echo "forward_host=$(stack_lib_forward_host)"
+  echo "forward_host=$(stack_lib_forward_host "$1")"
   echo "env_test=$(stack_lib_env NPM_BASE_DOMAIN '(unset)')"
 fi
