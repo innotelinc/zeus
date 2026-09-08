@@ -19,14 +19,48 @@ import db from "./db";
  * Optional:
  *   AUTHENTIK_ADMIN_EMAILS  comma-separated emails granted the admin role
  *   NEXT_PUBLIC_URL         portal origin used for the redirect URI
+ *   AUTH_MODE               which sign-in paths the portal offers:
+ *                             "authentik" — SSO only (password login disabled)
+ *                             "freepbx"   — local password login only
+ *                             "both"      — Authentik button + password form
+ *                           Default: "authentik" when the OIDC env vars above
+ *                           are set, "freepbx" otherwise.
  */
 
+export type AuthMode = "authentik" | "freepbx" | "both";
+
+/** Whether the Authentik OIDC client is fully configured. */
 export function oidcEnabled(): boolean {
   return Boolean(
     process.env.AUTHENTIK_ISSUER_URL &&
       process.env.AUTHENTIK_CLIENT_ID &&
       process.env.AUTHENTIK_CLIENT_SECRET,
   );
+}
+
+/** Resolve the configured (or auto-detected) authentication mode. */
+export function authMode(): AuthMode {
+  const raw = (process.env.AUTH_MODE ?? "").trim().toLowerCase();
+  if (raw === "authentik" || raw === "freepbx" || raw === "both") {
+    return raw;
+  }
+  // Auto: SSO when configured, local auth otherwise.
+  return oidcEnabled() ? "authentik" : "freepbx";
+}
+
+/** Whether the Authentik sign-in button/flow is offered. */
+export function ssoLoginEnabled(): boolean {
+  const mode = authMode();
+  return oidcEnabled() && (mode === "authentik" || mode === "both");
+}
+
+/** Whether the local password login/register forms are offered. */
+export function passwordLoginEnabled(): boolean {
+  const mode = authMode();
+  // Without a configured OIDC client, password auth is the only option —
+  // always allow it (matches the pre-AUTH_MODE behaviour).
+  if (!oidcEnabled()) return true;
+  return mode === "freepbx" || mode === "both";
 }
 
 export function oidcIssuerBase(): string {

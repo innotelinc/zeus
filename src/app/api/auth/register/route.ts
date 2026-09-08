@@ -8,14 +8,14 @@ import { createSessionToken, SESSION_COOKIE, getSessionCookieOptions } from "@/l
 import { rateLimitByIp } from "@/lib/rate-limit";
 import { notifyAtlasSignup } from "@/lib/atlas-api";
 import { buildWelcomeEmail } from "@/lib/mail-templates";
-import { oidcEnabled } from "@/lib/oidc";
+import { passwordLoginEnabled } from "@/lib/oidc";
 
 export const dynamic = "force-dynamic";
 
 export async function POST(req: Request) {
-  // With Authentik configured, accounts are created in Authentik — the portal
-  // no longer manages passwords or signups.
-  if (oidcEnabled()) {
+  // With SSO-only mode, accounts are created in Authentik — the portal no
+  // longer manages passwords or signups.
+  if (!passwordLoginEnabled()) {
     return NextResponse.json(
       {
         error: "Sign-up is managed by Authentik.",

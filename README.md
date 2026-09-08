@@ -64,9 +64,10 @@ Every service has a fixed hostname under your base domain (default `zeus.innotel
 
 ### 🔐 Cerulean Authentik SSO & User Management
 - **Cerulean Authentik is the identity provider**: all sign-in, signup, and password management happens in Cerulean Authentik (`auth.zeus.innotel.us`). The portal uses the OIDC authorization-code flow with PKCE.
+- **Three authentication modes** via `AUTH_MODE`: `authentik` (SSO only), `freepbx` (local password auth), or `both` (hybrid — see [Authentication modes](#authentication-modes-auth_mode)).
 - New users are **auto-provisioned** in the portal DB on first sign-in and linked by Authentik's stable subject ID.
-- Admins are flagged from `AUTHENTIK_ADMIN_EMAILS`; portal passwords are never stored.
-- Single sign-out: signing out of the portal also ends the Authentik session.
+- Admins are flagged from `AUTHENTIK_ADMIN_EMAILS`; portal passwords are never stored for SSO accounts.
+- Single sign-out: signing out of the portal also ends the Authentik session for SSO accounts.
 
 ### 📱 Phone Management
 - DID search and ordering via the **VoIP.ms** REST API (instant number search and provisioning)
@@ -203,6 +204,18 @@ docker compose -f docker-compose.platform.yml up -d
 #    AUTHENTIK_ADMIN_EMAILS) in your .env and restart the portal.
 ```
 
+#### Authentication modes (`AUTH_MODE`)
+
+The portal supports three sign-in configurations:
+
+| `AUTH_MODE` | Sign-in paths | Use when |
+|---|---|---|
+| `authentik` | Authentik SSO only — password login and self-service signup are disabled | Cerulean Authentik is the single identity provider (default when the `AUTHENTIK_*` OIDC vars are set) |
+| `freepbx` | Local password login + signup only — Authentik is not offered even if configured | Standalone/air-gapped installs without SSO |
+| `both` | Authentik button **and** the password form; locally-created accounts keep password auth, Authentik-provisioned accounts sign in via SSO | Hybrid deployments migrating to SSO, or mixed operator/tenant audiences |
+
+Leave `AUTH_MODE` empty for automatic behaviour: `authentik` when the OIDC env vars are set, `freepbx` otherwise. In `both` mode, password change/settings apply only to locally-created accounts — Authentik-provisioned accounts are redirected to Authentik, and portal logout ends the Authentik session only for those accounts.
+
 **Files:** `docker-compose.platform.yml`
 
 ### Option 3: npm (dev)
@@ -270,7 +283,8 @@ Templates: `.env.example` (npm/dev), `.env.docker.example` (Docker). Key groups:
 
 | Variable | Description |
 |---|---|
-| `AUTHENTIK_ISSUER_URL` / `_CLIENT_ID` / `_CLIENT_SECRET` | Authentik OIDC — enables SSO (disables password login) |
+| `AUTH_MODE` | Sign-in paths: `authentik` (SSO only) · `freepbx` (local password auth) · `both` (Authentik button + password form). Empty = auto: `authentik` when the OIDC vars are set, else `freepbx` |
+| `AUTHENTIK_ISSUER_URL` / `_CLIENT_ID` / `_CLIENT_SECRET` | Authentik OIDC — enables SSO (disables password login in `authentik` mode) |
 | `AUTHENTIK_BOOTSTRAP_EMAIL` / `_PASSWORD` | Authentik superuser (platform compose) |
 | `AUTHENTIK_ADMIN_EMAILS` | Comma-separated emails granted the admin role |
 | `NPM_ADMIN_EMAIL` / `NPM_ADMIN_PASSWORD` / `NPM_API_TOKEN` | NPM API auth for the host sync |

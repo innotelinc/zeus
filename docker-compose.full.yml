@@ -135,6 +135,12 @@ services:
       SESSION_SAMESITE: ${SESSION_SAMESITE:-lax}
       SESSION_DOMAIN: ${SESSION_DOMAIN:-}
 
+      # ── Auth mode ──
+      # "authentik" = SSO only · "freepbx" = local password auth only ·
+      # "both" = Authentik button + password form. Default: "authentik"
+      # when the AUTHENTIK_* OIDC vars are set, "freepbx" otherwise.
+      AUTH_MODE: ${AUTH_MODE:-}
+
       # ── VoIP.ms ──
       VOIPMS_API_USERNAME: ${VOIPMS_API_USERNAME:-}
       VOIPMS_API_PASSWORD: ${VOIPMS_API_PASSWORD:-}
