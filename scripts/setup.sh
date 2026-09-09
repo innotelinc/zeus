@@ -2105,6 +2105,48 @@ else
 fi
 
 # ═══════════════════════════════════════════════════════════════
+# MS TEAMS DIRECT ROUTING (Cerulean trust plane)
+# ═══════════════════════════════════════════════════════════════
+# When the SBC is configured, wire this PBX up as an MS Teams Direct
+# Routing SBC: pbx/cerulean-msteams.sh upserts the SBC A record (via the
+# Cerulean API, or local RFC 2136 nsupdate with the NPM_TSIG_* key), issues
+# the mandatory RSA-2048 cert via DNS-01, then chains into
+# pbx/MSTeams-DR-Wizard.sh (native external_signaling_hostname PJSIP
+# transport + [MSTeams] endpoint + port 5061). Opt in by setting
+# CERULEAN_SBC_FQDN (or MS_TEAMS_SBC_IP) plus either CERULEAN_API_URL
+# (API mode, recommended) or the CERULEAN_TSIG_*/NPM_TSIG_* key (direct
+# mode) in pbx.env. Idempotent — safe to re-run.
+
+info "MS Teams Direct Routing (Cerulean trust plane)"
+if [ -n "${CERULEAN_SBC_FQDN:-}" ] || [ -n "${MS_TEAMS_SBC_IP:-}" ]; then
+  ms_creds=false
+  if [ -n "${CERULEAN_API_URL:-}" ]; then
+    ms_creds=true
+  elif { [ -n "${CERULEAN_TSIG_NAMESERVER:-}" ] || [ -n "${NPM_TSIG_NAMESERVER:-}" ]; } \
+    && { [ -n "${CERULEAN_TSIG_KEY_NAME:-}" ] || [ -n "${NPM_TSIG_KEY_NAME:-}" ]; } \
+    && { [ -n "${CERULEAN_TSIG_KEY_SECRET:-}" ] || [ -n "${NPM_TSIG_KEY_SECRET:-}" ]; }; then
+    ms_creds=true
+  fi
+  if [ "$ms_creds" = true ]; then
+    if [ -f "${REPO_ROOT}/pbx/cerulean-msteams.sh" ]; then
+      log "Configuring MS Teams Direct Routing SBC: ${CERULEAN_SBC_FQDN:-${HOSTNAME}}"
+      # The adapter sources pbx.env itself — point it at the same file so a
+      # custom PBX_ENV_FILE is honored on a deployment-payload install.
+      PBX_ENV_FILE="${PBX_ENV_FILE}" bash "${REPO_ROOT}/pbx/cerulean-msteams.sh" \
+        --full --fqdn="${CERULEAN_SBC_FQDN:-${HOSTNAME}}" \
+        || warn "MS Teams Direct Routing reported failures — review the output above"
+    else
+      warn "pbx/cerulean-msteams.sh not found — skipping MS Teams Direct Routing"
+    fi
+  else
+    warn "CERULEAN_SBC_FQDN is set but no Cerulean credentials found — skipping MS Teams Direct Routing."
+    warn "Set CERULEAN_API_URL + CERULEAN_API_PASSWORD (API mode) or the CERULEAN_TSIG_* key (direct mode) in ${PBX_ENV_FILE} and re-run."
+  fi
+else
+  warn "MS Teams Direct Routing not configured — set CERULEAN_SBC_FQDN (or MS_TEAMS_SBC_IP) plus Cerulean credentials in ${PBX_ENV_FILE} to enable it."
+fi
+
+# ═══════════════════════════════════════════════════════════════
 # FINAL RESTART & SUMMARY
 # ═══════════════════════════════════════════════════════════════
 

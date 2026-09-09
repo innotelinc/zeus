@@ -239,7 +239,7 @@ sudo bash scripts/setup.sh           # FreePBX / Asterisk / fax stack (~45-90 mi
 sudo bash scripts/setup-portal.sh    # Zeus Customer Portal (reads the same pbx.env)
 ```
 
-`setup.sh` installs Asterisk 22.10.1 LTS, FreePBX 17, PJSIP WSS (:8089), AMI (:5038), AvantFax 3.4.1 + HylaFAX + IAXModem + Tesseract OCR, VoIP.ms SIP/IAX trunks, SMS-over-PJSIP, FreePBX OAuth2 API, VOSK STT + AI CDR (Ollama), Webmin, Code-Server, Fail2Ban, AsterBan — and, when NPM credentials are present, runs the **NPM proxy-host sync automatically** at the end.
+`setup.sh` installs Asterisk 22.10.1 LTS, FreePBX 17, PJSIP WSS (:8089), AMI (:5038), AvantFax 3.4.1 + HylaFAX + IAXModem + Tesseract OCR, VoIP.ms SIP/IAX trunks, SMS-over-PJSIP, FreePBX OAuth2 API, VOSK STT + AI CDR (Ollama), Webmin, Code-Server, Fail2Ban, AsterBan — and, when NPM credentials are present, runs the **NPM proxy-host sync automatically** at the end. When an MS Teams SBC is configured in `pbx.env` (`CERULEAN_SBC_FQDN`/`MS_TEAMS_SBC_IP` + `CERULEAN_API_URL` or the TSIG key), it also runs the **MS Teams Direct Routing setup** (`pbx/cerulean-msteams.sh --full`) automatically.
 
 ---
 
