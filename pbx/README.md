@@ -146,6 +146,44 @@ certbot itself. Env: `CERULEAN_SBC_FQDN`, `CERULEAN_ZONE`, `CERULEAN_TSIG_*`
 3. Route calls: inbound Teams → the wizard's endpoint context (`from-trunk` on
    FreePBX); outbound → send to the `[MSTeams]` endpoint.
 
+### Docker deployment (`docker-compose.full.yml`)
+
+The full-stack image (`ghcr.io/innotelinc/zeus:latest-fullstack`, Asterisk
+**22.11.0** — at/above the wizard's native-support floor) and the compose file
+already publishes **5061/tcp**, so the whole bring-up runs inside the `freepbx`
+container:
+
+1. **Tooling is mounted** — `docker-compose.full.yml` mounts `./pbx` read-only
+   into the container at `/opt/zeus/pbx`, so both scripts are available.
+2. **Install the container's missing CLI deps once** (Debian 12 base has `curl`
+   + `openssl` already; API mode needs `jq`, and the wizard's DNS check needs
+   `dig`/`nsupdate` from `dnsutils`; direct mode's certbot auto-installs):
+   ```bash
+   docker compose -f docker-compose.full.yml exec freepbx \
+     apt-get update -q && docker compose -f docker-compose.full.yml exec freepbx \
+     apt-get install -y jq dnsutils
+   ```
+3. **Run the trust-plane adapter inside the container**, passing the credentials
+   as env (or `-e PBX_ENV_FILE=/opt/zeus/pbx.env` if you mount a `pbx.env`):
+   ```bash
+   docker compose -f docker-compose.full.yml exec \
+     -e CERULEAN_API_URL=https://api.cerulean.innotel.us \
+     -e CERULEAN_API_PASSWORD=... \
+     freepbx bash /opt/zeus/pbx/cerulean-msteams.sh \
+       --full --fqdn=teams.zeus.innotel.us
+   ```
+   Direct mode: pass `CERULEAN_SBC_FQDN`/`MS_TEAMS_SBC_IP` + `CERULEAN_TSIG_*`
+   (or the `NPM_TSIG_*` twins) the same way.
+4. **Persistence is handled** — the wizard writes
+   `pjsip.transports_custom_post.conf`/`pjsip.endpoint_custom_post.conf` and the
+   adapter copies the cert to `/etc/asterisk/ssl/`, all under the
+   `asterisk-config` volume, so the SBC config survives container recreates.
+   (`/etc/letsencrypt/live` inside the container is ephemeral, but the wizard
+   prefers `/etc/asterisk/ssl/cert.crt` when present.)
+5. **Finish in Teams admin** exactly as bare metal: enable the gateway FQDN and
+   add PSTN usage/voice routes. Port 5061 is already published by compose — just
+   forward it at your edge/firewall to the Docker host.
+
 Tests: `npm test` — includes wizard stanza + semver-gate tests against a fake
 `asterisk` binary, adapter dry-run/audit tests, and a full API-mode integration
 test against the committed mock (`scripts/fixtures/cerulean-api-mock.mjs`,

@@ -2,7 +2,7 @@
 # Zeus — VOIP Platform Full Stack Docker Compose
 # ═══════════════════════════════════════════════════════════════
 # Deploys the complete VoIP infrastructure:
-#   Asterisk 22.10 + FreePBX 17 + AvantFax + Zeus Portal
+#   Asterisk 22.11 + FreePBX 17 + AvantFax + Zeus Portal
 #
 # Prerequisites:
 #   1. Configure your env vars:
@@ -82,6 +82,10 @@ services:
       - asterisk-sounds:/var/lib/asterisk/sounds
       - asterisk-spool:/var/spool/asterisk
       - freepbx-www:/var/www/html
+      # MS Teams Direct Routing tooling (pbx/cerulean-msteams.sh + the
+      # vendored wizard) — mounted read-only so the SBC bring-up can run
+      # inside this container (see pbx/README.md → Docker deployment).
+      - ./pbx:/opt/zeus/pbx:ro
       # Persist MariaDB so the FreePBX module registry can't drift from the
       # freepbx-www volume across container recreates (a fresh DB would reset
       # module versions and re-trigger the disabled-module / "Unknown Error"
