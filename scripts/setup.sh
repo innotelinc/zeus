@@ -2,7 +2,7 @@
 # ═══════════════════════════════════════════════════════════════
 #  Zeus — VOIP Platform FreePBX / Fax Stack Installer
 #  Target:   Ubuntu 24.04 "Noble" LXC (privileged) / minimal VM
-#  Stack:    Asterisk 22.10.1 (+ 20.20.1 source for VOSK module)
+#  Stack:    Asterisk 22.11.0 (+ 20.20.1 source for VOSK module)
 #            FreePBX 17 + AvantFax 3.4.1
 #            IAXModem 1.3.5 + HylaFAX 7.0.11
 #            PHP 8.3 + VOSK Speech-to-Text + AI CDR (Ollama)
@@ -61,9 +61,9 @@ SMTP_HOST="${SMTP_HOST:-mail.innotel.us}"
 SMTP_SSL_HOST="${SMTP_SSL_HOST:-ssl://mx.innotel.us}"
 SMTP_PORT="${SMTP_PORT:-465}"
 SMTP_PASS="${SMTP_PASS:-${DB_PASS}}"
-ASTERISK_VER="${ASTERISK_VER:-22.10.1}"
+ASTERISK_VER="${ASTERISK_VER:-22.11.0}"
 # The VOSK Asterisk module (vosk-asterisk) is compiled against this source
-# tree. 22.10.1 is the runtime Asterisk; keep a 20.20.1 tree around for
+# tree. 22.11.0 is the runtime Asterisk; keep a 20.20.1 tree around for
 # anything compiled against the older headers, matching the classic layout.
 ASTERISK_LEGACY_VER="${ASTERISK_LEGACY_VER:-20.20.1}"
 FAX_NUMBER="${FAX_NUMBER:-7745057136}"
@@ -412,7 +412,7 @@ fi
 pip3 install iksemel setuptools 2>/dev/null || true
 
 # ═══════════════════════════════════════════════════════════════
-# PHASE 7 — ASTERISK 22.10.1
+# PHASE 7 — ASTERISK 22.11.0
 # ═══════════════════════════════════════════════════════════════
 
 echo ">>> [7/15] Asterisk ${ASTERISK_VER}"

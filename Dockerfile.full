@@ -8,7 +8,7 @@
 #           -p 8089:8089 -p 5038:5038 zeus/freepbx
 #
 # This image contains:
-#   - Asterisk 22.10.1 LTS (compiled from source)
+#   - Asterisk 22.11.0 LTS (compiled from source)
 #   - FreePBX 17 (Sangoma official installer)
 #   - PJSIP with WebSocket (port 8089)
 #   - Asterisk AMI (port 5038)
@@ -22,7 +22,7 @@
 FROM debian:12-slim
 
 ENV DEBIAN_FRONTEND=noninteractive
-ENV ASTERISK_VER=22.10.1
+ENV ASTERISK_VER=22.11.0
 
 WORKDIR /usr/src
 
@@ -57,7 +57,7 @@ RUN cd /usr/src && \
     cd spandsp && ./autogen.sh && ./configure && make && make install && ldconfig && \
     cd /usr/src && rm -rf spandsp
 
-# ─── Asterisk 22.10.1 ────────────────────────────────────────
+# ─── Asterisk 22.11.0 ────────────────────────────────────────
 RUN wget "https://downloads.asterisk.org/pub/telephony/asterisk/releases/asterisk-${ASTERISK_VER}.tar.gz" && \
     tar zxf "asterisk-${ASTERISK_VER}.tar.gz" && \
     cd "asterisk-${ASTERISK_VER}" && \
