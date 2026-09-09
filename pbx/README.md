@@ -106,6 +106,12 @@ pbx/cerulean-msteams.sh --full --fqdn=teams.zeus.innotel.us
 pbx/MSTeams-DR-Wizard.sh --check --fqdn=teams.zeus.innotel.us   # full Asterisk-side audit
 ```
 
+> **Bare-metal installs:** `scripts/setup.sh` runs the whole bring-up automatically at the
+> end of the install when the SBC is configured in `pbx.env` — set `CERULEAN_SBC_FQDN`
+> (or `MS_TEAMS_SBC_IP`) plus `CERULEAN_API_URL`/`CERULEAN_API_PASSWORD` (API mode) or
+> the `CERULEAN_TSIG_*` key (direct mode, falls back to `NPM_TSIG_*`). No separate
+> invocation needed; it is idempotent and safe to re-run.
+
 Extra wizard flags pass through after `--` (e.g.
 `pbx/cerulean-msteams.sh --full -- --greenfield --version=22` for a bare Debian 12
 box). Granular modes: `--dns-only`, `--cert-only`, `--no-dns`, `--force-renew`,

@@ -58,6 +58,8 @@ DEPLOY_FILES=(
   scripts/npm-proxy-hosts.py
   scripts/pbx.env.example
   scripts/stage-fax-sources.sh
+  pbx/cerulean-msteams.sh
+  pbx/MSTeams-DR-Wizard.sh
   scripts/schema.sql
   scripts/seed.mjs
   scripts/migrations
