@@ -404,10 +404,12 @@ EOF
 
 _count_active_modes() {
     local count=0
-    [[ "$MODE_GREENFIELD"      == true ]] && (( count++ )) || true
-    [[ "$MODE_CHECK"           == true ]] && (( count++ )) || true
-    [[ "$MODE_SSL_ONLY"        == true ]] && (( count++ )) || true
-    [[ "$MODE_GENERATE_CONFIG" == true ]] && (( count++ )) || true
+    # SC2015-safe counters: in `A && B`, a false A is exempt from `set -e`
+    # (A is not the command following the final &&), and B never fails.
+    [[ "$MODE_GREENFIELD"      == true ]] && count=$((count + 1))
+    [[ "$MODE_CHECK"           == true ]] && count=$((count + 1))
+    [[ "$MODE_SSL_ONLY"        == true ]] && count=$((count + 1))
+    [[ "$MODE_GENERATE_CONFIG" == true ]] && count=$((count + 1))
     echo "$count"
 }
 
