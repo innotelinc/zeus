@@ -14,6 +14,8 @@ operational shape.
 | `asterisk/extensions_custom.conf` | Portal dialplan context (`[from-zeus-portal]`) — converge-owned |
 | `bootstrap-zeus-pbx.sh` | Render + apply the fragments idempotently; `--check` drift mode |
 | `asterisk_converge.py` | Per-section merge for the **shared** `extensions_custom.conf` / `ari.conf` (ownership markers) |
+| `MSTeams-DR-Wizard.sh` | MS Teams Direct Routing wizard (vendored from [Vince-0/MSTeams-FreePBX](https://github.com/Vince-0/MSTeams-FreePBX), MIT) — configures the native `external_signaling_hostname` PJSIP transport (Asterisk 20.21+/22.11+/23.5+/24+), endpoint/AOR/identify for the Microsoft SIP proxies, RSA cert wiring, `--check` audit |
+| `cerulean-msteams.sh` | Cerulean trust-plane adapter: provisions the SBC DNS record + RSA-2048 DNS-01 certificate, then chains into the wizard |
 | `tests/test_asterisk_converge.py` | Unit tests for the converge tool (`python3 -m unittest discover -s pbx/tests`) |
 
 ## Shared voice plane (`asterisk_converge.py`)
@@ -71,6 +73,77 @@ python3 pbx/asterisk_converge.py \
   --source <capstone-repo>/pbx/asterisk/ari.conf \
   --owner capstone
 ```
+
+## MS Teams Direct Routing (Cerulean trust plane)
+
+Zeus PBXes can act as a **Microsoft Teams Direct Routing SBC** so Teams users get a
+dial pad backed by the Zeus voice plane. Two scripts divide the work along the
+stack's ownership lines:
+
+| Script | Owns | What it does |
+|---|---|---|
+| `pbx/cerulean-msteams.sh` | **Cerulean (TrustOps)** — DNS + ACME | Upserts the SBC FQDN's public A record and issues the **RSA-2048** certificate via **DNS-01**. Two transports: **API mode** (set `CERULEAN_API_URL` — Cerulean's REST API drives BIND over SSH+nsupdate+TSIG and runs the ACME issuance; the adapter polls, downloads, and installs the material) and **direct mode** fallback (local RFC 2136 `nsupdate` + `certbot dns-rfc2136` from the PBX) |
+| `pbx/MSTeams-DR-Wizard.sh` | **Asterisk/FreePBX** | Detects the Asterisk version, writes the `[transport-ms-teams-tls]` stanza (native `external_signaling_hostname`, no source patches), the `[MSTeams]` endpoint/AOR/identify (Microsoft SIP proxies + published IP ranges), and reloads PJSIP |
+
+RSA-2048 is mandatory: MS Teams rejects ECDSA, and ECDSA certs make Asterisk
+core-dump on Teams' periodic pings. DNS-01 needs no inbound `:80`, so it is safe
+on a PBX that already serves TLS. In API mode Cerulean's material is installed
+to `/etc/letsencrypt/live/<fqdn>/` (plus `/etc/asterisk/ssl/`) — the paths the
+wizard detects natively — so the adapter needs **zero wizard patches**.
+
+### Bring-up
+
+```bash
+cp scripts/pbx.env.example scripts/pbx.env
+# fill the NPM_TSIG_* key (Cerulean BIND) — the CERULEAN_* vars fall back to it
+
+pbx/cerulean-msteams.sh --check                       # trust-plane audit (DNS, TSIG, cert)
+pbx/cerulean-msteams.sh --full --fqdn=teams.zeus.innotel.us
+#   1. A record → Cerulean BIND (RFC 2136)
+#   2. RSA-2048 cert via DNS-01
+#   3. runs MSTeams-DR-Wizard.sh --fqdn=<fqdn> --use-existing-cert
+
+pbx/MSTeams-DR-Wizard.sh --check --fqdn=teams.zeus.innotel.us   # full Asterisk-side audit
+```
+
+Extra wizard flags pass through after `--` (e.g.
+`pbx/cerulean-msteams.sh --full -- --greenfield --version=22` for a bare Debian 12
+box). Granular modes: `--dns-only`, `--cert-only`, `--no-dns`, `--force-renew`,
+`--dry-run`.
+
+**API mode (recommended)** — point the adapter at your Cerulean portal and let
+Cerulean drive BIND + ACME; nothing but the wizard runs on the PBX:
+
+```bash
+# in scripts/pbx.env
+CERULEAN_API_URL=https://api.cerulean.innotel.us
+CERULEAN_API_PASSWORD=...        # or CERULEAN_API_TOKEN for a bearer token
+```
+
+The adapter logs in (`POST /api/auth/login`), registers the zone if missing
+(`POST /api/domains`), upserts the A record (`POST /api/domains/:id/records`),
+requests the certificate (`POST /api/certificates` → poll `GET
+/api/certificates/:id`), downloads the material (`GET /api/certificates/:id/material`)
+and installs it where the wizard looks. Tenant scoping: `CERULEAN_TENANT`.
+
+**Direct mode fallback** — no API reachable: the PBX nsupdates BIND and runs
+certbot itself. Env: `CERULEAN_SBC_FQDN`, `CERULEAN_ZONE`, `CERULEAN_TSIG_*`
+(fallback: the `NPM_TSIG_*` twins), `CERULEAN_LE_EMAIL`, `MS_TEAMS_SBC_IP` — see
+`scripts/pbx.env.example`.
+
+### After the wizard
+
+1. Point MS Teams at the SBC (Teams admin center → Voice → Direct Routing):
+   FQDN `teams.zeus.innotel.us`, enable the gateway, add the PSTN usage/voice routes.
+2. Open **5061/tcp** to Microsoft's SIP signaling ranges — the wizard's
+   `--check` reports the port status.
+3. Route calls: inbound Teams → the wizard's endpoint context (`from-trunk` on
+   FreePBX); outbound → send to the `[MSTeams]` endpoint.
+
+Tests: `npm test` — includes wizard stanza + semver-gate tests against a fake
+`asterisk` binary, adapter dry-run/audit tests, and a full API-mode integration
+test against the committed mock (`scripts/fixtures/cerulean-api-mock.mjs`,
+mirroring Cerulean's REST contract with a real RSA-2048 fixture certificate).
 
 ## How it fits the stack
 
