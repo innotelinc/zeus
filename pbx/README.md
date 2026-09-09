@@ -146,6 +146,37 @@ certbot itself. Env: `CERULEAN_SBC_FQDN`, `CERULEAN_ZONE`, `CERULEAN_TSIG_*`
 3. Route calls: inbound Teams → the wizard's endpoint context (`from-trunk` on
    FreePBX); outbound → send to the `[MSTeams]` endpoint.
 
+### Teams admin side — scripted
+
+The tenant-side steps (SBC gateway, PSTN usage, voice route, and optionally a
+voice routing policy + phone number for a user) can be scripted with
+[`scripts/msteams-teams-admin.ps1`](../scripts/msteams-teams-admin.ps1).
+Microsoft Graph does **not** expose Direct Routing configuration — these are
+Teams PowerShell module cmdlets. From any machine with `pwsh` (and a
+Teams Administrator / Voice Administrator account):
+
+```powershell
+Install-Module MicrosoftTeams -Scope CurrentUser -Force   # once
+
+# Preview everything (no changes):
+./scripts/msteams-teams-admin.ps1 -Fqdn teams.zeus.innotel.us -TenantId <id> -WhatIf
+
+# Create/enable the SBC gateway + usage + voice route:
+./scripts/msteams-teams-admin.ps1 -Fqdn teams.zeus.innotel.us -TenantId <id>
+
+# Also create a routing policy, enable a user for Direct Routing and
+# assign their phone number (user needs a Teams Phone license):
+./scripts/msteams-teams-admin.ps1 -Fqdn teams.zeus.innotel.us -TenantId <id> `
+  -VoiceRoutingPolicyName "Zeus Voice" -UserPrincipalName user@zeus.innotel.us `
+  -PhoneNumber +15125550123
+```
+
+The script is idempotent (re-runs update in place) and accepts `TEAMS_SBC_FQDN`,
+`TEAMS_TENANT_ID`, `TEAMS_ROUTE_NAME`, `TEAMS_NUMBER_PATTERN`, `TEAMS_PSTN_USAGE`,
+`TEAMS_VOICE_ROUTING_POLICY`, `TEAMS_USER_UPN` and `TEAMS_USER_PHONE` env fallbacks.
+After it runs, the SBC must complete a SIP OPTIONS handshake on 5061/tcp to show
+**Active** in Teams admin center → Voice → Direct Routing.
+
 ### Docker deployment (`docker-compose.full.yml`)
 
 The full-stack image (`ghcr.io/innotelinc/zeus:latest-fullstack`, Asterisk
