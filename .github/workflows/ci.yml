@@ -21,7 +21,7 @@ jobs:
     name: ShellCheck
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: ShellCheck tracked shell scripts
         run: |
@@ -35,7 +35,7 @@ jobs:
     name: PBX converge tool
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Unit tests for the per-context dialplan merge tool
         run: python3 -m unittest discover -s pbx/tests -v
@@ -60,7 +60,7 @@ jobs:
     name: No docker-IP / localhost leaks
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Landing pages have no docker-bridge IPs or localhost links
         run: |
