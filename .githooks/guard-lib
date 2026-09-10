@@ -47,50 +47,62 @@ TOOL_TOKEN='codebuff|claude|anthropic|copilot|chatgpt|openai|gemini|bard|aider|c
 # runtime so the source text stays self-clean.
 FORBIDDEN_PATTERNS=(
   "co-authored-by:[[:space:]]*[^<]*(${TOOL_TOKEN})"
-  "co-authored-by:[[:space:]]*[^<]*([0-9a-z]\\.)?ai[[:space:]<,]"
+  "co-authored-by:[[:space:]]*[^<]*([0-9a-z]\\\\.)?ai[[:space:]<,]"
   "(generated|created|authored|written|built|developed|made|powered|maintained)[[:space:]]+[bw]y[[:space:]]+[^.,;]*(${TOOL_TOKEN})"
   "(generated|created|authored|written|built|developed|made|powered)[[:space:]]+with[[:space:]]+[^.,;]*(${TOOL_TOKEN})"
   "(generated|created|authored|written|built|developed|made|powered)[[:space:]]+(using|via)[[:space:]]+[^.,;]*(${TOOL_TOKEN})"
-  "co-authored-by:[[:space:]]*[^<]*noreply@(${TOOL_TOKEN%|*}|codebuff)(\\.ai|\\.com|\\.org)"
+  "co-authored-by:[[:space:]]*[^<]*noreply@(${TOOL_TOKEN%|*}|codebuff)(\\\\.ai|\\\\.com|\\\\.org)"
   "(${TOOL_TOKEN})[[:space:]]+<noreply@"
   "(credit|credits|thanks|acknowledg)[[:space:]]*:?[[:space:]]*(to[[:space:]]+)?(${TOOL_TOKEN})"
 )
 
 # Scan text on stdin; exit 0 if clean, 1 (printing a reason) if any
 # attribution is found. Reads stdin ONCE into a variable first — each grep in
-# the loop must test the same buffer; piping stdin per iteration would let the
-# first grep consume it.
+# FORBIDDEN_PATTERNS runs against that single in-memory copy.
 guard_check_stream() {
-  local line value lc ok pat
-  text="$(cat)"
+  local input
+  input="$(cat)"
 
-  # 1) Attribution-phrase patterns (AI assistants / tools).
-  for pat in "${FORBIDDEN_PATTERNS[@]}"; do
-    if printf '%s\n' "$text" | grep -Eiq "$pat"; then
-      printf '%s\n' "forbidden attribution matched: /$pat/" >&2
-      return 1
-    fi
-  done
-
-  # 2) Trailer allow-list: any git-trailer credit line must name Darnel Hunter.
-  while IFS= read -r line; do
-    if printf '%s\n' "$line" | grep -Eiq "^[[:space:]]*(${TRAILER_PREFIXES})[[:space:]]*:"; then
-      value="${line#*:}"                       # strip the prefix up to ':'
-      value="$(printf '%s' "$value" | xargs)"  # trim surrounding whitespace
-      lc="$(printf '%s' "$value" | tr '[:upper:]' '[:lower:]')"
+  # 1. Git-trailer credit lines must name an allowed attribution. A trailer
+  #    line is BAD unless its value is exactly one of the allowed identities —
+  #    never the reverse (a negated character class over the allowlist would
+  #    silently pass any foreign value sharing a letter with it).
+  if printf '%s\n' "$input" | grep -Eiq "^(${TRAILER_PREFIXES})[[:space:]]*:"; then
+    local bad="" line ok
+    while IFS= read -r line; do
+      case "$line" in *[A-Za-z0-9]*) ;; *) continue ;; esac
+      # Not a trailer line at all? Then rule 1 does not apply to it.
+      printf '%s\n' "$line" | grep -Eqi "^(${TRAILER_PREFIXES})[[:space:]]*:" || continue
+      # Trailer line: BAD unless the value is exactly an allowed identity.
       ok=0
       for allowed in "${ALLOWED_ATTRIBUTIONS[@]}"; do
-        if [ "$lc" = "$(printf '%s' "$allowed" | tr '[:upper:]' '[:lower:]')" ]; then
+        # Escape ERE metacharacters so literals like dependabot[bot] match
+        # literally instead of being read as a bracket expression.
+        local esc
+        esc="$(printf '%s' "$allowed" | sed -e 's/[][\\.^$*+?(){}|]/\\&/g')"
+        if printf '%s\n' "$line" \
+            | grep -Eqi "^(${TRAILER_PREFIXES})[[:space:]]*:[[:space:]]*${esc}[[:space:]]*$"; then
           ok=1
           break
         fi
       done
-      if [ "$ok" -ne 1 ]; then
-        printf '%s\n' "forbidden trailer credit: ${line#*: } (only Darnel Hunter <dhunter@innotel.us> may be credited)" >&2
-        return 1
+      if [ "$ok" -eq 0 ]; then
+        bad+="$line"$'\n'
       fi
+    done <<< "$input"
+    if [ -n "$bad" ]; then
+      printf '%s' "$bad" | sed 's/^/guard: bad trailer:/' >&2
+      return 1
     fi
-  done <<< "$text"
+  fi
+
+  # 2. AI-assistant attribution phrases are forbidden.
+  for pattern in "${FORBIDDEN_PATTERNS[@]}"; do
+    if printf '%s\n' "$input" | grep -Eiq -- "$pattern"; then
+      printf 'guard: forbidden attribution pattern matched: %s\n' "$pattern" >&2
+      return 1
+    fi
+  done
 
   return 0
 }
