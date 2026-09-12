@@ -87,6 +87,59 @@ CREATE TABLE IF NOT EXISTS asteriskcdrdb.cel (
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 SQL
 
+# ── Adopt an existing database's credentials ───────────────────────────────
+# FreePBX's installer generates AMPDBPASS *randomly at image build time*, but
+# the database lives on the shared pbx-mariadb-data volume and outlives every
+# image. A volume created by a different build — a Zeus image upgrade, or the
+# Capstone add-on's bundled FreePBX before this one — therefore carries a
+# different password, and everything that talks to FreePBX's database breaks
+# with "Access denied for user 'freepbxuser'@'localhost'": the web UI,
+# `fwconsole reload`, `fwconsole chown`, module management. Asterisk itself
+# keeps running on its static config, so the PBX *looks* alive while its whole
+# control plane is dead — the worst kind of failure to discover later.
+#
+# Set PBX_DB_PASS in .env to the password the volume was created with
+# (`.env.docker.example`) and both sides are reconciled to it: the config file
+# this container uses *and* the MariaDB grant. That also keeps the hand-off
+# between Zeus and the add-on reversible in either direction, because the
+# volume's credentials never change. Unset (a fresh volume) → this image's own
+# generated password is already the right one and nothing is touched.
+# ── fwconsole must be executable ────────────────────────────
+# `fwconsole chown` (FreePBX's Chown module, run below) rewrites the mode bits
+# across /var/lib/asterisk/bin — 644 for files — and re-adds the launcher's +x
+# only when it finishes. Any earlier run that aborted partway (a database
+# error, a timeout, an interrupted boot) therefore leaves fwconsole itself
+# non-executable in the image layer, and every fwconsole call after it fails
+# with a bare "Permission denied". The image ships it 777, so restoring the bit
+# is always correct and cheap.
+ensure_fwconsole() {
+  [ -x /var/lib/asterisk/bin/fwconsole ] && return 0
+  chmod +x /var/lib/asterisk/bin/fwconsole 2>/dev/null || true
+  [ -x /var/lib/asterisk/bin/fwconsole ] &&
+    echo ">>> [fwconsole] restored the execute bit on /var/lib/asterisk/bin/fwconsole"
+}
+ensure_fwconsole
+
+FREEPBX_CONF="/etc/freepbx.conf"
+if [ -n "${PBX_DB_PASS:-}" ] && [ -f "$FREEPBX_CONF" ]; then
+  if sed -i -E "s|(AMPDBPASS'\] = ')[^']*(';)|\1${PBX_DB_PASS}\2|" "$FREEPBX_CONF" &&
+     grep -q "AMPDBPASS'\] = '${PBX_DB_PASS}';" "$FREEPBX_CONF"; then
+    echo ">>> [db] ${FREEPBX_CONF} adopted PBX_DB_PASS"
+  else
+    echo ">>> [db] WARNING: could not write AMPDBPASS into ${FREEPBX_CONF}" >&2
+  fi
+  for host in localhost '%'; do
+    mysql -u root -e \
+      "ALTER USER IF EXISTS 'freepbxuser'@'${host}' IDENTIFIED BY '${PBX_DB_PASS}';" \
+      2>/dev/null || true
+  done
+  if mysql -u freepbxuser -p"${PBX_DB_PASS}" -e 'SELECT 1' >/dev/null 2>&1; then
+    echo ">>> [db] freepbxuser authenticated with PBX_DB_PASS"
+  else
+    echo ">>> [db] WARNING: freepbxuser still cannot authenticate — check PBX_DB_PASS" >&2
+  fi
+fi
+
 # ── logger security channel — rejected-SIP records for fail2ban ────────────
 # FreePBX owns logger.conf and regenerates it on Apply Config, but it ships
 # `#include logger_logfiles_custom.conf` inside the [logfiles] section — the
@@ -685,7 +738,14 @@ if [ "$START_WEB_UI" = "1" ]; then
   # reject it for WebRTC WebSocket connections. Regenerate with the actual
   # hostname and LAN IP so `wss://` works from local browsers.
   CERT_FILE=/etc/asterisk/keys/integration/certificate.pem
-  CERT_SUBJECT=$(openssl x509 -in "$CERT_FILE" -noout -subject 2>/dev/null | grep -o 'CN = [^,\n]*' | cut -d' ' -f3-)
+  # NB: not `grep -o 'CN = [^,\n]*'`. Inside a bracket expression `\n` is the
+  # two characters `\` and `n`, not a newline, so that pattern also stopped at
+  # the first literal "n" and read this cert's CN as "buildkitsa" — never equal
+  # to "buildkitsandbox", so the regeneration below never ran and every
+  # browser kept rejecting the WSS handshake on the base image's throwaway
+  # cert. Strip the `subject=` prefix, then take CN up to the next comma.
+  CERT_SUBJECT=$(openssl x509 -in "$CERT_FILE" -noout -subject 2>/dev/null \
+    | sed -E 's/^subject=//; s/.*CN *= *([^,]+).*/\1/' | tr -d ' ')
   if [ "$CERT_SUBJECT" = "buildkitsandbox" ] || [ ! -f "$CERT_FILE" ]; then
     echo ">>> Regenerating self-signed TLS cert with proper SANs..."
     HOSTNAME_VAL="${HOSTNAME:-pbx.zeus.innotel.us}"
@@ -758,12 +818,19 @@ WSSEOF
   # `chownFreepbx` handler, which is what fixes those up. Run it on
   # every boot, before Apache starts; fail open so a chown problem
   # can never block the PBX from coming up.
+  ensure_fwconsole
   echo ">>> Fixing FreePBX file permissions (fwconsole chown)..."
   if timeout 180 fwconsole chown >/tmp/fwconsole-boot-chown.log 2>&1; then
     echo ">>> fwconsole chown completed"
   else
     echo ">>> WARNING: fwconsole chown failed — see /tmp/fwconsole-boot-chown.log (continuing)"
   fi
+  # The chown rewrites mode bits across /var/lib/asterisk/bin (644 for files)
+  # and only restores the launcher's +x at the very end of its own run, so an
+  # aborted one leaves fwconsole non-executable and every later call in this
+  # boot dies with a bare "Permission denied" — which is how "chown failed" and
+  # "boot reload failed" show up together on a PBX that otherwise looks fine.
+  ensure_fwconsole
   if ! fwconsole reload >/tmp/fwconsole-boot-reload.log 2>&1; then
     echo ">>> [modules] boot reload failed — see /tmp/fwconsole-boot-reload.log"
   fi
