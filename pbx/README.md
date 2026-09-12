@@ -309,7 +309,9 @@ escalate to 30 days through `recidive`. Override with `F2B_IGNOREIP`,
 `F2B_BANTIME`, `F2B_MAXRETRY`, `F2B_LOG_DIR` (or `F2B_VOLUME` if the PBX volumes
 are renamed).
 
-**Wiring.** `docker-compose.full.yml` mounts the `zeus-asterisk-logs` volume at
+**Wiring.** `docker-compose.full.yml` mounts the shared `pbx-asterisk-logs`
+volume (the same name the Capstone add-on declares, so fail2ban reads one log
+directory whichever stack owns the PBX) at
 `/var/log/asterisk`, and `docker-entrypoint-full.sh` (baked into the image by
 `Dockerfile.full`) adds `security => security` to `logger_logfiles_custom.conf`
 — the include FreePBX keeps when it regenerates `logger.conf`, so an *Apply
