@@ -87,6 +87,37 @@ CREATE TABLE IF NOT EXISTS asteriskcdrdb.cel (
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 SQL
 
+# ── logger security channel — rejected-SIP records for fail2ban ────────────
+# FreePBX owns logger.conf and regenerates it on Apply Config, but it ships
+# `#include logger_logfiles_custom.conf` inside the [logfiles] section — the
+# documented hook for extra channels. Adding `security => security` there makes
+# Asterisk write one res_security_log record per rejected SIP message to
+# /var/log/asterisk/security, which host-side fail2ban reads through the
+# asterisk-logs volume (scripts/install-fail2ban.sh + pbx/fail2ban/).
+#
+# Only the security channel is added: the `full` channel already carries the
+# "No matching endpoint found" / "Failed to authenticate" NOTICEs at the
+# image's default level, and the registration jail matches those there.
+LOGGER_CONF="/etc/asterisk/logger.conf"
+LOGGER_CUSTOM="/etc/asterisk/logger_logfiles_custom.conf"
+touch "${LOGGER_CUSTOM}"
+if ! grep -qE '^[[:space:]]*security[[:space:]]*=>' "${LOGGER_CUSTOM}"; then
+  {
+    echo
+    echo "; zeus: rejected-SIP records for fail2ban (scripts/install-fail2ban.sh)"
+    echo "security => security"
+  } >> "${LOGGER_CUSTOM}"
+  echo ">>> logger.conf security channel enabled (fail2ban)"
+fi
+# Only if the image's logger.conf lost the include (one line inserted right
+# after the [logfiles] header — never a section rewrite, which would drop the
+# file's own includes).
+if [ -f "${LOGGER_CONF}" ] && ! grep -q 'logger_logfiles_custom.conf' "${LOGGER_CONF}"; then
+  sed -i '/^\[logfiles\]/a #include logger_logfiles_custom.conf' "${LOGGER_CONF}" 2>/dev/null || true
+  echo ">>> logger.conf: added the custom logfiles include"
+fi
+chown asterisk:asterisk "${LOGGER_CUSTOM}" 2>/dev/null || true
+
 # Override AMI secret from env var if provided
 if [ -n "${FREEPBX_AMI_SECRET:-}" ]; then
   sed -i "s/secret = .*/secret = ${FREEPBX_AMI_SECRET}/" /etc/asterisk/manager_custom.conf
@@ -125,10 +156,30 @@ if [ -f /etc/asterisk/manager.conf ]; then
   fi
 fi
 
-# Ensure UCPMGRPASS matches the ucp_events secret in manager_custom.conf
-# The sed above may have changed it to FREEPBX_AMI_SECRET, so use that if set.
-UCP_AMI_SECRET="${FREEPBX_AMI_SECRET:-ucp_events_secret}"
-mysql -u root asterisk -e "UPDATE freepbx_settings SET value = '${UCP_AMI_SECRET}' WHERE keyword = 'UCPMGRPASS' AND (value IS NULL OR value = '')" 2>/dev/null || true
+# Ensure UCPMGRPASS actually matches the ucp_events secret in manager_custom.conf.
+#
+# The sed above rewrites every `secret =` line to FREEPBX_AMI_SECRET, but the
+# original guard only wrote the DB value when the row was empty
+# (`AND (value IS NULL OR value = '')`). On an existing MariaDB volume the two
+# therefore diverge permanently: Asterisk rejects every UCP NodeJS ami login, so
+# the security log fills with InvalidPassword for a loopback client and the node
+# process pins a core restarting (measured on the capstone twin: 100% CPU,
+# 72 restarts). Converge on the secret that is really in manager_custom.conf and
+# bounce UCP only when it actually changed — no churn on every boot.
+UCP_SECRET="$(awk '/^\[ucp_events\]/{f=1} f && /^secret[[:space:]]*=/{sub(/^[^=]*=[[:space:]]*/, ""); print; exit}' /etc/asterisk/manager_custom.conf 2>/dev/null)"
+# The secret is base64/hex in every shipped .env; reject anything that could
+# break out of the single-quoted SQL below.
+case "${UCP_SECRET}" in
+  *[!A-Za-z0-9+/=_-]*) UCP_SECRET="" ;;
+esac
+if [ -n "${UCP_SECRET}" ]; then
+  UCP_CURRENT="$(mysql -u root asterisk -N -B -e 'SELECT value FROM freepbx_settings WHERE keyword="UCPMGRPASS" LIMIT 1;' 2>/dev/null)"
+  if [ "${UCP_CURRENT}" != "${UCP_SECRET}" ]; then
+    mysql -u root asterisk -e "UPDATE freepbx_settings SET value = '${UCP_SECRET}' WHERE keyword = 'UCPMGRPASS';" 2>/dev/null || true
+    echo ">>> UCP AMI credential converged (ucp_events) — restarting ucp node"
+    fwconsole pm2 --restart ucp >/dev/null 2>&1 || true
+  fi
+fi
 
 # Register OAuth2 client for the portal (if API module is installed)
 # Always updates the client_secret so that FREEPBX_CLIENT_SECRET changes take

@@ -1,0 +1,68 @@
+# Fail2ban jails for the Zeus PBX — template.
+#
+# scripts/install-fail2ban.sh renders this into /etc/fail2ban/jail.local,
+# substituting the __TOKENS__. Do not copy this file by hand: the tokens are
+# meaningless to fail2ban and it will refuse to start.
+#
+# Policy (operator decision, 2026-09-12): a *single* invalid SIP registration
+# attempt earns a 48 hour ban, because the box is being scanned continuously and
+# each probe costs an Asterisk identification attempt. The LAN is exempt so a
+# misconfigured desk phone cannot lock itself out for two days.
+
+[DEFAULT]
+
+# Bans go into DOCKER-USER — see pbx/fail2ban/action.d/docker-user.conf for why
+# a stock INPUT action does not work with Docker-published ports.
+banaction = docker-user
+banaction_allports = docker-user
+
+bantime  = __BANTIME__
+findtime = __FINDTIME__
+maxretry = __MAXRETRY__
+
+# File-based log reads through the mounted Asterisk log volume.
+backend = auto
+
+# Never ban ourselves or the local network: the box's own services, the LAN
+# softphones/NPM host, and the Docker bridge subnets (container-to-container
+# traffic is not NAT'd to a public source address).
+ignoreip = 127.0.0.1/8 ::1 __IGNOREIP__
+
+
+# ── Asterisk security events ────────────────────────────────────────────────
+# Authoritative source: res_security_log writes one record per rejected SIP
+# message here (InvalidPassword, ChallengeResponseFailed, InvalidAccountID,
+# RequestNotAllowed, FailedACL, ...).
+[asterisk-security]
+enabled  = true
+filter   = asterisk-security
+logpath  = __LOG_DIR__/security
+maxretry = __MAXRETRY__
+bantime  = __BANTIME__
+action   = docker-user[name=asterisk-security]
+
+
+# ── Rejected requests in the Asterisk full log ──────────────────────────────
+# The wider net: catches scanners that never reach identification
+# ("No matching endpoint found") as well as brute force ("Failed to
+# authenticate"). This is the jail that actually thins the attack traffic.
+[asterisk-registration]
+enabled  = true
+filter   = asterisk-registration
+logpath  = __LOG_DIR__/full
+maxretry = __MAXRETRY__
+bantime  = __BANTIME__
+action   = docker-user[name=asterisk-registration]
+
+
+# ── Recidive ────────────────────────────────────────────────────────────────
+# Anyone who collects bans across the jails above is not a misconfigured phone.
+# Three fresh bans inside a week earns a 30 day drop.
+[recidive]
+enabled  = true
+filter   = recidive
+logpath  = /var/log/fail2ban.log
+banaction = docker-user
+bantime  = 2592000
+findtime = 604800
+maxretry = 3

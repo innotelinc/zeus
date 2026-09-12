@@ -81,6 +81,10 @@ services:
       - asterisk-config:/etc/asterisk
       - asterisk-sounds:/var/lib/asterisk/sounds
       - asterisk-spool:/var/spool/asterisk
+      # Asterisk's log dir on a named volume so host-side fail2ban can read the
+      # rejected-registration records straight off disk (scripts/install-fail2ban.sh,
+      # pbx/fail2ban/). See pbx/README.md → "Blocking invalid SIP registrations".
+      - asterisk-logs:/var/log/asterisk
       - freepbx-www:/var/www/html
       # MS Teams Direct Routing tooling (pbx/cerulean-msteams.sh + the
       # vendored wizard) — mounted read-only so the SBC bring-up can run
@@ -257,6 +261,9 @@ volumes:
     name: zeus-asterisk-sounds
   asterisk-spool:
     name: zeus-asterisk-spool
+  # Read by host-side fail2ban; PBX writes its security channel here.
+  asterisk-logs:
+    name: zeus-asterisk-logs
   freepbx-www:
     name: zeus-freepbx-www
   mariadb-data:
