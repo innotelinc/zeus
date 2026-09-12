@@ -67,11 +67,14 @@ services:
     image: coturn/coturn:latest
     container_name: pbx-coturn
     restart: unless-stopped
+    # NB: only flags this image's turnserver actually accepts. `--no-dtls` is
+    # rejected outright ("unrecognized option") and `--no-cli` is deprecated in
+    # favour of `--cli`, so both made the container exit 255 in a restart loop
+    # the first time anyone ran `docker compose up coturn`. docker-compose.full.yml
+    # carries the same list — keep the two in step.
     command:
       - turnserver
-      - --no-cli
       - --no-tls
-      - --no-dtls
       - --fingerprint
       - --lt-cred-mech
       - --user=${TURN_USERNAME:-turnuser}:${TURN_CREDENTIAL:?set TURN_CREDENTIAL in .env}
@@ -80,14 +83,39 @@ services:
       - --min-port=${TURN_RELAY_PORT_START:-49152}
       - --max-port=${TURN_RELAY_PORT_END:-49251}
       - --listening-ip=0.0.0.0
-      - --external-ip=${TURN_EXTERNAL_IP:-127.0.0.1}
+      # Public address coturn advertises for relayed candidates. It sits behind
+      # Docker NAT and cannot discover this itself. The coturn image eval()s
+      # each argument and ships detect-external-ip (a DNS probe returning the
+      # caller's public IP), so a changing WAN IP is tracked on every start —
+      # which matters here: 73.68.203.71 is residential, and a pinned address
+      # rots into relay candidates nobody can reach (calls connect, no audio).
+      # Pin TURN_EXTERNAL_IP in .env only where that probe is blocked. Same
+      # expression as the Capstone coturn service, so handing the voice plane
+      # back changes nothing.
+      - --external-ip=${TURN_EXTERNAL_IP:-$(detect-external-ip)}
       - --log-file=stdout
       - --simple-log
     ports:
-      - "3478:3478"
-      - "3478:3478/udp"
+      - "${TURN_LISTENING_PORT:-3478}:3478"
+      - "${TURN_LISTENING_PORT:-3478}:3478/udp"
       - "5349:5349"
       - "5349:5349/udp"
+      # The relay range has to be published: 3478 alone only carries the TURN
+      # control channel. Relayed media is delivered to a relayed transport
+      # address inside 49152-49251, so without this mapping every peer outside
+      # pbx-net — i.e. every real browser — sends into a closed port and calls
+      # are silent. Capstone published it; this service initially did not, so
+      # the relay went dark the moment Zeus took over port 3478.
+      - "${TURN_RELAY_PORT_START:-49152}-${TURN_RELAY_PORT_END:-49251}:${TURN_RELAY_PORT_START:-49152}-${TURN_RELAY_PORT_END:-49251}/udp"
+    # The image ships bash but no curl/wget/python, so a raw TCP connect is the
+    # proof the TURN listener is up — a dead relay then shows in `compose ps`
+    # instead of being discovered by a silent user.
+    healthcheck:
+      test: ["CMD-SHELL", "bash -c 'exec 3<>/dev/tcp/127.0.0.1/3478' || exit 1"]
+      interval: 30s
+      timeout: 5s
+      start_period: 10s
+      retries: 3
     networks:
       - pbx-net
 

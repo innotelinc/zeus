@@ -130,6 +130,55 @@ docker exec zeus-freepbx mysql -u root asterisk -N -B \
 `scripts/smoke-test.sh pbx` asserts the published block is exactly the effective
 range and that no stale range (e.g. `10000-10100`, `10121-20000`) is exposed.
 
+## TURN / WebRTC media (one relay for both products)
+
+Zeus owns the TURN plane, the same way it owns RTP: `coturn` runs as this
+stack's `coturn` service and is the single relay that Asterisk, both portals'
+softphones, and every browser behind NAT use. The add-on's own `coturn` service
+carries the `standalone` profile and stays down while Zeus is primary, so
+there is exactly one process on 3478.
+
+Three layers have to agree, and they are all written from `.env`:
+
+| Layer | Where |
+|---|---|
+| coturn's auth pair + realm | `--user` / `--realm` in the `coturn` service |
+| Asterisk's own ICE/STUN | `stunaddr` in `/etc/asterisk/rtp_custom.conf` → and the `kvstore_Sipsettings` row, which is what regenerates `rtp_additional.conf` |
+| browsers' relay | the `webrtcstunaddr` / `webrtcturn*` rows in `kvstore_Sipsettings` |
+
+`docker-entrypoint-full.sh` writes the DB rows on every boot. That is not
+cosmetic: an Apply Config rebuilds `rtp_additional.conf` from that table, so a
+file-only change is reverted the first time anyone opens the GUI — and the
+credentials recorded there are what browsers are handed. Pointing them at a
+stop'd relay is how WebRTC calls end up connecting with no audio.
+
+```bash
+docker port pbx-coturn | sort                       # 3478 tcp+udp AND 49152-49251/udp
+docker logs pbx-coturn | grep -i realm              # which realm it advertises
+docker exec pbx-freepbx asterisk -rx 'rtp show settings' | grep -A2 'STUN:'
+docker exec pbx-freepbx mysql -u root asterisk -B \
+  -e "SELECT \`key\`,val FROM kvstore_Sipsettings WHERE \`key\` LIKE '%turn%' OR \`key\`='stunaddr'"
+```
+
+Two failure modes are worth knowing, because both are silent:
+
+* **Publishing only 3478.** 3478 carries the TURN *control* channel; relayed
+  media is delivered to a relayed transport address inside
+  `TURN_RELAY_PORT_START..END`. If that UDP range is not published (and
+  forwarded on the router) every peer outside `pbx-net` — i.e. every real
+  browser — sends into a closed port and calls are silent. This is why the
+  `coturn` service publishes the range, not just the listening port.
+* **Pinning `TURN_EXTERNAL_IP`.** The relay address coturn advertises is
+  useless the moment the WAN IP changes, which on a residential link is a
+  matter of when. Leave it empty and the coturn image's
+  `detect-external-ip` (a DNS probe, evaluated on every start) keeps it
+  current; set it only where that probe is blocked.
+
+`TURN_RELAY_PORT_*` deliberately stays inside the kernel's ephemeral range
+(`32768-60999`) to match the Capstone service, so the router forward and both
+compose files stay interchangeable. Moving it is a coordinated change across
+both products *and* the router.
+
 ## MS Teams Direct Routing (Cerulean trust plane)
 
 Zeus PBXes can act as a **Microsoft Teams Direct Routing SBC** so Teams users get a

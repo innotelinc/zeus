@@ -212,6 +212,7 @@ index) cannot take the build down. Bump a version by editing the pins in
 |---|---|---|
 | MariaDB | inside full-stack image | 3306 (internal) |
 | Asterisk + FreePBX | `ghcr.io/innotelinc/zeus:latest-fullstack` | 80, 5060/udp, 8088, 8089, 5038, 10000, 10101-10120/udp (RTP — `FREEPBX_RTP_PORT_START/END`) |
+| coturn (TURN/STUN) | `coturn/coturn:latest` | 3478/tcp+udp, 49152-49251/udp (relay — `TURN_RELAY_PORT_START/END`) |
 | AvantFax | inside full-stack image (`/fax`) | via :80 |
 | Zeus Portal | built from `Dockerfile` | 3000 |
 
@@ -222,6 +223,18 @@ agent add-on rides** — compose publishes it, `docker-entrypoint-full.sh` caps
 `kvstore_Sipsettings` so an *Apply Config* cannot revert Asterisk to its default
 `10000-20000` (unpublished → one-way audio). See
 [`pbx/README.md` → RTP media plane](pbx/README.md#rtp-media-plane-one-range-for-both-products).
+
+TURN is part of that same plane and belongs to Zeus too: the `coturn` service
+is the one relay both products use (the Capstone add-on's own coturn carries the
+`standalone` profile and stays down while Zeus is primary), and
+`docker-entrypoint-full.sh` keeps Asterisk's STUN address and the browsers'
+WebRTC relay rows in `kvstore_Sipsettings` in step with it. **The relay range
+must be forwarded on the router as well as 3478** — 3478 only carries the TURN
+control channel, so without the range relayed media reaches a closed port and
+calls connect with no audio. `TURN_EXTERNAL_IP` is best left empty: the coturn
+image detects the WAN address on every start, which a pinned value cannot do
+when the link is residential and the address moves. See
+[`pbx/README.md` → TURN / WebRTC media](pbx/README.md#turn--webrtc-media-one-relay-for-both-products).
 
 ### Cerulean Authentik SSO (any deployment)
 
