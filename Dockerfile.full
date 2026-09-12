@@ -129,9 +129,28 @@ RUN apt update && \
     done && \
     test -s /tmp/webmin.deb && \
     echo "e7698812d5fe79268202c6051dbfb140c94a43df0d28509b894511b27e5f0b15  /tmp/webmin.deb" | sha256sum -c - && \
-    apt -y install /tmp/webmin.deb && \
+    # webmin's postinst starts its own apt-get, which takes
+    # /var/lib/apt/lists/lock, and apt refuses that lock outright — exit 100,
+    # "Could not get lock ... held by process N (apt-get)" — instead of
+    # waiting. `-o DPkg::Lock::Timeout` does NOT cover this lock (measured:
+    # with a real fcntl holder both `apt clean` and `apt update` still fail
+    # instantly), so retry while the lock is the reason and fail fast on
+    # anything else.
+    apt_retry() { \
+      i=0; \
+      while :; do \
+        out=$(apt "$@" 2>&1) && { echo "$out"; return 0; }; \
+        case "$out" in *"Could not get lock"*) ;; *) echo "$out" | tail -3; return 1 ;; esac; \
+        i=$((i + 1)); \
+        [ "$i" -ge 30 ] && return 1; \
+        echo "apt lock busy (attempt $i/30); retrying in 5s"; \
+        sleep 5; \
+      done; \
+    } && \
+    apt_retry -y install /tmp/webmin.deb && \
     rm -f /tmp/webmin.deb && \
-    apt clean && rm -rf /var/lib/apt/lists/*
+    { apt_retry clean || echo 'WARNING: apt cache not cleaned — the lists lock stayed busy'; } && \
+    rm -rf /var/lib/apt/lists/*
 
 # ─── FreePBX 17 (direct framework tarball install) ──────────
 # Installs FreePBX directly from the official framework tarball via its
