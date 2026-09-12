@@ -45,7 +45,12 @@ services:
     security_opt:
       - apparmor=unconfined
     ports:
-      - "80:80"           # FreePBX web UI
+      - "80:80"            # FreePBX web UI
+      # The same UI on 8083 — the port the bundled add-on FreePBX published and
+      # the one docs/networking.md + any existing `pbx.<domain>` proxy host
+      # point at, so taking the voice plane over does not move the GUI out from
+      # under the operator. Both map container :80.
+      - "8083:80"
       - "5060:5060/udp"   # SIP
       - "5061:5061/tcp"   # SIP TLS
       - "8088:8088"       # Asterisk HTTP (plain WebSocket for NPM)
@@ -61,6 +66,9 @@ services:
       # rtp_custom.conf and FreePBX's kvstore_Sipsettings — all three must agree.
       - "${FREEPBX_RTP_PORT_START:-10101}-${FREEPBX_RTP_PORT_END:-10120}:10101-10120/udp"
     environment:
+      # Becomes the self-signed WebRTC cert CN (docker-entrypoint-full.sh). On a
+      # box that already ran the PBX under another name, pin it in .env to that
+      # existing identity — renaming it rewrites the cert, not the SIP domain.
       HOSTNAME: ${HOSTNAME:-pbx.zeus.innotel.us}
       # VoIP.ms SIP trunk auto-configuration
       VOIPMS_SIP_USER: ${VOIPMS_SIP_USER:-}
@@ -70,6 +78,12 @@ services:
       # AMI credentials
       FREEPBX_AMI_USER: ${FREEPBX_AMI_USER:-pbxportal}
       FREEPBX_AMI_SECRET: ${FREEPBX_AMI_SECRET:-}
+      # Password for the FreePBX MariaDB user, needed only when this container
+      # runs against a pbx-mariadb-data volume another image created (see
+      # .env.docker.example). docker-entrypoint-full.sh reconciles
+      # /etc/freepbx.conf and the MariaDB grant to it, leaving the volume's own
+      # credentials alone so the stack hand-off stays reversible.
+      PBX_DB_PASS: ${PBX_DB_PASS:-}
       # OAuth2 API client
       FREEPBX_CLIENT_ID: ${FREEPBX_CLIENT_ID:-pbxportal-api}
       FREEPBX_CLIENT_SECRET: ${FREEPBX_CLIENT_SECRET:-}
@@ -107,6 +121,13 @@ services:
       # pbx/fail2ban/). See pbx/README.md → "Blocking invalid SIP registrations".
       - asterisk-logs:/var/log/asterisk
       - freepbx-www:/var/www/html
+      # The entrypoint ships inside the image, but the shared-database
+      # credential reconciliation it runs (PBX_DB_PASS, see
+      # .env.docker.example) has to be live before the next image build — so
+      # the repo copy is mounted over the baked one, the same way the Capstone
+      # add-on mounts its own entrypoint. Drop this line once an image built
+      # with the change is what you deploy.
+      - ./docker-entrypoint-full.sh:/usr/local/bin/entrypoint.sh:ro
       # MS Teams Direct Routing tooling (pbx/cerulean-msteams.sh + the
       # vendored wizard) — mounted read-only so the SBC bring-up can run
       # inside this container (see pbx/README.md → Docker deployment).
@@ -275,20 +296,39 @@ services:
     networks:
       - pbx-net
 
+# ── Shared voice-plane volumes (the pbx-* names) ──────────────────────────
+# Identical to the volumes the Capstone agent add-on declares (external,
+# name: pbx-*), so both products reference ONE data plane instead of copying
+# between two: extensions, routes, CDRs, voicemail, Asterisk config and the
+# FreePBX web root are the same for whichever stack is running. Handing the
+# voice plane back to the bundled add-on FreePBX therefore needs no data
+# movement at all — only a container swap.
+#
+# `external` is deliberate: the data must outlive either project (Docker
+# refuses to let a compose file own a volume another project is using), and
+# `scripts/setup.sh` creates the names on a fresh host. See the Capstone repo
+# docs/zeus-integration.md ("one shared PBX") for the ownership contract.
 volumes:
   asterisk-config:
-    name: zeus-asterisk-config
+    name: pbx-asterisk-config
+    external: true
   asterisk-sounds:
-    name: zeus-asterisk-sounds
+    name: pbx-asterisk-sounds
+    external: true
   asterisk-spool:
-    name: zeus-asterisk-spool
+    name: pbx-asterisk-spool
+    external: true
   # Read by host-side fail2ban; PBX writes its security channel here.
   asterisk-logs:
-    name: zeus-asterisk-logs
+    name: pbx-asterisk-logs
+    external: true
   freepbx-www:
-    name: zeus-freepbx-www
+    name: pbx-freepbx-www
+    external: true
   mariadb-data:
-    name: zeus-mariadb-data
+    name: pbx-mariadb-data
+    external: true
+  # Zeus's own portal state — not part of the shared voice plane.
   portal-data:
     name: zeus-portal-data
 

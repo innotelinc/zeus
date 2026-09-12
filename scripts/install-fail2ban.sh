@@ -33,9 +33,10 @@ set -euo pipefail
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 SRC_DIR="${REPO_ROOT}/pbx/fail2ban"
 F2B_DIR="/etc/fail2ban"
-# Zeus names its PBX volumes zeus-* (capstone's mirror uses pbx-*); override
-# with F2B_VOLUME when the deploy renames them.
-VOLUME="${F2B_VOLUME:-zeus-asterisk-logs}"
+# The PBX logs sit on the shared voice-plane volume (name: pbx-asterisk-logs,
+# the same one the Capstone add-on declares) — override with F2B_VOLUME if a
+# deploy renames it.
+VOLUME="${F2B_VOLUME:-pbx-asterisk-logs}"
 
 # Left empty so precedence is CLI flag > .env (F2B_BANTIME/F2B_MAXRETRY) >
 # the defaults applied after the .env read below.

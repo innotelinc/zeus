@@ -174,6 +174,12 @@ Provisions **everything**: Asterisk 22.11 + FreePBX 17 + AvantFax + Zeus Portal,
 
 ```bash
 cp .env.docker.example .env   # edit with your credentials
+# one-time on a fresh host — the voice-plane volumes are shared with the
+# Capstone add-on, so compose declares them external and never creates them
+for v in pbx-asterisk-config pbx-asterisk-sounds pbx-asterisk-spool \
+         pbx-asterisk-logs pbx-freepbx-www pbx-mariadb-data; do
+  docker volume inspect "$v" >/dev/null 2>&1 || docker volume create "$v"
+done
 docker compose -f docker-compose.full.yml up -d
 ```
 
@@ -185,6 +191,14 @@ bash scripts/fetch-vendor.sh        # FreePBX framework + api/ucp, hash-checked
 bash scripts/fetch-vendor.sh --check  # verify vendor/ without the network
 docker compose -f docker-compose.full.yml -f docker-compose.full.build.yml up -d
 ```
+
+The six `pbx-*` volumes are the **shared voice plane**: the identical names the
+Capstone agent add-on declares, so whichever stack runs the PBX mounts the same
+extensions, routes, CDRs, voicemail and Asterisk config — and switching which
+one owns the PBX is a container swap, not a data migration. On a box that
+already ran the PBX, `HOSTNAME` in `.env` must stay the value that box was
+provisioned with (it becomes the PBX's self-signed cert CN); on a fresh box the
+`pbx.zeus.innotel.us` default is right.
 
 `vendor/` (~40 MB, gitignored) is the only thing `Dockerfile.full` installs
 FreePBX from — the image build itself needs no network, so a mirror outage
