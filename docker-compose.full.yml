@@ -112,6 +112,14 @@ services:
       # fails on it and silently disables STUN.
       PJSIP_STUN_TURN_ADDR: ${PJSIP_STUN_TURN_ADDR:-}
       TURN_LISTENING_PORT: ${TURN_LISTENING_PORT:-3478}
+      # TURN credentials, written into FreePBX's settings DB by the entrypoint so
+      # Asterisk, coturn and the portals' browsers all authenticate with one
+      # pair (see docker-entrypoint-full.sh → write_turn_plane).
+      TURN_USERNAME: ${TURN_USERNAME:-}
+      TURN_CREDENTIAL: ${TURN_CREDENTIAL:-}
+      # Public STUN/TURN name for the *WebRTC* rows only — browsers cannot
+      # resolve the internal compose name that Asterisk's own ICE uses.
+      TURN_PUBLIC_ADDR: ${TURN_PUBLIC_ADDR:-coturn.zeus.innotel.us}
     volumes:
       - asterisk-config:/etc/asterisk
       - asterisk-sounds:/var/lib/asterisk/sounds
@@ -121,13 +129,6 @@ services:
       # pbx/fail2ban/). See pbx/README.md → "Blocking invalid SIP registrations".
       - asterisk-logs:/var/log/asterisk
       - freepbx-www:/var/www/html
-      # The entrypoint ships inside the image, but the shared-database
-      # credential reconciliation it runs (PBX_DB_PASS, see
-      # .env.docker.example) has to be live before the next image build — so
-      # the repo copy is mounted over the baked one, the same way the Capstone
-      # add-on mounts its own entrypoint. Drop this line once an image built
-      # with the change is what you deploy.
-      - ./docker-entrypoint-full.sh:/usr/local/bin/entrypoint.sh:ro
       # MS Teams Direct Routing tooling (pbx/cerulean-msteams.sh + the
       # vendored wizard) — mounted read-only so the SBC bring-up can run
       # inside this container (see pbx/README.md → Docker deployment).
@@ -272,11 +273,13 @@ services:
     image: coturn/coturn:latest
     container_name: pbx-coturn
     restart: unless-stopped
+    # NB: only flags this image's turnserver actually accepts. `--no-dtls` is
+    # rejected outright ("unrecognized option") and `--no-cli` is deprecated in
+    # favour of `--cli`, so both made the container exit 255 in a restart loop
+    # the first time anyone ran `docker compose up coturn`.
     command:
       - turnserver
-      - --no-cli
       - --no-tls
-      - --no-dtls
       - --fingerprint
       - --lt-cred-mech
       - --user=${TURN_USERNAME:-turnuser}:${TURN_CREDENTIAL:?set TURN_CREDENTIAL in .env}
@@ -285,7 +288,16 @@ services:
       - --min-port=${TURN_RELAY_PORT_START:-49152}
       - --max-port=${TURN_RELAY_PORT_END:-49251}
       - --listening-ip=0.0.0.0
-      - --external-ip=${TURN_EXTERNAL_IP:-127.0.0.1}
+      # Public address coturn advertises for relayed candidates. It sits behind
+      # Docker NAT and cannot discover this itself. The coturn image eval()s
+      # each argument and ships detect-external-ip (a DNS probe returning the
+      # caller's public IP), so a changing WAN IP is tracked on every start —
+      # which matters here: 73.68.203.71 is residential, and a pinned address
+      # rots into relay candidates nobody can reach (calls connect, no audio).
+      # Pin TURN_EXTERNAL_IP in .env only where that probe is blocked. Same
+      # expression as the Capstone coturn service, so handing the voice plane
+      # back changes nothing.
+      - --external-ip=${TURN_EXTERNAL_IP:-$(detect-external-ip)}
       - --log-file=stdout
       - --simple-log
     ports:
@@ -293,6 +305,22 @@ services:
       - "${TURN_LISTENING_PORT:-3478}:3478/udp"
       - "5349:5349"
       - "5349:5349/udp"
+      # The relay range has to be published: 3478 alone only carries the TURN
+      # control channel. Relayed media is delivered to a relayed transport
+      # address inside 49152-49251, so without this mapping every peer outside
+      # pbx-net — i.e. every real browser — sends into a closed port and calls
+      # are silent. Capstone published it; this service initially did not, so
+      # the relay went dark the moment Zeus took over port 3478.
+      - "${TURN_RELAY_PORT_START:-49152}-${TURN_RELAY_PORT_END:-49251}:${TURN_RELAY_PORT_START:-49152}-${TURN_RELAY_PORT_END:-49251}/udp"
+    # The image ships bash but no curl/wget/python, so a raw TCP connect is the
+    # proof the TURN listener is up — a dead relay then shows in `compose ps`
+    # instead of being discovered by a silent user.
+    healthcheck:
+      test: ["CMD-SHELL", "bash -c 'exec 3<>/dev/tcp/127.0.0.1/3478' || exit 1"]
+      interval: 30s
+      timeout: 5s
+      start_period: 10s
+      retries: 3
     networks:
       - pbx-net
 

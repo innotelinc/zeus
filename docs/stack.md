@@ -102,6 +102,37 @@ the Next.js server boots — so every consumer reads the plain value from
   silent boot with a literal `infisical://` value); plain values pass through
   untouched when Infisical is not configured.
 
+## Co-hosting with Capstone (shared host)
+
+The two products share one voice plane — the same `pbx-*` volumes, the same
+FreePBX, the same TURN relay — so exactly one of them may be *primary* at a
+time. Handing the plane over is a container swap, not a data migration.
+
+One trap comes with that, and it is silent. **`docker compose` resolves the
+shell environment before `.env`**, so a shell that carries the *other*
+product's exports overrides this project's values for every name the two
+share. They share a lot: `TURN_USERNAME`, `TURN_REALM`, `TURN_EXTERNAL_IP`,
+`VOIPMS_SIP_PASS`, `FREEPBX_AMI_SECRET`, `FREEPBX_CLIENT_SECRET`,
+`OMNIROUTE_*`. Compose does not warn; the only symptom is a service starting
+with the wrong credentials (a coturn whose auth pair no longer matches the rows
+in `kvstore_Sipsettings` is the one that turns into "calls connect, no audio").
+
+So never run one product's compose from an environment that sourced the
+other's `.env`. Either use a clean shell, or drop the other product's keys for
+the invocation:
+
+```bash
+# .env wins: strip every key the other project defines, then bring this one up
+OTHER=/usr/src/projects/complete/capstone-voice-aiagent-platform/.env
+UNSETS=(); while IFS='=' read -r k _; do
+  case "$k" in ''|\#*) continue;; esac; UNSETS+=(-u "$k")
+done < "$OTHER"
+env "${UNSETS[@]}" docker compose -f docker-compose.full.yml up -d
+```
+
+`docker compose config | grep -E 'TURN_USERNAME|VOIPMS_SIP_PASS'` shows which
+way any given invocation resolved, which is the quickest way to confirm it.
+
 ## Golden rules
 
 - **Authentik = Identity** · **Infisical = Secrets** · **Cerulean = Trust** ·

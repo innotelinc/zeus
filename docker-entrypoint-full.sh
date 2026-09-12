@@ -195,6 +195,12 @@ ASTERISK_ETC="/etc/asterisk"
 RTP_START="${FREEPBX_RTP_PORT_START:-10101}"
 RTP_END="${FREEPBX_RTP_PORT_END:-10120}"
 STUN_TURN_ADDR="${PJSIP_STUN_TURN_ADDR:-coturn}:${TURN_LISTENING_PORT:-3478}"
+# Two TURN addresses, on purpose (see the STUN/TURN block below): Asterisk's
+# own ICE reaches the TURN server from inside the compose network (no NAT
+# hairpin), so the RTP rows use a docker-resolvable name, while the WebRTC rows
+# are read by *browsers* — which cannot resolve a docker name at all — so they
+# get the public name the portals already hand out.
+TURN_PUBLIC_URI="${TURN_PUBLIC_ADDR:-coturn.zeus.innotel.us}:${TURN_LISTENING_PORT:-3478}"
 if ! [[ "${RTP_START}" =~ ^[0-9]+$ && "${RTP_END}" =~ ^[0-9]+$ ]] || [ "${RTP_START}" -lt 1024 ] || [ "${RTP_START}" -gt "${RTP_END}" ]; then
   echo ">>> invalid RTP range ${RTP_START}-${RTP_END}" >&2
   exit 1
@@ -249,6 +255,56 @@ mysql -u root asterisk -N -B 2>/dev/null \
       INSERT INTO kvstore_Sipsettings (\`key\`, val, type, id) VALUES ('rtpend','${RTP_END}',NULL,'noid') ON DUPLICATE KEY UPDATE val='${RTP_END}';" \
   && echo ">>> rtpstart/rtpend=${RTP_START}-${RTP_END} written to kvstore_Sipsettings"
 set -e
+
+# ── STUN / TURN / WebRTC wiring (durable, via the FreePBX settings DB) ──────
+# TURN is part of the media plane Zeus owns: coturn runs as this stack's
+# `coturn` service (3478/tcp+udp published, relay 49152-49251/udp published —
+# the relay range is what carries media, so a forward for 3478 alone is not
+# enough) and is wired in at the *settings* level, because the same values also
+# live in FreePBX's SIP
+# Settings — an Apply Config regenerates rtp_additional.conf from that table,
+# so a file-only change is reverted the first time anyone opens the GUI.
+#
+# The add-on wrote these rows from its own env while its bundled FreePBX owned
+# the PBX. Once Zeus owns the plane the *owner* has to write them: otherwise the
+# recorded credentials keep pointing at the add-on's coturn (its `capstone-turn`
+# user) the moment that container stops being the server on 3478, and Asterisk
+# silently loses its relay. One pair — TURN_USERNAME / TURN_CREDENTIAL — is
+# shared by coturn, Asterisk and both portals' browsers.
+#
+# The binds + HTTPTLS rows are the WSS half of the same wiring: they keep
+# res_http_websocket listening on 8089 with TLS so the pjsip WSS transport
+# accepts WebRTC connections after a reload. They are already what the box has,
+# so this only stops a future Apply Config from undoing them.
+#
+# Guarded against `set -e` like the RTP write: on a first boot MariaDB may
+# still be populating.
+if [ -n "${TURN_USERNAME:-}" ]; then
+  set +e
+  # Hex-encode user/pass so quotes or slashes cannot break the SQL (FreePBX
+  # stores them this way too and unhexes on read).
+  _turn_user_hex="$(printf '%s' "${TURN_USERNAME:-}" | od -An -tx1 | tr -d ' \n')"
+  _turn_pass_hex="$(printf '%s' "${TURN_CREDENTIAL:-}" | od -An -tx1 | tr -d ' \n')"
+  mysql -u root asterisk -N -B 2>/dev/null <<SQL \
+    && echo ">>> TURN plane wired: RTP/ICE via ${STUN_TURN_ADDR}, WebRTC via ${TURN_PUBLIC_URI} (user ${TURN_USERNAME})"
+INSERT INTO kvstore_Sipsettings (`key`, val, type, id) VALUES
+ ('stunaddr','${STUN_TURN_ADDR}',NULL,'noid'),
+ ('turnaddr','${STUN_TURN_ADDR}',NULL,'noid'),
+ ('turnusername',UNHEX('${_turn_user_hex}'),NULL,'noid'),
+ ('turnpassword',UNHEX('${_turn_pass_hex}'),NULL,'noid'),
+ ('webrtcstunaddr','${TURN_PUBLIC_URI}',NULL,'noid'),
+ ('webrtcturnaddr','${TURN_PUBLIC_URI}',NULL,'noid'),
+ ('webrtcturnusername',UNHEX('${_turn_user_hex}'),NULL,'noid'),
+ ('webrtcturnpassword',UNHEX('${_turn_pass_hex}'),NULL,'noid'),
+ ('wssport-0.0.0.0','8089',NULL,'noid')
+ON DUPLICATE KEY UPDATE val=VALUES(val);
+UPDATE kvstore_Sipsettings SET val='{"udp":{"0.0.0.0":"on"},"tcp":{"0.0.0.0":"off"},"tls":{"0.0.0.0":"off"},"ws":{"0.0.0.0":"off"},"wss":{"0.0.0.0":"on"}}' WHERE `key`='binds';
+UPDATE freepbx_settings SET value='1' WHERE keyword='HTTPTLSENABLE' AND value!='1';
+UPDATE freepbx_settings SET value='0.0.0.0' WHERE keyword='HTTPTLSBINDADDRESS' AND value!='0.0.0.0';
+UPDATE freepbx_settings SET value='8089' WHERE keyword='HTTPTLSBINDPORT' AND value!='8089';
+SQL
+  set -e
+fi
 
 # Override AMI secret from env var if provided
 if [ -n "${FREEPBX_AMI_SECRET:-}" ]; then
