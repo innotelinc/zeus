@@ -5,3 +5,11 @@ data/
 pbx.env
 *.tsbuildinfo
 __pycache__/
+# Editor/OS cruft — must never be committed (a stray vim swap file was tracked
+# once and showed up as a phantom deletion on every checkout).
+*.swp
+*.swo
+*~
+.DS_Store
+# pbx/bootstrap-zeus-pbx.sh staging dir (rendered fragments, rebuilt each run)
+.pbx-stage/

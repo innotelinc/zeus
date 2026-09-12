@@ -52,7 +52,14 @@ services:
       - "8089:8089"       # PJSIP WebSocket (WSS)
       - "5038:5038"       # Asterisk AMI
       - "10000:10000"     # Webmin admin panel
-      - "10101-10120:10101-10120/udp" # RTP media
+      # RTP media — the SAME range Capstone publishes, because both products
+      # ride one RTP plane on a shared box. The host side is env-driven so an
+      # install whose 10101-10120 is busy can shift the block; the container
+      # side stays fixed at 10101-10120 (what Asterisk binds), so the two sides
+      # must stay the same length. Keep Webmin (TCP 10000) out of the range.
+      # docker-entrypoint-full.sh writes the matching rtpstart/rtpend into both
+      # rtp_custom.conf and FreePBX's kvstore_Sipsettings — all three must agree.
+      - "${FREEPBX_RTP_PORT_START:-10101}-${FREEPBX_RTP_PORT_END:-10120}:10101-10120/udp"
     environment:
       HOSTNAME: ${HOSTNAME:-pbx.zeus.innotel.us}
       # VoIP.ms SIP trunk auto-configuration
@@ -77,6 +84,20 @@ services:
       # a dropped control socket by running `fwconsole reload`.
       ASTERISK_WATCHDOG_INTERVAL: ${ASTERISK_WATCHDOG_INTERVAL:-30}
       ASTERISK_WATCHDOG_COOLDOWN: ${ASTERISK_WATCHDOG_COOLDOWN:-60}
+      # RTP plane (docker-entrypoint-full.sh -> write_rtp_plane). Asterisk binds
+      # exactly this range; the entrypoint caps rtp_custom.conf with it AND
+      # writes it into FreePBX's kvstore_Sipsettings (which is what regenerates
+      # rtp_additional.conf on Apply Config), so it must match the published
+      # mapping above. Same env names/defaults as the Capstone stack.
+      FREEPBX_RTP_PORT_START: ${FREEPBX_RTP_PORT_START:-10101}
+      FREEPBX_RTP_PORT_END: ${FREEPBX_RTP_PORT_END:-10120}
+      # STUN/TURN address for Asterisk's RTP engine. Empty -> the local `coturn`
+      # compose service (resolves on pbx-net as coturn:<TURN_LISTENING_PORT>).
+      # Set it (e.g. the LAN IP, or 127.0.0.1 on bare metal) when the alias is
+      # not resolvable — do NOT use host.docker.internal, ast_sockaddr_resolve
+      # fails on it and silently disables STUN.
+      PJSIP_STUN_TURN_ADDR: ${PJSIP_STUN_TURN_ADDR:-}
+      TURN_LISTENING_PORT: ${TURN_LISTENING_PORT:-3478}
     volumes:
       - asterisk-config:/etc/asterisk
       - asterisk-sounds:/var/lib/asterisk/sounds
@@ -247,8 +268,8 @@ services:
       - --log-file=stdout
       - --simple-log
     ports:
-      - "3478:3478"
-      - "3478:3478/udp"
+      - "${TURN_LISTENING_PORT:-3478}:3478"
+      - "${TURN_LISTENING_PORT:-3478}:3478/udp"
       - "5349:5349"
       - "5349:5349/udp"
     networks:
