@@ -165,17 +165,24 @@ RUN apt update && apt -y install --no-install-recommends --ignore-missing \
     chown mysql:mysql /var/run/mysqld && \
     service mariadb start && \
     cd /usr/src && \
-    wget -q https://mirror.freepbx.org/modules/packages/freepbx/freepbx-17.0.19.32.tgz && \
-    echo "ea8b1c6fefcb09ed472fb90aaf0301ca54c8d8223c1b8b5c526b27fb6718ffe4  freepbx-17.0.19.32.tgz" | sha256sum -c - && \
-    tar zxf freepbx-17.0.19.32.tgz && rm freepbx-17.0.19.32.tgz && \
+    # Fetching the tarball is its own gated step: the chain used to run
+    # straight into `./start_asterisk start;`, and the `;` (needed below to
+    # tolerate safe_asterisk failing without a tty) also detached this fetch
+    # from the build. A transient download failure then vanished, the layer
+    # carried on with no /usr/src/freepbx, and the build died 70s later at
+    # `fwconsole reload` with a bare exit 127 that named nothing.
+    { wget -q https://mirror.freepbx.org/modules/packages/freepbx/freepbx-17.0.19.32.tgz && \
+      echo "ea8b1c6fefcb09ed472fb90aaf0301ca54c8d8223c1b8b5c526b27fb6718ffe4  freepbx-17.0.19.32.tgz" | sha256sum -c - && \
+      tar zxf freepbx-17.0.19.32.tgz && rm freepbx-17.0.19.32.tgz; } || \
+      { echo 'FATAL: could not fetch/verify/extract freepbx-17.0.19.32.tgz' >&2; exit 1; } && \
     cd /usr/src/freepbx && chown -R asterisk:asterisk . && \
     # Make sure the asterisk CLI is on PATH for the 'asterisk' user
     # (login.defs PATH does not include /usr/sbin on Debian).
     ln -sf /usr/sbin/asterisk /usr/local/bin/asterisk && \
     # Start Asterisk as the asterisk user. safe_asterisk can fail in a
     # container (no tty), so verify and fall back to a direct daemon start.
-    ./start_asterisk start; \
-    sleep 5; \
+    { ./start_asterisk start || true; } && \
+    sleep 5 && \
     if ! asterisk -rx 'core show version' >/dev/null 2>&1; then \
       runuser -u asterisk -- /usr/sbin/asterisk -U asterisk -G asterisk; \
       sleep 5; \
@@ -208,9 +215,26 @@ RUN apt update && apt -y install --no-install-recommends --ignore-missing \
 RUN mkdir -p /var/run/asterisk && chown asterisk:asterisk /var/run/asterisk && \
     service mariadb start && \
     (asterisk -U asterisk -G asterisk &) && sleep 3 && \
-    fwconsole ma downloadinstall api 2>&1 || echo 'WARNING: API module install failed' && \
-    fwconsole ma downloadinstall ucp 2>/dev/null || true && \
-    fwconsole reload || true
+    # mirror.freepbx.org fails often enough — "Retrieved Module XML Was Empty",
+    # 503s on the package pool — that a single attempt is not a fair test, and
+    # the old `|| echo WARNING` swallowed the failure entirely: the API-patch
+    # layers below then died on a missing Api.class.php with a bare `sed` exit
+    # 2 that named nothing. Retry, then prove the module actually landed.
+    ( for i in 1 2 3 4 5; do \
+        fwconsole ma downloadinstall api 2>&1 && exit 0; \
+        echo "api module install attempt $i/5 failed; retrying in 15s"; \
+        sleep 15; \
+      done; \
+      echo 'FATAL: could not download the api module in 5 attempts — mirror.freepbx.org is unreachable or serving an empty module index' >&2; \
+      exit 1 ) && \
+    { fwconsole ma downloadinstall ucp 2>/dev/null || \
+        echo 'WARNING: ucp module install failed'; } && \
+    { fwconsole reload || true; } && \
+    if [ ! -f /var/www/html/admin/modules/api/Api.class.php ] || \
+       [ ! -f /var/www/html/admin/modules/api/Gql/Api.php ]; then \
+      echo 'FATAL: the api module is not installed — the FreePBX module repo was unreachable, and the patches below need both Api.class.php and Gql/Api.php' >&2; \
+      exit 1; \
+    fi
 
 # ─── FreePBX API module patches ─────────────────────────────
 # Fix 1: getFlattenedScopes() crashes when a scope module (e.g. "framework")
