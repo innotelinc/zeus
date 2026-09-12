@@ -287,7 +287,7 @@ if [ -n "${TURN_USERNAME:-}" ]; then
   _turn_pass_hex="$(printf '%s' "${TURN_CREDENTIAL:-}" | od -An -tx1 | tr -d ' \n')"
   mysql -u root asterisk -N -B 2>/dev/null <<SQL \
     && echo ">>> TURN plane wired: RTP/ICE via ${STUN_TURN_ADDR}, WebRTC via ${TURN_PUBLIC_URI} (user ${TURN_USERNAME})"
-INSERT INTO kvstore_Sipsettings (`key`, val, type, id) VALUES
+INSERT INTO kvstore_Sipsettings (\`key\`, val, type, id) VALUES
  ('stunaddr','${STUN_TURN_ADDR}',NULL,'noid'),
  ('turnaddr','${STUN_TURN_ADDR}',NULL,'noid'),
  ('turnusername',UNHEX('${_turn_user_hex}'),NULL,'noid'),
@@ -298,7 +298,7 @@ INSERT INTO kvstore_Sipsettings (`key`, val, type, id) VALUES
  ('webrtcturnpassword',UNHEX('${_turn_pass_hex}'),NULL,'noid'),
  ('wssport-0.0.0.0','8089',NULL,'noid')
 ON DUPLICATE KEY UPDATE val=VALUES(val);
-UPDATE kvstore_Sipsettings SET val='{"udp":{"0.0.0.0":"on"},"tcp":{"0.0.0.0":"off"},"tls":{"0.0.0.0":"off"},"ws":{"0.0.0.0":"off"},"wss":{"0.0.0.0":"on"}}' WHERE `key`='binds';
+UPDATE kvstore_Sipsettings SET val='{"udp":{"0.0.0.0":"on"},"tcp":{"0.0.0.0":"off"},"tls":{"0.0.0.0":"off"},"ws":{"0.0.0.0":"off"},"wss":{"0.0.0.0":"on"}}' WHERE \`key\`='binds';
 UPDATE freepbx_settings SET value='1' WHERE keyword='HTTPTLSENABLE' AND value!='1';
 UPDATE freepbx_settings SET value='0.0.0.0' WHERE keyword='HTTPTLSBINDADDRESS' AND value!='0.0.0.0';
 UPDATE freepbx_settings SET value='8089' WHERE keyword='HTTPTLSBINDPORT' AND value!='8089';
