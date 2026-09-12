@@ -7,11 +7,17 @@
 # Dockerfile.full before they get published by CI.
 #
 # Usage:
+#   bash scripts/fetch-vendor.sh   # once: pinned framework + module inputs
 #   docker compose -f docker-compose.full.yml -f docker-compose.full.build.yml up -d
 #
 # The local build takes 45-90 minutes and is tagged with the same image name
 # (ghcr.io/innotelinc/zeus:latest-fullstack), so a later plain
 # `docker compose up` reuses it without re-pulling.
+#
+# vendor/ is required: Dockerfile.full installs FreePBX from the files
+# scripts/fetch-vendor.sh puts there rather than fetching them mid-build, so
+# a build without it fails immediately (naming the missing file) instead of
+# failing halfway through on a mirror hiccup.
 # ═══════════════════════════════════════════════════════════════
 
 services:

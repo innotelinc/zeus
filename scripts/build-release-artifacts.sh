@@ -54,6 +54,10 @@ DEPLOY_FILES=(
   .env.docker.example
   README.md
   scripts/setup.sh
+  # Dockerfile.full installs FreePBX from vendor/, so the payload has to
+  # carry the script that produces it — otherwise the bundled Dockerfile
+  # cannot be built at all.
+  scripts/fetch-vendor.sh
   scripts/setup-portal.sh
   scripts/npm-proxy-hosts.py
   scripts/pbx.env.example

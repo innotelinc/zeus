@@ -13,3 +13,6 @@ __pycache__/
 .DS_Store
 # pbx/bootstrap-zeus-pbx.sh staging dir (rendered fragments, rebuilt each run)
 .pbx-stage/
+# Pinned full-stack build inputs (scripts/fetch-vendor.sh). ~40 MB of
+# upstream artifacts — fetched, never committed; CI caches them.
+/vendor/

@@ -1,7 +1,8 @@
 # ═══════════════════════════════════════════════════════════════
 # Zeus — VOIP Platform Full Stack Image (Asterisk + FreePBX)
 # ═══════════════════════════════════════════════════════════════
-# Build:  docker compose -f docker-compose.full.yml -f docker-compose.full.build.yml build
+# Build:  bash scripts/fetch-vendor.sh   (pinned FreePBX framework + api/ucp)
+#         docker compose -f docker-compose.full.yml -f docker-compose.full.build.yml build
 #         (tags the image as ghcr.io/innotelinc/zeus:latest-fullstack,
 #          the same name compose pulls from GHCR once CI publishes it)
 # Run:    docker run -d --name freepbx -p 80:80 -p 5060:5060/udp \
@@ -152,6 +153,15 @@ RUN apt update && \
     { apt_retry clean || echo 'WARNING: apt cache not cleaned — the lists lock stayed busy'; } && \
     rm -rf /var/lib/apt/lists/*
 
+# ─── Pinned build inputs (vendor/) ───────────────────────────
+# scripts/fetch-vendor.sh puts the FreePBX framework tarball and the two
+# signed module packages here, each pinned by sha256. Fetching them inside the
+# build meant the always-flaky mirror (empty module index, 503s, empty-bodied
+# 404s) failed the build layers after the real cause, so the fetch is now a
+# separate, retried, hash-checked step and the build itself needs no network.
+# Each source is named so a missing file fails with that file's name.
+COPY vendor/freepbx-17.0.19.32.tgz vendor/api-17.0.9.tgz.gpg vendor/ucp-17.0.10.tgz.gpg /usr/src/vendor/
+
 # ─── FreePBX 17 (direct framework tarball install) ──────────
 # Installs FreePBX directly from the official framework tarball via its
 # own installer (./install -n) instead of the Sangoma Debian script,
@@ -184,16 +194,17 @@ RUN apt update && apt -y install --no-install-recommends --ignore-missing \
     chown mysql:mysql /var/run/mysqld && \
     service mariadb start && \
     cd /usr/src && \
-    # Fetching the tarball is its own gated step: the chain used to run
-    # straight into `./start_asterisk start;`, and the `;` (needed below to
-    # tolerate safe_asterisk failing without a tty) also detached this fetch
-    # from the build. A transient download failure then vanished, the layer
-    # carried on with no /usr/src/freepbx, and the build died 70s later at
-    # `fwconsole reload` with a bare exit 127 that named nothing.
-    { wget -q https://mirror.freepbx.org/modules/packages/freepbx/freepbx-17.0.19.32.tgz && \
+    # Unpacking the vendored tarball is its own gated step: the chain used to
+    # run straight into `./start_asterisk start;`, and the `;` (needed below to
+    # tolerate safe_asterisk failing without a tty) also detached this step
+    # from the build. A failure then vanished, the layer carried on with no
+    # /usr/src/freepbx, and the build died 70s later at `fwconsole reload` with
+    # a bare exit 127 that named nothing. The sha256 is re-checked here so a
+    # stale or tampered vendor/ cannot be installed.
+    { cp /usr/src/vendor/freepbx-17.0.19.32.tgz . && \
       echo "ea8b1c6fefcb09ed472fb90aaf0301ca54c8d8223c1b8b5c526b27fb6718ffe4  freepbx-17.0.19.32.tgz" | sha256sum -c - && \
       tar zxf freepbx-17.0.19.32.tgz && rm freepbx-17.0.19.32.tgz; } || \
-      { echo 'FATAL: could not fetch/verify/extract freepbx-17.0.19.32.tgz' >&2; exit 1; } && \
+      { echo 'FATAL: vendor/freepbx-17.0.19.32.tgz is missing or fails its pinned sha256 — run scripts/fetch-vendor.sh before building' >&2; exit 1; } && \
     cd /usr/src/freepbx && chown -R asterisk:asterisk . && \
     # Make sure the asterisk CLI is on PATH for the 'asterisk' user
     # (login.defs PATH does not include /usr/sbin on Debian).
@@ -234,24 +245,35 @@ RUN apt update && apt -y install --no-install-recommends --ignore-missing \
 RUN mkdir -p /var/run/asterisk && chown asterisk:asterisk /var/run/asterisk && \
     service mariadb start && \
     (asterisk -U asterisk -G asterisk &) && sleep 3 && \
-    # mirror.freepbx.org fails often enough — "Retrieved Module XML Was Empty",
-    # 503s on the package pool — that a single attempt is not a fair test, and
-    # the old `|| echo WARNING` swallowed the failure entirely: the API-patch
-    # layers below then died on a missing Api.class.php with a bare `sed` exit
-    # 2 that named nothing. Retry, then prove the module actually landed.
-    ( for i in 1 2 3 4 5; do \
-        fwconsole ma downloadinstall api 2>&1 && exit 0; \
-        echo "api module install attempt $i/5 failed; retrying in 15s"; \
-        sleep 15; \
-      done; \
-      echo 'FATAL: could not download the api module in 5 attempts — mirror.freepbx.org is unreachable or serving an empty module index' >&2; \
-      exit 1 ) && \
-    { fwconsole ma downloadinstall ucp 2>/dev/null || \
-        echo 'WARNING: ucp module install failed'; } && \
+    # Install the two modules from the vendored packages instead of
+    # `fwconsole ma downloadinstall`, which resolves them through the mirror's
+    # module index — the exact thing that returns an empty body
+    # ("Retrieved Module XML Was Empty") and took the build down.
+    #
+    # The .tgz.gpg files are PGP *signed*, not encrypted: gpg emits the tarball
+    # and then exits 2 because no public key is present, so its status is
+    # deliberately ignored and the decrypted payload's pinned sha256 is what
+    # validates the bytes. FreePBX installs a module that is present on disk
+    # but not yet installed via `fwconsole ma installlocal`, which is the
+    # offline path the framework layer above already uses.
+    { cd /tmp && \
+      gpg --batch -q -d /usr/src/vendor/api-17.0.9.tgz.gpg > api-17.0.9.tgz || true; \
+      echo "69cef29e037c11193e506dad097809c8d788454808e10d89a0e0ad67c6a62f08  api-17.0.9.tgz" | sha256sum -c -; } || \
+      { echo 'FATAL: vendor/api-17.0.9.tgz.gpg is missing or fails its pinned payload sha256 — run scripts/fetch-vendor.sh before building' >&2; exit 1; } && \
+    { cd /tmp && \
+      gpg --batch -q -d /usr/src/vendor/ucp-17.0.10.tgz.gpg > ucp-17.0.10.tgz || true; \
+      echo "6b2f676e77b8048695831fdf2b945e989123935b8a14e98e4e639c547cf36ac4  ucp-17.0.10.tgz" | sha256sum -c -; } || \
+      { echo 'FATAL: vendor/ucp-17.0.10.tgz.gpg is missing or fails its pinned payload sha256 — run scripts/fetch-vendor.sh before building' >&2; exit 1; } && \
+    tar zxf /tmp/api-17.0.9.tgz -C /var/www/html/admin/modules && \
+    tar zxf /tmp/ucp-17.0.10.tgz -C /var/www/html/admin/modules && \
+    rm -f /tmp/api-17.0.9.tgz /tmp/ucp-17.0.10.tgz && \
+    chown -R asterisk:asterisk /var/www/html/admin/modules && \
+    { fwconsole ma installlocal 2>&1 || \
+        echo 'WARNING: installlocal reported a problem — the gate below decides'; } && \
     { fwconsole reload || true; } && \
     if [ ! -f /var/www/html/admin/modules/api/Api.class.php ] || \
        [ ! -f /var/www/html/admin/modules/api/Gql/Api.php ]; then \
-      echo 'FATAL: the api module is not installed — the FreePBX module repo was unreachable, and the patches below need both Api.class.php and Gql/Api.php' >&2; \
+      echo 'FATAL: the api module did not install from vendor/ — the patches below need both Api.class.php and Gql/Api.php' >&2; \
       exit 1; \
     fi
 
