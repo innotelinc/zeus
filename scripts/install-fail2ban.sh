@@ -113,11 +113,17 @@ if [ "$MODE" = "uninstall" ]; then
            "${F2B_DIR}/filter.d/asterisk-security.conf" \
            "${F2B_DIR}/filter.d/asterisk-registration.conf" \
            "${F2B_DIR}/action.d/docker-user.conf"; do
-    [ -e "$f" ] && rm -f "$f" && pass "removed $f"
+    if [ -e "$f" ]; then
+      rm -f "$f"
+      pass "removed $f"
+    fi
   done
   left=$(iptables -w -S DOCKER-USER 2>/dev/null | grep -c -- '-j DROP' || true)
-  [ "${left:-0}" -eq 0 ] && pass "no DOCKER-USER drop rules left" \
-    || warn "${left} DOCKER-USER drop rule(s) remain — fail2ban unban needs the daemon up"
+  if [ "${left:-0}" -eq 0 ]; then
+    pass "no DOCKER-USER drop rules left"
+  else
+    warn "${left} DOCKER-USER drop rule(s) remain — fail2ban unban needs the daemon up"
+  fi
   exit 0
 fi
 
