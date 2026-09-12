@@ -129,6 +129,18 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v7
 
+      # The full-stack build installs FreePBX from vendor/, not from
+      # mirror.freepbx.org — see scripts/fetch-vendor.sh. The cache key is the
+      # script itself, so bumping a pinned version refetches.
+      - name: Cache pinned build inputs
+        uses: actions/cache@v4
+        with:
+          path: vendor
+          key: vendor-${{ hashFiles('scripts/fetch-vendor.sh') }}
+
+      - name: Fetch pinned build inputs (FreePBX framework + api/ucp)
+        run: bash scripts/fetch-vendor.sh
+
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v4
 
@@ -180,6 +192,15 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v7
+
+      - name: Cache pinned build inputs
+        uses: actions/cache@v4
+        with:
+          path: vendor
+          key: vendor-${{ hashFiles('scripts/fetch-vendor.sh') }}
+
+      - name: Fetch pinned build inputs (FreePBX framework + api/ucp)
+        run: bash scripts/fetch-vendor.sh
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v4

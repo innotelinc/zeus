@@ -177,7 +177,20 @@ cp .env.docker.example .env   # edit with your credentials
 docker compose -f docker-compose.full.yml up -d
 ```
 
-To build the full-stack image locally instead (45-90 min, one-time): `docker compose -f docker-compose.full.yml -f docker-compose.full.build.yml up -d`.
+To build the full-stack image locally instead (45-90 min, one-time), fetch the
+pinned build inputs first, then build:
+
+```bash
+bash scripts/fetch-vendor.sh        # FreePBX framework + api/ucp, hash-checked
+bash scripts/fetch-vendor.sh --check  # verify vendor/ without the network
+docker compose -f docker-compose.full.yml -f docker-compose.full.build.yml up -d
+```
+
+`vendor/` (~40 MB, gitignored) is the only thing `Dockerfile.full` installs
+FreePBX from — the image build itself needs no network, so a mirror outage
+(`mirror.freepbx.org` 503s, and serves an empty-bodied 404 for the module
+index) cannot take the build down. Bump a version by editing the pins in
+`scripts/fetch-vendor.sh` and refetching with `--force`.
 
 **Files:** `Dockerfile.full`, `docker-compose.full.yml`, `docker-entrypoint-full.sh`
 
