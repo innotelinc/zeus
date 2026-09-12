@@ -261,11 +261,15 @@ PJSIPEOF
 
 RUN echo '#include pjsip_wss.conf' >> /etc/asterisk/pjsip.conf && \
     cat > /etc/asterisk/rtp_custom.conf <<'EOF'
+; Build-time fallback only. docker-entrypoint-full.sh rewrites this file
+; canonically on every boot from FREEPBX_RTP_PORT_START/END and
+; PJSIP_STUN_TURN_ADDR, and writes the same range into FreePBX's
+; kvstore_Sipsettings so rtp_additional.conf regenerates from it.
+; The range must match what compose publishes + the router forwards —
+; 10101-10120/udp is the shared Zeus/Capstone RTP plane.
 [general]
-stunaddr = stun.l.google.com:19302
+stunaddr = coturn:3478
 icesupport = yes
-; RTP range must match what compose publishes + the router forwards
-; (10101-10120/udp, same as the capstone shared-PBX convention).
 rtpstart=10101
 rtpend=10120
 EOF

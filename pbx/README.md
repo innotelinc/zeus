@@ -11,6 +11,7 @@ operational shape.
 | `asterisk/manager_custom.conf` | AMI user for the portal (`pbxportal`) with a deny-by-default permit list (genuinely included) |
 | `asterisk/ari.conf` | `[pbxportal]` ARI user section — **converged into the real `/etc/asterisk/ari.conf`** (see below) |
 | `asterisk/http_custom.conf` | Asterisk HTTP server + WebSocket transport for the WebRTC softphone (genuinely included) |
+| `asterisk/rtp_custom.conf` | RTP media plane: canonical `stunaddr`/`icesupport` + `rtpstart`/`rtpend` cap. **Entrypoint-owned** — `bootstrap-zeus-pbx.sh` skips it; `docker-entrypoint-full.sh`/`scripts/setup.sh` derive it from `FREEPBX_RTP_PORT_*` + `PJSIP_STUN_TURN_ADDR` on every boot. Mirrored by the Capstone repo so both products cap one range |
 | `asterisk/extensions_custom.conf` | Portal dialplan context (`[from-zeus-portal]`) — converge-owned |
 | `bootstrap-zeus-pbx.sh` | Render + apply the fragments idempotently; `--check` drift mode |
 | `asterisk_converge.py` | Per-section merge for the **shared** `extensions_custom.conf` / `ari.conf` (ownership markers) |
@@ -73,6 +74,61 @@ python3 pbx/asterisk_converge.py \
   --source <capstone-repo>/pbx/asterisk/ari.conf \
   --owner capstone
 ```
+
+## RTP media plane (one range for both products)
+
+Zeus owns the RTP plane: on a shared box every consumer — Zeus softphones/portal
+and the Capstone agent add-on — rides **one** range, `10101-10120/udp` by
+default. The Capstone `pbx/` layer mirrors this file and these env names, so both
+products cap Asterisk identically.
+
+Three things must agree, and all three are driven from `.env`:
+
+| Layer | Value | Set by |
+|---|---|---|
+| Host publish | `${FREEPBX_RTP_PORT_START:-10101}-${FREEPBX_RTP_PORT_END:-10120}` → `10101-10120/udp` | `docker-compose.full.yml` (`freepbx.ports`) |
+| File fallback | `stunaddr` / `icesupport` / `rtpstart` / `rtpend` | `docker-entrypoint-full.sh` → `/etc/asterisk/rtp_custom.conf` |
+| Settings DB | `kvstore_Sipsettings.rtpstart` / `.rtpend` | same entrypoint, every boot |
+
+The **DB row is what actually sticks**: FreePBX's Sipsettings module regenerates
+`rtp_additional.conf` from it on every *Apply Config*, and Asterisk reads configs
+*first-wins* — so an included `rtp_custom.conf` alone is shadowed by the generated
+file. Without the DB write Asterisk silently reverts to FreePBX's default
+(`10000-20000`), which is **not published** and yields one-way or dead audio. The
+Capstone twin carries the identical write.
+
+`rtp_custom.conf` is **entrypoint-owned**, not bootstrap-owned: the runtime
+(`docker-entrypoint-full.sh` in Docker, `scripts/setup.sh` bare-metal) rewrites
+it from `.env` on every boot, so `bootstrap-zeus-pbx.sh` deliberately skips it —
+a static copy would fight a non-default range and always report drift. The repo
+file is the shape reference.
+
+It also carries the STUN/TURN address (`stunaddr`), defaulting to
+the `coturn` compose service (`coturn:<TURN_LISTENING_PORT>`, 3478). Override with
+`PJSIP_STUN_TURN_ADDR` — bare-metal installs and any host where the `coturn`
+alias does not resolve must set it (e.g. `127.0.0.1:3478`). Never use
+`host.docker.internal`: `ast_sockaddr_resolve` fails on that alias and STUN is
+silently disabled.
+
+Keep Webmin (TCP `10000`) and the TURN relay range (`49152-49251`) clear of the
+RTP block, and keep the two sides of the compose mapping the same length (the
+container side is fixed at `10101-10120` — what Asterisk binds). Changing the
+range means updating the router forward too.
+
+```bash
+# what Asterisk actually bound, what compose published, and the durable row
+cd <zeus-repo>
+docker port zeus-freepbx | grep '/udp$'                     # published block
+ASTERISK='docker exec zeus-freepbx asterisk -rx'
+$ASTERISK 'rtp show settings' | grep -E 'Port (start|end)'  # effective range
+# Asterisk only binds even ports, so 10101 shows up as 10102 — still in range.
+docker exec zeus-freepbx cat /etc/asterisk/rtp_custom.conf
+docker exec zeus-freepbx mysql -u root asterisk -N -B \
+  -e "SELECT \`key\`,val FROM kvstore_Sipsettings WHERE \`key\` LIKE 'rtp%'"
+```
+
+`scripts/smoke-test.sh pbx` asserts the published block is exactly the effective
+range and that no stale range (e.g. `10000-10100`, `10121-20000`) is exposed.
 
 ## MS Teams Direct Routing (Cerulean trust plane)
 

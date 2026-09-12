@@ -184,9 +184,17 @@ To build the full-stack image locally instead (45-90 min, one-time): `docker com
 | Service | Image | Ports |
 |---|---|---|
 | MariaDB | inside full-stack image | 3306 (internal) |
-| Asterisk + FreePBX | `ghcr.io/innotelinc/zeus:latest-fullstack` | 80, 5060/udp, 8088, 8089, 5038, 10000, 10101-10120/udp (RTP) |
+| Asterisk + FreePBX | `ghcr.io/innotelinc/zeus:latest-fullstack` | 80, 5060/udp, 8088, 8089, 5038, 10000, 10101-10120/udp (RTP — `FREEPBX_RTP_PORT_START/END`) |
 | AvantFax | inside full-stack image (`/fax`) | via :80 |
 | Zeus Portal | built from `Dockerfile` | 3000 |
+
+The RTP block is parameterized (`.env`: `FREEPBX_RTP_PORT_START` /
+`FREEPBX_RTP_PORT_END`, default `10101-10120`) and is the **same plane the Capstone
+agent add-on rides** — compose publishes it, `docker-entrypoint-full.sh` caps
+`rtp_custom.conf` with it, and the same range is written into FreePBX's
+`kvstore_Sipsettings` so an *Apply Config* cannot revert Asterisk to its default
+`10000-20000` (unpublished → one-way audio). See
+[`pbx/README.md` → RTP media plane](pbx/README.md#rtp-media-plane-one-range-for-both-products).
 
 ### Cerulean Authentik SSO (any deployment)
 

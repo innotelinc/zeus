@@ -6,6 +6,10 @@
 # HTTP/WSS transport, portal dialplan) and applies them to the FreePBX
 # custom include dir, then reloads the dialplan. Idempotent.
 #
+# rtp_custom.conf is NOT applied here: the runtime entrypoint owns the RTP plane
+# (docker-entrypoint-full.sh / scripts/setup.sh derive it from FREEPBX_RTP_PORT_*
+# + PJSIP_STUN_TURN_ADDR on every boot), so bootstrap skips it entirely.
+#
 # extensions_custom.conf is NOT copied wholesale: it goes through
 # pbx/asterisk_converge.py (per-context merge, [from-internal-custom] is
 # append-shared under ownership markers) so capstone's contexts survive on
@@ -64,11 +68,29 @@ ARI_HTTP_PORT="${ARI_HTTP_PORT:-8088}"
 : "${FREEPBX_ARI_SECRET:?FREEPBX_ARI_SECRET is required (see scripts/pbx.env.example)}"
 AMI_PERMIT_LINE="permit = ${AMI_PERMIT:-10.0.0.0/255.0.0.0}"
 
+# Fragments the RUNTIME entrypoint owns — it derives them from .env on every
+# boot, so bootstrap must not stage, copy or drift-check them:
+#   rtp_custom.conf — docker-entrypoint-full.sh (Docker) and scripts/setup.sh
+#       (bare metal) write it with the exact FREEPBX_RTP_PORT_START/END range and
+#       PJSIP_STUN_TURN_ADDR. A static copy from this repo would fight it and
+#       always report drift on a non-default range. The repo file is the shape
+#       reference the entrypoint mirrors.
+ENTRYPOINT_OWNED="rtp_custom.conf"
+
+_is_entrypoint_owned() {
+  local name="$1" owned
+  for owned in $ENTRYPOINT_OWNED; do
+    [ "$name" = "$owned" ] && return 0
+  done
+  return 1
+}
+
 # Render every fragment with the runtime secrets substituted.
 render_fragments() {
   rm -rf "$STAGE_DIR"
   mkdir -p "$STAGE_DIR"
   for frag in "$FRAG_DIR"/*.conf; do
+    _is_entrypoint_owned "$(basename "$frag")" && continue
     sed \
       -e "s/__AMI_USER__/${FREEPBX_AMI_USER}/g" \
       -e "s/__AMI_SECRET__/${FREEPBX_AMI_SECRET}/g" \

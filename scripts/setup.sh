@@ -989,19 +989,44 @@ else
   echo '#include pjsip_wss.conf' > /etc/asterisk/pjsip.conf
 fi
 
-# ─── STUN for ICE (NAT traversal) ─────────────────────────────
+# ─── RTP media plane (mirrors the Docker path + Capstone) ─────
+# Zeus owns the RTP plane: the firewall/router-forwarded range, the file
+# Asterisk reads, and FreePBX's kvstore_Sipsettings must all agree, or media
+# silently escapes the published ports and calls go one-way. The Capstone repo
+# mirrors this exact shape so a shared box runs one range for both products.
+# Keep the range clear of Webmin (TCP 10000).
+#   FREEPBX_RTP_PORT_START/END  — the RTP range (default 10101-10120)
+#   PJSIP_STUN_TURN_ADDR        — STUN/TURN address; bare metal defaults to
+#                                 Google STUN, set it to the local coturn
+#                                 (e.g. 127.0.0.1:3478) when one runs
+RTP_START="${FREEPBX_RTP_PORT_START:-10101}"
+RTP_END="${FREEPBX_RTP_PORT_END:-10120}"
+STUN_ADDR="${PJSIP_STUN_TURN_ADDR:-stun.l.google.com:19302}"
 cat > /etc/asterisk/rtp_custom.conf <<EOF
 [general]
-stunaddr = stun.l.google.com:19302
+stunaddr = ${STUN_ADDR}
 icesupport = yes
+rtpstart=${RTP_START}
+rtpend=${RTP_END}
 EOF
 
-# Ensure rtp.conf includes the custom config
+# Ensure rtp.conf includes the custom config (exactly once)
 if [ -f /etc/asterisk/rtp.conf ]; then
-  if ! grep -q 'rtp_custom.conf' /etc/asterisk/rtp.conf 2>/dev/null; then
+  if ! grep -q '#include rtp_custom.conf' /etc/asterisk/rtp.conf 2>/dev/null; then
     echo '#include rtp_custom.conf' >> /etc/asterisk/rtp.conf
   fi
 fi
+
+# Durable copy: FreePBX's Sipsettings module regenerates rtp_additional.conf
+# from kvstore_Sipsettings on every Apply Config and Asterisk reads configs
+# first-wins, so the generated file shadows the include above. Write the range
+# there too, or Apply Config silently reverts RTP to FreePBX's default
+# (10000-20000).
+mysql -u root -p"${DB_PASS}" asterisk -e \
+  "INSERT INTO kvstore_Sipsettings (\`key\`, val, type, id) VALUES ('rtpstart','${RTP_START}',NULL,'noid') ON DUPLICATE KEY UPDATE val='${RTP_START}';
+   INSERT INTO kvstore_Sipsettings (\`key\`, val, type, id) VALUES ('rtpend','${RTP_END}',NULL,'noid') ON DUPLICATE KEY UPDATE val='${RTP_END}';" 2>/dev/null || true
+log "RTP plane open on ${RTP_START}-${RTP_END} (STUN/TURN ${STUN_ADDR})"
+
 
 # Load the PJSIP WebSocket transport module
 asterisk -rx 'module load res_pjsip_transport_websocket.so' 2>/dev/null || true

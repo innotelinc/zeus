@@ -118,6 +118,85 @@ if [ -f "${LOGGER_CONF}" ] && ! grep -q 'logger_logfiles_custom.conf' "${LOGGER_
 fi
 chown asterisk:asterisk "${LOGGER_CUSTOM}" 2>/dev/null || true
 
+# ── RTP plane: canonical rtp_custom.conf + the durable settings-DB write ────
+# Zeus owns the RTP plane. Every consumer rides this one range — Zeus
+# softphones/portal and the Capstone agent add-on — so the published compose
+# mapping, the file Asterisk reads, and the FreePBX settings DB must all agree
+# or RTP silently escapes the published ports and calls go one-way.
+#
+#   compose  FREEPBX_RTP_PORT_START..END      -> host publish (10101-10120)
+#   file     /etc/asterisk/rtp_custom.conf    -> rtpstart/rtpend fallback
+#   DB       kvstore_Sipsettings              -> what FreePBX regenerates
+#            rtp_additional.conf from on Apply Config. This is the copy that
+#            wins: Asterisk reads configs first-wins, so the generated file
+#            shadows the included rtp_custom.conf.
+#
+# The Capstone repo's pbx/ layer mirrors this exact shape (same env names, same
+# file, same DB write) so a shared box runs one RTP plane for both products.
+# Override the STUN/TURN address with PJSIP_STUN_TURN_ADDR — required on
+# bare-metal or single-host installs where the `coturn` compose alias does not
+# resolve (set it to the TURN host, e.g. 127.0.0.1; do NOT use
+# host.docker.internal, ast_sockaddr_resolve fails on that alias and silently
+# disables STUN).
+ASTERISK_ETC="/etc/asterisk"
+RTP_START="${FREEPBX_RTP_PORT_START:-10101}"
+RTP_END="${FREEPBX_RTP_PORT_END:-10120}"
+STUN_TURN_ADDR="${PJSIP_STUN_TURN_ADDR:-coturn}:${TURN_LISTENING_PORT:-3478}"
+if ! [[ "${RTP_START}" =~ ^[0-9]+$ && "${RTP_END}" =~ ^[0-9]+$ ]] || [ "${RTP_START}" -lt 1024 ] || [ "${RTP_START}" -gt "${RTP_END}" ]; then
+  echo ">>> invalid RTP range ${RTP_START}-${RTP_END}" >&2
+  exit 1
+fi
+
+# Rewrite the whole file so it always holds exactly the published block, and
+# keep exactly one '#include rtp_custom.conf' in rtp.conf. The image appends
+# the include at build time and FreePBX's core module template can add it again
+# on reload -> "Same File included more than once". The rewrite goes through
+# the symlink with python (open() follows it); `sed -i` would replace the
+# symlink with a regular file and the include would vanish on the next Apply
+# Config. Idempotent — safe to re-run after any fwconsole reload.
+write_rtp_plane() {
+  cat > "${ASTERISK_ETC}/rtp_custom.conf" <<EOF
+[general]
+stunaddr = ${STUN_TURN_ADDR}
+icesupport = yes
+rtpstart=${RTP_START}
+rtpend=${RTP_END}
+EOF
+  chown asterisk:asterisk "${ASTERISK_ETC}/rtp_custom.conf" 2>/dev/null || true
+  if [ -f "${ASTERISK_ETC}/rtp.conf" ]; then
+    python3 - "${ASTERISK_ETC}/rtp.conf" <<'PYEOF' 2>/dev/null || true
+import sys
+p = sys.argv[1]
+lines = open(p).read().split('\n')
+seen = False
+out = []
+for line in lines:
+    if line.strip() == '#include rtp_custom.conf':
+        if seen:
+            continue
+        seen = True
+    out.append(line)
+if not seen:
+    out.append('#include rtp_custom.conf')
+open(p, 'w').write('\n'.join(out))
+PYEOF
+    chown asterisk:asterisk "${ASTERISK_ETC}/rtp.conf" 2>/dev/null || true
+  fi
+}
+write_rtp_plane
+echo ">>> rtp_custom.conf canonical (${RTP_START}-${RTP_END}, STUN/TURN ${STUN_TURN_ADDR})"
+
+# Durable settings-DB write so FreePBX regenerates rtp_additional.conf with the
+# published range on every Apply Config (survives `fwconsole reload`). Guarded
+# against `set -e` — on a first boot FreePBX may still be populating the DB when
+# MariaDB first answers.
+set +e
+mysql -u root asterisk -N -B 2>/dev/null \
+  -e "INSERT INTO kvstore_Sipsettings (\`key\`, val, type, id) VALUES ('rtpstart','${RTP_START}',NULL,'noid') ON DUPLICATE KEY UPDATE val='${RTP_START}'; \
+      INSERT INTO kvstore_Sipsettings (\`key\`, val, type, id) VALUES ('rtpend','${RTP_END}',NULL,'noid') ON DUPLICATE KEY UPDATE val='${RTP_END}';" \
+  && echo ">>> rtpstart/rtpend=${RTP_START}-${RTP_END} written to kvstore_Sipsettings"
+set -e
+
 # Override AMI secret from env var if provided
 if [ -n "${FREEPBX_AMI_SECRET:-}" ]; then
   sed -i "s/secret = .*/secret = ${FREEPBX_AMI_SECRET}/" /etc/asterisk/manager_custom.conf
@@ -689,6 +768,15 @@ WSSEOF
     echo ">>> [modules] boot reload failed — see /tmp/fwconsole-boot-reload.log"
   fi
   echo ">>> FreePBX modules refreshed"
+
+  # Re-assert the RTP plane after the boot reload. The `fwconsole reload` above
+  # just regenerated rtp_additional.conf from kvstore_Sipsettings and the core
+  # module template can re-add a duplicate include to rtp.conf — rewrite the
+  # canonical file + include hygiene, then reload once more so the running
+  # Asterisk actually loads the regenerated range (the reload above wrote the
+  # file, but Asterisk still holds the previous rtpstart/rtpend).
+  write_rtp_plane
+  fwconsole reload >/tmp/fwconsole-rtp-reload.log 2>&1 || true
 
   # Start Apache in background (web UI is now safe to trigger reloads)
   apache2ctl -D FOREGROUND &

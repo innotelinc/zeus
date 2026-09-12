@@ -12,6 +12,7 @@
 #             • AMI port open + handshake (ASTERISK_AMI_HOST:PORT)
 #             • ARI HTTP port open (ARI_HTTP_PORT, default 8088)
 #             • PBX fragments in sync (pbx/bootstrap-zeus-pbx.sh --check)
+#             • RTP plane: published block == Asterisk effective range
 #   Fax       • AvantFax reachable (AVANTFAX_URL)
 #   Numbers   • VoIP.ms credentials configured (VOIPMS_API_USERNAME)
 #
@@ -115,6 +116,52 @@ if [ "$SCOPE" = all ] || [ "$SCOPE" = pbx ]; then
     fi
   else
     skip "PBX fragment drift (scripts/pbx.env not present)"
+  fi
+
+  # ── RTP plane ────────────────────────────────────────────────
+  # Zeus owns one RTP plane for both products (Zeus + the Capstone add-on), so
+  # the published compose block, Asterisk's effective range, and the durable
+  # FreePBX settings row must all agree. This catches the classic silent
+  # failure: Asterisk left at FreePBX's default 10000-20000 while compose
+  # publishes 10101-10120 -> media escapes the forward and calls go one-way.
+  FBX=$(docker ps -aq --filter "label=com.docker.compose.service=freepbx" 2>/dev/null | while read -r c; do
+    [ "$(docker inspect -f '{{.State.Status}}' "$c" 2>/dev/null)" = "running" ] && { echo "$c"; break; }
+  done)
+  FBX="${FBX:-zeus-freepbx}"
+  if [ "$(docker inspect -f '{{.State.Status}}' "$FBX" 2>/dev/null)" = "running" ]; then
+    rtp_start="${FREEPBX_RTP_PORT_START:-10101}"
+    rtp_end="${FREEPBX_RTP_PORT_END:-10120}"
+    # `docker port` reports really-published ports expanded one by one (the
+    # fullstack image EXPOSEs a wider block that Docker 29 would otherwise
+    # list), so it is the right source for the advertised block.
+    pub_udp=$(docker port "$FBX" 2>/dev/null | awk '{print $1}' | grep '/udp$' | grep -v '^5060/udp$' | sort -u || true)
+    expected_rtp=$(seq "$rtp_start" "$rtp_end" | sed 's/$/\/udp/')
+    if [ -n "$pub_udp" ] && [ "$(printf '%s\n' "$pub_udp")" = "$(printf '%s\n' "$expected_rtp")" ]; then
+      pass "PBX publishes exactly the RTP plane UDP ${rtp_start}-${rtp_end}"
+    else
+      fail "PBX RTP mapping is not exactly UDP ${rtp_start}-${rtp_end} (got: $(tr '\n' ' ' <<<"$pub_udp"))"
+    fi
+    stale=$(grep '/udp$' <<<"$pub_udp" | awk -F/ -v s="$rtp_start" -v e="$rtp_end" '$1+0 >= 10000 && $1+0 < s || $1+0 > e && $1+0 <= 20000' || true)
+    if [ -n "$stale" ]; then
+      fail "PBX publishes stale RTP ports: $(tr '\n' ' ' <<<"$stale")"
+    else
+      pass "PBX does not publish stale RTP ranges"
+    fi
+    # Asterisk only binds even RTP ports, so an odd rtpstart (10101) shows up
+    # as 10102 — assert the effective range is fully inside the published one,
+    # not byte-equal. Outside it means the settings-DB row drifted (an Apply
+    # Config reverted it to FreePBX's default 10000-20000).
+    rtp_settings=$(docker exec "$FBX" asterisk -rx 'rtp show settings' 2>/dev/null || true)
+    eff_start=$(awk '/Port start:/ {print $3; exit}' <<<"$rtp_settings")
+    eff_end=$(awk '/Port end:/ {print $3; exit}' <<<"$rtp_settings")
+    if [[ "$eff_start" =~ ^[0-9]+$ && "$eff_end" =~ ^[0-9]+$ ]] &&
+       (( 10#$eff_start >= 10#$rtp_start && 10#$eff_end <= 10#$rtp_end )); then
+      pass "Asterisk effective RTP range ${eff_start}-${eff_end} within published ${rtp_start}-${rtp_end}"
+    else
+      fail "Asterisk effective RTP range is ${eff_start:-unknown}-${eff_end:-unknown}; expected within ${rtp_start}-${rtp_end} (settings DB drifted?)"
+    fi
+  else
+    skip "PBX RTP plane (container $FBX not running)"
   fi
 fi
 
