@@ -138,8 +138,15 @@ services:
       # module versions and re-trigger the disabled-module / "Unknown Error"
       # failure after the boot-time `fwconsole ma refreshsignatures`).
       - mariadb-data:/var/lib/mysql
+    # `core show version` alone passes before Apache ever starts, so a fresh
+    # container reports healthy while the GUI is still refusing connections
+    # (observed on this host: 302 on :80 only minutes after `healthy`). The GUI
+    # is half of what users touch, so probe both — Asterisk via the CLI, the
+    # web root via its HTTP listener on :80 (also published as :8083).
+    # `follow_redirects=false` is fine: any HTTP answer proves the listener is
+    # serving, and FreePBX's login redirect is exactly what we expect.
     healthcheck:
-      test: ["CMD", "asterisk", "-rx", "core show version"]
+      test: ["CMD-SHELL", "asterisk -rx 'core show version' >/dev/null 2>&1 && curl -sf -o /dev/null http://127.0.0.1:80/ || exit 1"]
       interval: 30s
       timeout: 10s
       retries: 3
