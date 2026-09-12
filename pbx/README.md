@@ -220,6 +220,54 @@ Tests: `npm test` — includes wizard stanza + semver-gate tests against a fake
 test against the committed mock (`scripts/fixtures/cerulean-api-mock.mjs`,
 mirroring Cerulean's REST contract with a real RSA-2048 fixture certificate).
 
+## Blocking invalid SIP registrations (fail2ban)
+
+A PBX with a public 5060/udp is scanned within minutes of appearing and probed
+forever after. Asterisk cannot reject that traffic on its own, and a ban applied
+inside the container cannot work either — the container sits on `pbx-net` behind
+Docker's NAT, so by the time Asterisk sees a packet Docker has already DNAT'd it.
+The ban has to be applied on the **host**, in Docker's `DOCKER-USER` chain, which
+is the first rule Docker inserts into `FORWARD` (before its own accepts and
+before the conntrack accept for established flows).
+
+```bash
+sudo scripts/install-fail2ban.sh              # install, start, verify
+sudo scripts/install-fail2ban.sh --status     # jails + live bans
+sudo scripts/install-fail2ban.sh --dry-run    # preview the rendered jail
+sudo scripts/install-fail2ban.sh --uninstall  # stop + remove
+```
+
+| File | Role |
+|---|---|
+| `pbx/fail2ban/jail.local.in` | jail template — rendered to `/etc/fail2ban/jail.local` with the log dir, `ignoreip` and ban policy substituted in |
+| `pbx/fail2ban/filter.d/asterisk-security.conf` | matches `res_security_log` records, anchoring `<HOST>` on `RemoteAddress` (never `SuccessfulAuth`) |
+| `pbx/fail2ban/filter.d/asterisk-registration.conf` | matches the `failed for '<ip>:<port>'` notices in `full` — the wider net, and the one that catches scanner waves |
+| `pbx/fail2ban/action.d/docker-user.conf` | bans into `DOCKER-USER` (insert only when absent, so two jails on one address leave exactly one rule) |
+| `scripts/install-fail2ban.sh` | host installer: volume, package, configs, service, verification |
+
+**Policy.** `maxretry = 1`, `bantime = 172800` (48 h), `findtime = 3600` — the
+first invalid registration from an address drops all of its traffic for two days.
+Loopback and the auto-detected LAN are exempt so that a 48 h ban on the first bad
+packet cannot lock out the operator's own softphone; three fresh bans in a week
+escalate to 30 days through `recidive`. Override with `F2B_IGNOREIP`,
+`F2B_BANTIME`, `F2B_MAXRETRY`, `F2B_LOG_DIR` (or `F2B_VOLUME` if the PBX volumes
+are renamed).
+
+**Wiring.** `docker-compose.full.yml` mounts the `zeus-asterisk-logs` volume at
+`/var/log/asterisk`, and `docker-entrypoint-full.sh` (baked into the image by
+`Dockerfile.full`) adds `security => security` to `logger_logfiles_custom.conf`
+— the include FreePBX keeps when it regenerates `logger.conf`, so an *Apply
+Config* cannot silently disable the security log. The host daemon then reads
+`security` and `full` straight off disk: no log shipper, no `docker exec`.
+
+> **Related fix in the same entrypoint.** The stock UCP boot step wrote
+> `UCPMGRPASS` only when the row was empty (`AND (value IS NULL OR value = '')`)
+> while rewriting `manager_custom.conf` to the current secret. On an existing
+> MariaDB volume those diverge permanently, so the UCP NodeJS server
+> authenticates as `ucp_events` with a stale password forever — measured on the
+> capstone twin at **100 % CPU with 72 restarts**. The entrypoint now converges
+> the DB value onto the real secret and bounces UCP only when it changed.
+
 ## How it fits the stack
 
 - **Bare metal** — `scripts/setup.sh` is the full FreePBX/fax installer and
