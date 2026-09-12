@@ -7,6 +7,11 @@
 # (dynamic .env source, literal-PHP grep/sed patterns, node -e template
 # literals) are documented with inline shellcheck directives, so this job
 # fails the build if a commit reintroduces any warning, error, or note.
+#
+# The Dockerfile RUN bodies get the same treatment: scripts/
+# check_dockerfile_runs.py rebuilds each one the way BuildKit does and hands it
+# to the shell's own parser, because a broken RUN otherwise costs a full
+# 45-90 minute image build to find.
 # ═══════════════════════════════════════════════════════════════════════════
 
 name: CI
@@ -51,6 +56,23 @@ jobs:
           python3 pbx/asterisk_converge.py --target "$tmp/extensions_custom.conf" \
             --source pbx/asterisk/extensions_custom.conf --owner zeus \
             --append from-internal-custom --check
+
+  # Every RUN body, parsed by the shell BuildKit would actually run it with.
+  # These break in ways that are invisible on the page — a continuation that
+  # drops a newline where one was needed, a function chained into the
+  # following `&&` list, a heredoc body read as code — and each one used to
+  # cost a 45-90 minute image build to discover.
+  dockerfile-runs:
+    name: Dockerfile RUN bodies
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Unit tests for the RUN-body checker
+        run: python3 -m unittest discover -s scripts/tests -v
+
+      - name: Syntax-check every RUN body
+        run: python3 scripts/check_dockerfile_runs.py
 
   # Regression guard: user-facing hosts (landing pages, env templates) must
   # never be localhost or docker bridge IPs — the same bug class that shipped
