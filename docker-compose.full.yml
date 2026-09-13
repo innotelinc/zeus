@@ -56,9 +56,19 @@ services:
       - "8083:80"
       - "5060:5060/udp"   # SIP
       - "5061:5061/tcp"   # SIP TLS
-      - "8088:8088"       # Asterisk HTTP (plain WebSocket for NPM)
+      # 8088 is dialled from two places, so publish exactly those two addresses
+      # instead of every interface: dograh-api runs `network_mode: host` and
+      # connects to ARI at 127.0.0.1:8088, while the edge proxy and LAN clients
+      # use ${LAN_IP}. The loopback leg keeps host-mode dograh working, the LAN
+      # leg is the address the addressing rule allows, and neither lands on the
+      # WAN interface.
+      - "127.0.0.1:8088:8088"              # Asterisk HTTP (host-mode dograh)
+      - "${LAN_IP:-127.0.0.1}:8088:8088"   # Asterisk HTTP (LAN + edge proxy)
       - "8089:8089"       # PJSIP WebSocket (WSS)
-      - "5038:5038"       # Asterisk AMI
+      # AMI is dialled at the LAN IP only — the Zeus portal authenticates there
+      # (ASTERISK_AMI_HOST below) and the ACL admits it. Never 0.0.0.0: that is
+      # what put 5038 in front of public scanners.
+      - "${LAN_IP:-127.0.0.1}:5038:5038"   # Asterisk AMI (LAN IP only — never expose)
       - "10000:10000"     # Webmin admin panel
       # RTP media — the SAME range Capstone publishes, because both products
       # ride one RTP plane on a shared box. The host side is env-driven so an
