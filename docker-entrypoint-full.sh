@@ -447,10 +447,19 @@ fi
 AVANTFAX_DB_PASS="${AVANTFAX_DB_PASS:-$(openssl rand -hex 8)}"
 echo ">>> Setting up AvantFax database..."
 
-# Create avantfax DB user and database
+# Create avantfax DB user and database.
+# The ALTER is not redundant: when the password is generated (no
+# AVANTFAX_DB_PASS in the environment) it differs on every boot, while CREATE
+# USER IF NOT EXISTS leaves an existing user's password alone. The config below
+# is rewritten to the new value every time, so without the ALTER the DB user
+# and local_config.php drift apart on the first restart and every AvantFax page
+# answers /no-database.php — which is exactly what this host was doing.
+# Reconciling instead of only creating keeps the pair consistent whether the
+# password is pinned or regenerated.
 mysql -u root <<SQL 2>/dev/null
 CREATE DATABASE IF NOT EXISTS avantfax;
 CREATE USER IF NOT EXISTS 'avantfax'@'localhost' IDENTIFIED BY '${AVANTFAX_DB_PASS}';
+ALTER USER 'avantfax'@'localhost' IDENTIFIED BY '${AVANTFAX_DB_PASS}';
 GRANT ALL PRIVILEGES ON avantfax.* TO 'avantfax'@'localhost';
 FLUSH PRIVILEGES;
 SQL

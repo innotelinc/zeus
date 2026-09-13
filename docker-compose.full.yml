@@ -94,6 +94,12 @@ services:
       SMTP_PASS: ${SMTP_PASS:-}
       SMTP_FROM: ${SMTP_FROM:-pbx@zeus.innotel.us}
       SMTP_SECURE: ${SMTP_SECURE:-false}
+      # AvantFax's MariaDB password (docker-entrypoint-full.sh creates/updates
+      # the `avantfax` user and writes it into local_config.php). Left empty it
+      # is generated per boot; the entrypoint keeps the DB user in step either
+      # way, but pinning it keeps the credentials stable across restarts.
+      AVANTFAX_DB_PASS: ${AVANTFAX_DB_PASS:-}
+      FAX_EMAIL: ${FAX_EMAIL:-fax@zeus.innotel.us}
       # Asterisk watchdog (see docker-entrypoint-full.sh) — self-heals
       # a dropped control socket by running `fwconsole reload`.
       ASTERISK_WATCHDOG_INTERVAL: ${ASTERISK_WATCHDOG_INTERVAL:-30}
