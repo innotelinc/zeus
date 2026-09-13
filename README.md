@@ -352,6 +352,29 @@ Templates: `.env.example` (npm/dev), `.env.docker.example` (Docker). Key groups:
 | `SMTP_*` | Voicemail/fax/invoice email |
 | `NEXT_PUBLIC_URL` | Portal origin (default `https://app.zeus.innotel.us`) |
 
+### The VoIP.ms trunk sits at `Rejected`
+
+If `pjsip show registrations` says `Rejected` and the log only has `Registration timed
+out.`, look at the router before the PBX: a static **UDP 5060 port-forward collides
+with the PBX's own outbound SIP**, since both want source port 5060. The router remaps the
+REGISTER, the provider's reply lands on a mapping that no longer matches, and it is dropped
+before it reaches this host.
+
+Standard, expected exchange: `REGISTER → 401 → REGISTER(auth) → 200 OK`. Capture against
+the provider's *address*, not port 5060 — a mis-ported reply is invisible to a port filter:
+
+```bash
+tcpdump -n -nn -i eth0 'host newyork1.voip.ms' &
+docker exec zeus-freepbx asterisk -rx 'pjsip send unregister voipms-reg'
+docker exec zeus-freepbx asterisk -rx 'pjsip send register voipms-reg'
+```
+
+Nothing inbound at all means the router is eating it. **Remove the UDP 5060 forward** and
+let inbound calls ride the registration's own NAT mapping (`qualify_frequency=60` keeps it
+warm); registration then completes and the AOR reports `Avail` with a ~40 ms RTT. Full
+write-up and a one-liner that proves the WAN path is healthy: Capstone repo →
+`docs/operations.md` → "The trunk sits at `Rejected`".
+
 ---
 
 ## CI / CD
