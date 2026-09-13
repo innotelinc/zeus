@@ -229,9 +229,17 @@ services:
       ASTERISK_AMI_SECRET: ${FREEPBX_AMI_SECRET:-}
 
       # ── WebRTC / TURN ──
-      # WSS URL for softphone: use dedicated ws.zeus.innotel.us hostname by default.
-      # Override via FREEPBX_WSS_HOST env var (e.g. pbx.zeus.innotel.us or an IP).
-      NEXT_PUBLIC_FREEPBX_WSS_URL: wss://${FREEPBX_WSS_HOST:-ws.zeus.innotel.us}:8089/ws
+      # WSS URL the browser dials for the softphone. Prefer FREEPBX_WSS_URL
+      # (same override capstone uses) — the :8089 form below reaches Asterisk
+      # directly, whose WSS certificate is self-signed, so a browser refuses it
+      # unless the operator trusts that cert. Point FREEPBX_WSS_URL at the edge
+      # hostname (wss://ws.<domain>/ws) to ride the wildcard certificate NPM
+      # serves, which also satisfies the `sip` subprotocol the softphone needs.
+      NEXT_PUBLIC_FREEPBX_WSS_URL: ${FREEPBX_WSS_URL:-wss://${FREEPBX_WSS_HOST:-ws.zeus.innotel.us}:8089/ws}
+      # TURN URL handed to the browser, e.g. turn:coturn.<domain>:3478. Empty
+      # leaves the softphone on public STUN alone, which fails behind symmetric
+      # NAT — the relay is what makes calls carry audio for most residential
+      # links. Credentials below are the coturn pair from .env.
       NEXT_PUBLIC_TURN_SERVER: ${TURN_SERVER:-}
       NEXT_PUBLIC_TURN_USERNAME: ${TURN_USERNAME:-}
       NEXT_PUBLIC_TURN_CREDENTIAL: ${TURN_CREDENTIAL:-}
