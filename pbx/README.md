@@ -103,12 +103,33 @@ it from `.env` on every boot, so `bootstrap-zeus-pbx.sh` deliberately skips it �
 a static copy would fight a non-default range and always report drift. The repo
 file is the shape reference.
 
-It also carries the STUN/TURN address (`stunaddr`), defaulting to
-the `coturn` compose service (`coturn:<TURN_LISTENING_PORT>`, 3478). Override with
-`PJSIP_STUN_TURN_ADDR` — bare-metal installs and any host where the `coturn`
-alias does not resolve must set it (e.g. `127.0.0.1:3478`). Never use
-`host.docker.internal`: `ast_sockaddr_resolve` fails on that alias and STUN is
-silently disabled.
+It also carries the STUN/TURN address (`stunaddr`), set from
+`PJSIP_STUN_TURN_ADDR`; the `coturn` compose service name is only a last-resort
+fallback and the entrypoint warns when it is used.
+
+> **Addressing rule — LAN IPs only.** Docker addresses do not work for this
+> project: `host.docker.internal` does not resolve inside the containers here
+> (there is no `extra_hosts` entry — the lookup simply fails), and a bridge or
+> service name is not something another host, NPM or a SIP peer can rely on.
+> Set every service target to this host's LAN IP: `LAN_IP`,
+> `PJSIP_STUN_TURN_ADDR` (`192.168.x.x:3478`), `PJSIP_LOCAL_NETS` (that LAN
+> subnet — never a docker range), `DOGRAH_WS_URI`, `NPM_UPSTREAM_HOST` and
+> `NPM_HOST_IP`.
+>
+> The AMI permit follows the same rule: `manager_custom.conf` gets `permit =`
+> lines for loopback **and the LAN subnet only**, never `172.16.0.0/12`. The
+> portal runs with `network_mode: host` precisely so its AMI/FreePBX/AvantFax
+> calls are sourced from the LAN IP; on the bridge they arrive from `172.31.x.x`
+> and a docker range would have to be permitted. `docker-entrypoint-full.sh`
+> normalises the permits on every boot (and adds the `FREEPBX_AMI_USER` section
+> if the image never shipped it), and `AMI_PERMIT` overrides the subnet.
+>
+> The failure mode is silence, not an error: `host.docker.internal` makes
+> `ast_sockaddr_resolve` fail and STUN is disabled, and a dead media WebSocket
+> URI leaves calls connecting with no audio and nothing in the log. This box
+> was also declaring `172.18.0.0/16` as a local network while its own network is
+> `172.31.0.0/16`, so Asterisk treated a range that does not exist here as
+> on-net.
 
 Keep Webmin (TCP `10000`) and the TURN relay range (`49152-49251`) clear of the
 RTP block, and keep the two sides of the compose mapping the same length (the
