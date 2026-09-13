@@ -1,5 +1,6 @@
 import crypto from "node:crypto";
 import { randomUUID } from "node:crypto";
+import type { NextRequest } from "next/server";
 import db from "./db";
 
 /**
@@ -72,6 +73,30 @@ export function redirectUri(origin: string): string {
   return `${origin.replace(/\/+$/, "")}/api/auth/authentik/callback`;
 }
 
+/** Origins that only mean anything inside the container, never to a browser. */
+const BIND_ADDRESS = /^(0\.0\.0\.0|127\.0\.0\.1|localhost)(:\d+)?$/i;
+
+/**
+ * The origin the browser actually used.
+ *
+ * Behind a reverse proxy `request.nextUrl.origin` resolves to this server's
+ * listen address (`http://0.0.0.0:3000`), which would send Authentik an
+ * unregistrable `redirect_uri` — and send a signed-in user to a host they
+ * cannot reach. Prefer the forwarded host (NPM sets it), then the configured
+ * public URL, and only then the request's own origin.
+ */
+export function publicOrigin(req: NextRequest): string {
+  const host = req.headers.get("x-forwarded-host") ?? req.headers.get("host");
+  const first = (host ?? "").split(",")[0].trim();
+  if (first && !BIND_ADDRESS.test(first)) {
+    const proto =
+      req.headers.get("x-forwarded-proto")?.split(",")[0].trim() ||
+      new URL(req.url).protocol.replace(":", "");
+    return `${proto}://${first}`;
+  }
+  return (process.env.NEXT_PUBLIC_URL ?? "").replace(/\/+$/, "") || new URL(req.url).origin;
+}
+
 interface OidcDiscovery {
   authorization_endpoint: string;
   token_endpoint: string;
@@ -96,7 +121,13 @@ export function discoverOidc(): Promise<OidcDiscovery> {
         throw new Error(`OIDC discovery document missing endpoints at ${url}`);
       }
       return doc;
-    })();
+    })().catch((e) => {
+      // Never memoize a rejection: caching it would turn a single transient
+      // Authentik blip (or a provider still being provisioned) into sign-in
+      // being broken for the life of the process. Retry on the next request.
+      _discovery = null;
+      throw e;
+    });
   }
   return _discovery;
 }

@@ -1,5 +1,12 @@
 import { NextResponse, type NextRequest } from "next/server";
-import { discoverOidc, makePkcePair, makeState, oidcEnabled, redirectUri } from "@/lib/oidc";
+import {
+  discoverOidc,
+  makePkcePair,
+  makeState,
+  oidcEnabled,
+  publicOrigin,
+  redirectUri,
+} from "@/lib/oidc";
 
 export const dynamic = "force-dynamic";
 
@@ -15,8 +22,12 @@ function safeNext(value: string | null): string {
 }
 
 export async function GET(req: NextRequest) {
+  // The browser-facing origin, not this server's bind address — the value has
+  // to match a redirect URI registered on the Authentik application.
+  const origin = publicOrigin(req);
+
   if (!oidcEnabled()) {
-    return NextResponse.redirect(new URL("/login", req.nextUrl.origin), 302);
+    return NextResponse.redirect(new URL("/login", origin), 302);
   }
 
   const next = safeNext(req.nextUrl.searchParams.get("next"));
@@ -37,7 +48,7 @@ export async function GET(req: NextRequest) {
   const params = new URLSearchParams({
     response_type: "code",
     client_id: process.env.AUTHENTIK_CLIENT_ID ?? "",
-    redirect_uri: redirectUri(req.nextUrl.origin),
+    redirect_uri: redirectUri(origin),
     scope: "openid profile email",
     state,
     code_challenge: challenge,

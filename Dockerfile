@@ -40,7 +40,10 @@ RUN cd .next/standalone && npm prune --omit=dev
 # root-owned) data volume on start, then drops privileges to the
 # nextjs user via su-exec before running the app.
 FROM node:22-alpine AS runner
-RUN apk add --no-cache sqlite-dev curl su-exec
+# openssl is required by docker-entrypoint.sh, which generates the fallback
+# SESSION_SECRET when none is supplied — without it the container dies with
+# `openssl: not found` (exit 127) in a restart loop.
+RUN apk add --no-cache sqlite-dev curl su-exec openssl
 
 WORKDIR /app
 

@@ -4,6 +4,7 @@ import {
   exchangeCode,
   getUserInfo,
   oidcEnabled,
+  publicOrigin,
   upsertOidcUser,
 } from "@/lib/oidc";
 import { createSessionToken, SESSION_COOKIE, getSessionCookieOptions } from "@/lib/auth";
@@ -15,8 +16,13 @@ import { OIDC_STATE_COOKIE, OIDC_VERIFIER_COOKIE, OIDC_NEXT_COOKIE } from "@/app
 export const dynamic = "force-dynamic";
 
 export async function GET(req: NextRequest) {
+  // Must stay in lockstep with the login route: the token exchange has to
+  // repeat the exact redirect_uri that started the flow, and every redirect
+  // back to the browser has to point at the host the browser actually used.
+  const origin = publicOrigin(req);
+
   if (!oidcEnabled()) {
-    return NextResponse.redirect(new URL("/login", req.nextUrl.origin), 302);
+    return NextResponse.redirect(new URL("/login", origin), 302);
   }
 
   const store = await cookies();
@@ -24,7 +30,7 @@ export async function GET(req: NextRequest) {
   if (errParam) {
     // User denied consent or something failed upstream — back to login.
     return NextResponse.redirect(
-      new URL(`/login?error=${encodeURIComponent(errParam)}`, req.nextUrl.origin),
+      new URL(`/login?error=${encodeURIComponent(errParam)}`, origin),
       302,
     );
   }
@@ -34,7 +40,6 @@ export async function GET(req: NextRequest) {
   const storedState = store.get(OIDC_STATE_COOKIE)?.value;
   const verifier = store.get(OIDC_VERIFIER_COOKIE)?.value;
   const next = store.get(OIDC_NEXT_COOKIE)?.value ?? "/dashboard";
-  const origin = req.nextUrl.origin;
 
   if (!code || !state || !storedState || !verifier || state !== storedState) {
     return NextResponse.redirect(
