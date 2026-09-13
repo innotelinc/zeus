@@ -1,8 +1,9 @@
 # ═══════════════════════════════════════════════════════════════
 # Zeus — VOIP Platform Full Stack Build Override
 # ═══════════════════════════════════════════════════════════════
-# Use this override to build the Asterisk/FreePBX image locally from
-# Dockerfile.full instead of pulling the pre-built image from GHCR.
+# Use this override to build the images locally instead of pulling the
+# pre-built ones from GHCR: Asterisk/FreePBX from Dockerfile.full and the
+# Next.js portal from Dockerfile.
 # Handy for development, offline servers, or testing changes to
 # Dockerfile.full before they get published by CI.
 #
@@ -25,3 +26,8 @@ services:
     build:
       context: .
       dockerfile: Dockerfile.full
+
+  portal:
+    build:
+      context: .
+      dockerfile: Dockerfile

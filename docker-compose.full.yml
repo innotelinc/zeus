@@ -163,9 +163,12 @@ services:
 
   # ── Zeus Customer Portal (Next.js) ─────────────────────────
   portal:
-    build:
-      context: .
-      dockerfile: Dockerfile
+    # Pre-built image published to GHCR by .github/workflows/docker-publish.yml
+    # (latest tracks master; semver tags on releases), same as freepbx above.
+    #   - Refresh after a newer build:   docker compose pull portal
+    #   - Build locally instead (dev/offline): use the build override
+    #     docker compose -f docker-compose.full.yml -f docker-compose.full.build.yml up -d
+    image: ghcr.io/innotelinc/zeus:latest
     container_name: zeus-portal
     restart: unless-stopped
     security_opt:
