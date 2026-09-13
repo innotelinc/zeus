@@ -83,13 +83,27 @@ HOSTS: list[dict[str, Any]] = [
     # host-published ports (compose maps portal 3001:3000). Pointing them at
     # the container port 3000 routed zeus.innotel.us/app/api at whatever other
     # service owns :3000 on the host (e.g. the Signara frontend).
-    {"key": "apex", "sub": None, "scheme": "http", "port": 3001, "websocket": False, "name": "Zeus Portal (apex origin)"},
+    #
+    # allow_websocket_upgrade is true on every host: the deployed estate has
+    # always served them that way, FreePBX's UCP genuinely needs the upgrade,
+    # and leaving it on where it is unused costs nothing — not worth churning
+    # live proxy hosts (and risking a GUI regression) over a cosmetic flag.
+    {"key": "apex", "sub": None, "scheme": "http", "port": 3001, "websocket": True, "name": "Zeus Portal (apex origin)"},
     {"key": "app", "sub": "app", "scheme": "http", "port": 3001, "websocket": True, "name": "Zeus Customer Portal (PWA)"},
-    {"key": "api", "sub": "api", "scheme": "http", "port": 3001, "websocket": False, "name": "Zeus Portal API"},
-    {"key": "portal", "sub": "portal", "scheme": "http", "port": 3001, "websocket": False, "name": "Zeus Customer Portal (alias)"},
-    {"key": "auth", "sub": "auth", "scheme": "http", "port": 9000, "websocket": False, "name": "Authentik (SSO / user management)"},
-    {"key": "pbx", "sub": "pbx", "scheme": "http", "port": 80, "websocket": False, "name": "FreePBX"},
-    {"key": "admin", "sub": "admin", "scheme": "http", "port": 81, "websocket": True, "name": "Nginx Proxy Manager admin UI"},
+    {"key": "api", "sub": "api", "scheme": "http", "port": 3001, "websocket": True, "name": "Zeus Portal API"},
+    {"key": "portal", "sub": "portal", "scheme": "http", "port": 3001, "websocket": True, "name": "Zeus Customer Portal (alias)"},
+    {"key": "auth", "sub": "auth", "scheme": "http", "port": 9000, "websocket": True, "name": "Authentik (SSO / user management)"},
+    {"key": "pbx", "sub": "pbx", "scheme": "http", "port": 80, "websocket": True, "name": "FreePBX"},
+    # AvantFax is served by the FreePBX container at /fax (pbx service, port 80).
+    {"key": "fax", "sub": "fax", "scheme": "http", "port": 80, "websocket": True, "name": "AvantFax (fax UI, /fax on FreePBX)"},
+    # TURN itself is UDP on 3478 — this host exists so the documented
+    # coturn.<domain> name resolves and answers the (optional) HTTP probe; the
+    # softphone is pointed at TURN_HOSTNAME, not this proxy.
+    {"key": "coturn", "sub": "coturn", "scheme": "http", "port": 3478, "websocket": True, "name": "coturn (TURN relay — UDP 3478)"},
+    # The NPM admin UI does NOT run on the Docker host, so this entry must
+    # forward to the NPM host itself (NPM_HOST_IP) rather than NPM_UPSTREAM_HOST.
+    {"key": "admin", "sub": "admin", "scheme": "http", "port": 81, "websocket": True,
+     "host_key": "NPM_HOST_IP", "name": "Nginx Proxy Manager admin UI"},
     {"key": "ws", "sub": "ws", "scheme": "https", "port": 8089, "websocket": True, "name": "WebRTC WSS signaling (softphone)"},
 ]
 
@@ -306,6 +320,9 @@ def main() -> int:
     parser.add_argument("--api-token", default=None, help="persistent NPM API token (env NPM_API_TOKEN)")
     parser.add_argument("--base-domain", default=None, help="base domain, e.g. zeus.innotel.us (env NPM_BASE_DOMAIN)")
     parser.add_argument("--upstream-host", default=None, help="Docker host IP NPM forwards to (env NPM_UPSTREAM_HOST)")
+    parser.add_argument("--npm-host-ip", default=None,
+                        help="IP of the NPM host itself — upstream for the admin.<domain> host "
+                             "(env NPM_HOST_IP); falls back to --upstream-host")
     parser.add_argument("--letsencrypt-email", default=None, help="email for Let's Encrypt certs (env NPM_LETSENCRYPT_EMAIL)")
     parser.add_argument("--wildcard", action="store_true",
                         help="issue ONE wildcard cert (*.base + base) via DNS-01 and attach it to every host (env NPM_WILDCARD_CERT)")
@@ -337,6 +354,7 @@ def main() -> int:
     api_url = args.api_url or cfg(args, "NPM_API_URL", DEFAULT_API_URL)
     base_domain = (args.base_domain or cfg(args, "NPM_BASE_DOMAIN", "")).strip().lstrip(".")
     upstream = args.upstream_host or cfg(args, "NPM_UPSTREAM_HOST", "")
+    npm_host_ip = args.npm_host_ip or cfg(args, "NPM_HOST_IP", "")
     le_email = args.letsencrypt_email or cfg(args, "NPM_LETSENCRYPT_EMAIL", "")
 
     if not base_domain:
@@ -421,11 +439,25 @@ def main() -> int:
     if wildcard and not ssl:
         wildcard = False
 
+    # Hosts (like admin.<domain>) that forward somewhere other than the Docker
+    # host — resolved here so the fallback warns exactly once.
+    def forward_host(h: dict) -> str:
+        key = h.get("host_key")
+        if not key:
+            return upstream
+        value = npm_host_ip if key == "NPM_HOST_IP" else cfg(args, key, "")
+        if not value:
+            print(f"WARN {key} not set — {h['name']} falls back to NPM_UPSTREAM_HOST ({upstream})",
+                  file=sys.stderr)
+            return upstream
+        return value
+
     created = updated = ok = pruned = 0
     failed: list[str] = []
     managed_domains: set[str] = set()
 
     # Issue the single wildcard cert up front; every host then reuses it.
+    wc_id = None
     if wildcard:
         wc_id = ensure_cert(api, [f"*.{base_domain}", base_domain], le_email,
                             dns_provider, dns_credentials, args.check,
@@ -442,23 +474,27 @@ def main() -> int:
         label = h["name"]
         existing = by_domain.get(domain.lower())
 
+        # In wildcard mode every host attaches the one *.base cert: looking up
+        # the exact hostname would never match it (NPM stores the wildcard name
+        # literally), so each host would otherwise mint its own cert.
         cert_id = None
         if ssl:
-            cert_id = ensure_cert(api, [domain], le_email, dns_provider, dns_credentials,
-                                  args.check, certs_by_domain, failed)
+            cert_id = wc_id or ensure_cert(api, [domain], le_email, dns_provider, dns_credentials,
+                                          args.check, certs_by_domain, failed)
             if cert_id is None:
                 continue
 
-        want = desired(domain, h, upstream, cert_id, ssl)
+        fwd = forward_host(h)
+        want = desired(domain, h, fwd, cert_id, ssl)
         if existing is None:
             if args.check:
                 print(f"FAIL {label} — proxy host {domain} missing")
                 failed.append(domain)
                 continue
             try:
-                api.create_proxy_host(build_payload(domain, h, upstream, cert_id, ssl))
+                api.create_proxy_host(build_payload(domain, h, fwd, cert_id, ssl))
                 created += 1
-                print(f"PASS {label} — created {domain} → {h['scheme']}://{upstream}:{h['port']}")
+                print(f"PASS {label} — created {domain} → {h['scheme']}://{fwd}:{h['port']}")
             except (NpmError, urllib.error.URLError, OSError) as e:
                 print(f"FAIL {label} — could not create {domain}: {e}", file=sys.stderr)
                 failed.append(domain)
@@ -483,7 +519,13 @@ def main() -> int:
             failed.append(domain)
             continue
         try:
-            payload = dict(existing)
+            # Send the managed fields in the SAME shape the create path uses.
+            # Echoing the fetched object back (the obvious `dict(existing) +
+            # want`) breaks on hosts created by an older NPM: those rows carry
+            # read-only properties (id, created_on, modified_on,
+            # owner_user_id) and `locations: null`, which the update schema
+            # rejects with "must NOT have additional properties".
+            payload = build_payload(domain, h, fwd, cert_id, ssl)
             payload.update(want)
             api.update_proxy_host(existing["id"], payload)
             updated += 1
