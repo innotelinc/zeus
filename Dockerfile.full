@@ -71,6 +71,27 @@ RUN wget "https://downloads.asterisk.org/pub/telephony/asterisk/releases/asteris
       --with-crypto --with-ssl --with-srtp --with-sqlite3 \
       --with-jansson-bundled --with-pjproject-bundled && \
     make menuselect.makeopts && \
+    # BUILD_NATIVE off, deliberately — it is not a performance knob here, it is
+    # a portability trap. Asterisk's Makefile.rules does this:
+    #
+    #   ifeq ($(findstring BUILD_NATIVE,$(MENUSELECT_CFLAGS)),BUILD_NATIVE)
+    #       _ASTCFLAGS+=-march=native
+    #   endif
+    #
+    # so every module that opts in — codec_resample does, and it is loaded on
+    # every boot — is compiled for *the CPU of whichever GitHub runner picked
+    # up the job*. Runners are not uniform: a build that lands on an
+    # AVX512-VNNI machine emits `vpdpwssd` into codec_resample.so, and the
+    # module then dies with SIGILL the moment Asterisk loads it on any CPU
+    # without VNNI (observed on an i7-1165G7 / Tiger Lake: the container boot
+    # loops with "Illegal instruction (core dumped)" and Asterisk never starts,
+    # because `asterisk -f` never gets past module load). The gha build cache
+    # then republishes that binary onto every later `master` push, so the
+    # failure outlives the run that introduced it.
+    #
+    # Disabling it costs nothing that matters — the resampler falls back to its
+    # portable path — and makes the published image runnable on any x86-64 host.
+    menuselect/menuselect --disable BUILD_NATIVE menuselect.makeopts 2>/dev/null || true; \
     for MOD in \
       res_ari res_ari_channels res_ari_bridges res_ari_endpoints \
       res_ari_events res_ari_recordings res_ari_sounds \
