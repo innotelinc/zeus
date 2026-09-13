@@ -186,14 +186,24 @@ chown asterisk:asterisk "${LOGGER_CUSTOM}" 2>/dev/null || true
 #
 # The Capstone repo's pbx/ layer mirrors this exact shape (same env names, same
 # file, same DB write) so a shared box runs one RTP plane for both products.
-# Override the STUN/TURN address with PJSIP_STUN_TURN_ADDR — required on
-# bare-metal or single-host installs where the `coturn` compose alias does not
-# resolve (set it to the TURN host, e.g. 127.0.0.1; do NOT use
-# host.docker.internal, ast_sockaddr_resolve fails on that alias and silently
-# disables STUN).
+# Override the STUN/TURN address with PJSIP_STUN_TURN_ADDR.
+#
+# PROJECT RULE: use the host's LAN IP for every service address. Docker
+# addresses are not usable here — `host.docker.internal` does not resolve
+# inside this container at all (there is no extra_hosts entry, so every lookup
+# fails), and a bridge/service name or a subnet recorded by a different stack
+# is at best a coincidence. Set PJSIP_STUN_TURN_ADDR to the LAN IP (e.g.
+# 192.168.1.46) and PJSIP_LOCAL_NETS to that LAN subnet; the `coturn` compose
+# alias remains only as a last-resort fallback and warns when it is used.
+# Do NOT use host.docker.internal: ast_sockaddr_resolve fails on that alias and
+# silently disables STUN.
 ASTERISK_ETC="/etc/asterisk"
 RTP_START="${FREEPBX_RTP_PORT_START:-10101}"
 RTP_END="${FREEPBX_RTP_PORT_END:-10120}"
+if [ -z "${PJSIP_STUN_TURN_ADDR:-}" ]; then
+  echo ">>> WARNING: PJSIP_STUN_TURN_ADDR is unset — falling back to the 'coturn' compose name." >&2
+  echo ">>>          Set it to this host's LAN IP (PJSIP_STUN_TURN_ADDR=192.168.x.x): docker addresses do not resolve for this project." >&2
+fi
 STUN_TURN_ADDR="${PJSIP_STUN_TURN_ADDR:-coturn}:${TURN_LISTENING_PORT:-3478}"
 # Two TURN addresses, on purpose (see the STUN/TURN block below): Asterisk's
 # own ICE reaches the TURN server from inside the compose network (no NAT
@@ -255,6 +265,67 @@ mysql -u root asterisk -N -B 2>/dev/null \
       INSERT INTO kvstore_Sipsettings (\`key\`, val, type, id) VALUES ('rtpend','${RTP_END}',NULL,'noid') ON DUPLICATE KEY UPDATE val='${RTP_END}';" \
   && echo ">>> rtpstart/rtpend=${RTP_START}-${RTP_END} written to kvstore_Sipsettings"
 set -e
+
+# ── Local networks (LAN only) ───────────────────────────────────────────────
+# Sipsettings.localnets generates the `local_net=` lines in pjsip.transports.conf.
+# Whatever an image or a shared volume carries over is eventually wrong: this box
+# was declaring 172.18.0.0/16, a docker subnet that does not exist here at all
+# (pbx-net is 172.31.0.0/16), so Asterisk classified a foreign range as on-net.
+# Under the project rule — LAN addresses only for every service target — only the
+# LAN subnet is declared. Default is the /24 of PJSIP_STUN_TURN_ADDR, so setting
+# the LAN IP once configures both.
+PJSIP_LOCAL_NETS="${PJSIP_LOCAL_NETS:-}"
+STUN_HOST="${STUN_TURN_ADDR%:*}"
+if [ -z "${PJSIP_LOCAL_NETS}" ] && [[ "${STUN_HOST}" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+  PJSIP_LOCAL_NETS="$(printf '%s' "${STUN_HOST}" | awk -F. '{print $1"."$2"."$3".0/24"}')"
+fi
+if [ -n "${PJSIP_LOCAL_NETS}" ]; then
+  LOCAL_NETS_JSON="$(python3 -c 'import json,sys; print(json.dumps([{"net": n.split("/")[0], "mask": n.split("/")[1]} for n in sys.argv[1].split(",") if n.strip()]))' "${PJSIP_LOCAL_NETS}")"
+  set +e
+  mysql -u root asterisk -N -B 2>/dev/null \
+    -e "UPDATE kvstore_Sipsettings SET val='${LOCAL_NETS_JSON}' WHERE \`key\`='localnets'; \
+        DELETE FROM kvstore_Sipsettings WHERE \`key\` LIKE 'udplocalnet-%';" \
+    && echo ">>> localnets=${PJSIP_LOCAL_NETS} written to kvstore_Sipsettings"
+  set -e
+  # The file is what res_pjsip reads, and the transport has allow_reload=no, so
+  # reconcile it now instead of waiting for the next Apply Config (which only
+  # happens when someone opens the GUI). Takes effect on the next Asterisk start.
+  python3 - "${ASTERISK_ETC}/pjsip.transports.conf" "${PJSIP_LOCAL_NETS}" <<'PYEOF' 2>/dev/null || true
+import sys
+path, nets = sys.argv[1], [n.strip() for n in sys.argv[2].split(",") if n.strip()]
+try:
+    lines = open(path).read().split("\n")
+except OSError:
+    raise SystemExit
+out = []
+for line in lines:
+    if line.startswith("local_net="):
+        continue  # stale range (docker or otherwise) — re-added below
+    out.append(line)
+    if line.startswith("bind="):
+        out.extend(f"local_net={n}" for n in nets)
+open(path, "w").write("\n".join(out))
+PYEOF
+  chown asterisk:asterisk "${ASTERISK_ETC}/pjsip.transports.conf" 2>/dev/null || true
+fi
+
+# ── Dograh external-media WebSocket ─────────────────────────────────────────
+# The add-on's entrypoint owns this file normally, but it lives on the shared
+# asterisk-config volume and its default URI is `host.docker.internal`, which
+# cannot resolve here — Asterisk then fails every media WebSocket silently (no
+# audio, nothing in the log). Reconcile it to a real LAN address whenever we
+# know one: an explicit DOGRAH_WS_URI wins, otherwise a leftover
+# host.docker.internal is repaired in place using the LAN host.
+DOGRAH_CONF="${ASTERISK_ETC}/websocket_client.conf"
+if [ -f "${DOGRAH_CONF}" ]; then
+  if [ -n "${DOGRAH_WS_URI:-}" ]; then
+    sed -i "s|^uri = .*|uri = ${DOGRAH_WS_URI}|" "${DOGRAH_CONF}" \
+      && echo ">>> websocket_client.conf uri set from DOGRAH_WS_URI (${DOGRAH_WS_URI})"
+  elif grep -q 'host\.docker\.internal' "${DOGRAH_CONF}" && [[ "${STUN_HOST}" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+    sed -i "s|host\.docker\.internal|${STUN_HOST}|" "${DOGRAH_CONF}" \
+      && echo ">>> websocket_client.conf repaired: host.docker.internal -> ${STUN_HOST}"
+  fi
+fi
 
 # ── STUN / TURN / WebRTC wiring (durable, via the FreePBX settings DB) ──────
 # TURN is part of the media plane Zeus owns: coturn runs as this stack's
@@ -326,6 +397,92 @@ eventfilter=!Event: RTCP*
 eventfilter=!Event: VarSet
 eventfilter=!Event: Newexten
 AMICFG
+fi
+
+# ── AMI plane: LAN permits only (PROJECT RULE — no docker addresses) ────────
+# The image ships manager_custom.conf with `permit = 172.16.0.0/255.240.0.0`
+# (a docker bridge range) on every AMI user, and it only ever defines the
+# [pbxportal] / [ucp_events] users. Neither is true for this stack:
+#   * the portal runs with host networking and reaches AMI on this host's LAN
+#     IP, so a bridge permit is dead weight that exists only to allow a Docker
+#     address — exactly what the project rule forbids;
+#   * the portal authenticates as FREEPBX_AMI_USER, so that section must exist
+#     (a volume carried over from a differently-built image may not have it).
+# Normalise every AMI user to loopback + the LAN subnet, and add the portal's
+# own user when it is missing. Idempotent, so it is safe on every boot.
+AMI_USER_NAME="${FREEPBX_AMI_USER:-pbxportal}"
+AMI_LAN_NET="${PJSIP_LOCAL_NETS:-}"
+AMI_LAN_NET="${AMI_LAN_NET%%,*}"
+if [ -n "${AMI_LAN_NET}" ]; then
+  AMI_LAN_NET="$(python3 -c 'import sys
+n = sys.argv[1]
+net, _, plen = n.partition("/")
+plen = int(plen) if plen else 24
+m = (0xffffffff << (32 - plen)) & 0xffffffff
+print("%s/%d.%d.%d.%d" % (net, m >> 24 & 255, m >> 16 & 255, m >> 8 & 255, m & 255))' "${AMI_LAN_NET}" 2>/dev/null)"
+fi
+if [ -z "${AMI_LAN_NET}" ] && [[ "${STUN_HOST}" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+  AMI_LAN_NET="$(printf '%s' "${STUN_HOST}" | awk -F. '{print $1"."$2"."$3".0/255.255.255.0"}')"
+fi
+if [ -n "${AMI_LAN_NET}" ] && [ -f /etc/asterisk/manager_custom.conf ]; then
+  cp -f /etc/asterisk/manager_custom.conf /etc/asterisk/manager_custom.conf.pre-lan 2>/dev/null || true
+  python3 - /etc/asterisk/manager_custom.conf "${AMI_USER_NAME}" "${FREEPBX_AMI_SECRET:-}" "${AMI_LAN_NET}" <<'PYEOF' \
+    && echo ">>> AMI permits normalised: loopback + ${AMI_LAN_NET} (LAN only, no docker range)"
+import re
+import sys
+
+path, user, secret, lan = sys.argv[1:5]
+lines = open(path).read().split("\n")
+
+header_re = re.compile(r"^\s*\[([^\]]+)\]\s*$")
+starts = [i for i, line in enumerate(lines) if header_re.match(line)]
+
+if not starts:
+    raise SystemExit(0)
+
+out = lines[: starts[0]]
+seen = []
+for pos, start in enumerate(starts):
+    end = starts[pos + 1] if pos + 1 < len(starts) else len(lines)
+    name = header_re.match(lines[start]).group(1)
+    seen.append(name)
+    body = [
+        line
+        for line in lines[start + 1 : end]
+        if not re.match(r"^\s*(permit|deny)\s*=", line, re.I)
+    ]
+    while body and body[-1].strip() == "":
+        body.pop()
+    body.append("deny = 0.0.0.0/0.0.0.0")
+    body.append("permit = 127.0.0.1/255.255.255.255")
+    body.append("permit = " + lan)
+    out.append(lines[start])
+    out.extend(body)
+    out.append("")
+
+if user not in seen:
+    out.append("[" + user + "]")
+    if secret:
+        out.append("secret = " + secret)
+    out.append("deny = 0.0.0.0/0.0.0.0")
+    out.append("permit = 127.0.0.1/255.255.255.255")
+    out.append("permit = " + lan)
+    out.append("read = system,call,log,verbose,command,agent,user,config,dtmf,reporting,cdr,dialplan,message")
+    out.append("write = system,call,log,verbose,command,agent,user,config,dtmf,reporting,cdr,dialplan,originate,message")
+    out.append("")
+
+while len(out) > 1 and out[-1].strip() == "" and out[-2].strip() == "":
+    out.pop()
+
+rendered = "\n".join(out)
+# Refuse to write a file that lost a section — a half-parsed rewrite would
+# take AMI (and therefore the portal) down on boot.
+for name in seen:
+    if "[" + name + "]" not in rendered:
+        raise SystemExit("refusing to write: section %s vanished" % name)
+open(path, "w").write(rendered)
+PYEOF
+  chown asterisk:asterisk /etc/asterisk/manager_custom.conf 2>/dev/null || true
 fi
 
 # Sync FreePBX internal AMI credentials (AMPMGRUSER/PASS) with manager.conf

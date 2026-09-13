@@ -454,3 +454,44 @@ Zeus is licensed under the GNU Affero General Public License v3.0 or later (AGPL
 business function that consumes them. See
 [docs/stack.md](docs/stack.md) for this platform's owns/consumes boundaries and its
 Infisical secret setup.
+
+---
+
+## Addressing rule — LAN IPs only
+
+**Docker addresses do not work for this project.** Every service target on this
+box is this host's LAN IP (`192.168.x.x`), set once as `LAN_IP` in `.env`; the
+AMI permit, the PJSIP local network and the portal's own service targets all
+derive from it.
+
+| Setting | Value | What breaks if it is a docker address |
+|---|---|---|
+| `LAN_IP` | this host's LAN IP | every target below drifts |
+| `PJSIP_STUN_TURN_ADDR` | `192.168.x.x:3478` | `ast_sockaddr_resolve` fails and STUN is disabled **with no error** |
+| `PJSIP_LOCAL_NETS` | the LAN subnet, never a docker range | Asterisk classifies the LAN as off-net and mangles Contact/SDP |
+| `DOGRAH_WS_URI` | `ws://192.168.x.x:8000/...` | media WebSocket dies silently — calls connect with no audio, nothing in the log |
+| `NPM_UPSTREAM_HOST` / `NPM_HOST_IP` | the docker host / the NPM host | NPM forwards into a network it is not on |
+| `FREEPBX_WSS_URL` / `TURN_SERVER` | public edge names | browsers cannot resolve a container name at all |
+| AMI `permit =` | loopback + the LAN subnet | a bridge range (`172.16.0.0/12`) is only ever needed to allow a Docker address |
+
+Why: `host.docker.internal` does not resolve inside these containers (there is
+no `extra_hosts` entry, so every lookup fails), a bridge or service name is not
+a contract anything outside that network can use, and a docker **subnet**
+recorded by a different stack is wrong here — this box declared `172.18.0.0/16`
+while its own network is `172.31.0.0/16`.
+
+### The portal runs on the host network, deliberately
+
+The portal joins the host namespace (`network_mode: host`, `PORT=3001`) rather
+than the `pbx-net` bridge. On the bridge, every call it makes to FreePBX, AMI and
+AvantFax arrives **sourced from the container's own `172.31.x.x` address**, so the
+AMI permit and the FreePBX access log both end up keyed on a Docker address. On
+the host network it reaches all three on this host's LAN IP, Asterisk sees
+`192.168.1.46`, and the permit is the LAN subnet only. Nothing references the
+portal by container name (the PBX never calls back into it), so there is no
+Docker DNS name to lose — and NPM still forwards to `<LAN_IP>:3001`.
+
+The two remaining docker references are deliberate and are *not* service
+addresses: `scripts/install-fail2ban.sh` exempts the bridge ranges so another
+stack's bridge client cannot be banned for a failed AMI probe, and stale copies
+inside `/etc/asterisk/backup/` are FreePBX's own backups.

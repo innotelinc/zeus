@@ -32,7 +32,9 @@
 # Reads from pbx.env (scripts/pbx.env.example) or the environment:
 #   FREEPBX_AMI_USER  (default pbxportal)   FREEPBX_AMI_SECRET
 #   FREEPBX_ARI_USER  (default pbxportal)   FREEPBX_ARI_SECRET
-#   ARI_HTTP_PORT     (default 8088)        AMI_PERMIT (extra permit line)
+#   ARI_HTTP_PORT     (default 8088)        AMI_PERMIT (permit line, default:
+#                                            this host's LAN subnet — never a
+#                                            docker bridge range)
 # ═══════════════════════════════════════════════════════════════════
 set -euo pipefail
 
@@ -66,7 +68,20 @@ FREEPBX_ARI_USER="${FREEPBX_ARI_USER:-pbxportal}"
 ARI_HTTP_PORT="${ARI_HTTP_PORT:-8088}"
 : "${FREEPBX_AMI_SECRET:?FREEPBX_AMI_SECRET is required (see scripts/pbx.env.example)}"
 : "${FREEPBX_ARI_SECRET:?FREEPBX_ARI_SECRET is required (see scripts/pbx.env.example)}"
-AMI_PERMIT_LINE="permit = ${AMI_PERMIT:-10.0.0.0/255.0.0.0}"
+# AMI permit — LAN subnet only. PROJECT RULE: LAN addresses only; the portal
+# connects to AMI over this host's LAN IP (host networking), so a docker bridge
+# range must never be needed. Derive the subnet from the default-route source
+# (the host's primary LAN address) rather than hard-coding one, and fall back to
+# the RFC1918 192.168/16 block when the address cannot be detected.
+if [ -z "${AMI_PERMIT:-}" ]; then
+  _lan_ip="$(ip -4 route get 1 2>/dev/null | sed -n 's/.*src \([0-9.]*\).*/\1/p' | head -1)"
+  if [ -n "$_lan_ip" ] && [ "$_lan_ip" != "127.0.0.1" ]; then
+    AMI_PERMIT="$(printf '%s' "$_lan_ip" | awk -F. '{print $1"."$2"."$3".0/255.255.255.0"}')"
+  else
+    AMI_PERMIT="192.168.0.0/255.255.0.0"
+  fi
+fi
+AMI_PERMIT_LINE="permit = ${AMI_PERMIT}"
 
 # Fragments the RUNTIME entrypoint owns — it derives them from .env on every
 # boot, so bootstrap must not stage, copy or drift-check them:

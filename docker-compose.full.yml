@@ -111,12 +111,25 @@ services:
       # mapping above. Same env names/defaults as the Capstone stack.
       FREEPBX_RTP_PORT_START: ${FREEPBX_RTP_PORT_START:-10101}
       FREEPBX_RTP_PORT_END: ${FREEPBX_RTP_PORT_END:-10120}
-      # STUN/TURN address for Asterisk's RTP engine. Empty -> the local `coturn`
-      # compose service (resolves on pbx-net as coturn:<TURN_LISTENING_PORT>).
-      # Set it (e.g. the LAN IP, or 127.0.0.1 on bare metal) when the alias is
-      # not resolvable — do NOT use host.docker.internal, ast_sockaddr_resolve
-      # fails on it and silently disables STUN.
+      # STUN/TURN address for Asterisk's RTP engine. PROJECT RULE: set this to
+      # the host's LAN IP (192.168.x.x) — docker addresses do not resolve for
+      # this project (host.docker.internal is not resolvable from inside this
+      # container at all: no extra_hosts, every lookup fails). Empty falls back
+      # to the `coturn` compose name and the entrypoint warns; do NOT use
+      # host.docker.internal, ast_sockaddr_resolve fails on it and silently
+      # disables STUN.
       PJSIP_STUN_TURN_ADDR: ${PJSIP_STUN_TURN_ADDR:-}
+      # LAN subnet(s) Asterisk treats as on-net, comma separated. Defaults to
+      # the /24 of PJSIP_STUN_TURN_ADDR. Never a docker range: a foreign subnet
+      # recorded by another stack leaves Asterisk classifying addresses that do
+      # not exist here as local (this box carried 172.18.0.0/16 while its
+      # network is 172.31.0.0/16).
+      PJSIP_LOCAL_NETS: ${PJSIP_LOCAL_NETS:-}
+      # External-media WebSocket URI for the Dograh voice agent (host-mode api
+      # on :8000). Must be a LAN address — the add-on's default of
+      # host.docker.internal cannot resolve in this container, which kills the
+      # media stream silently.
+      DOGRAH_WS_URI: ${DOGRAH_WS_URI:-}
       TURN_LISTENING_PORT: ${TURN_LISTENING_PORT:-3478}
       # TURN credentials, written into FreePBX's settings DB by the entrypoint so
       # Asterisk, coturn and the portals' browsers all authenticate with one
@@ -181,19 +194,32 @@ services:
       - apparmor=unconfined
     depends_on:
       - freepbx
-    ports:
-      # Host 3001 (container 3000): matches docker-compose.yml so the full
-      # stack stays off the shared :3000 owned by the Signara frontend.
-      - "3001:3000"
+    # HOST networking, deliberately — PROJECT RULE: LAN addresses only.
+    #
+    # On the bridge (pbx-net, 172.31.0.0/16) every call the portal makes to the
+    # PBX is sourced from the container's own 172.31.x.x address, so the AMI
+    # permit and the FreePBX access log both end up keyed on a Docker address —
+    # and Docker addresses do not resolve correctly for this project. Joining the
+    # host namespace instead lets the portal reach every service on this host's
+    # LAN IP, so Asterisk sees 192.168.1.46 and only the LAN subnet is ever
+    # permitted (no `permit = 172.16.0.0/12` anywhere).
+    #
+    # Consequences: the portal listens on the host port directly (PORT below)
+    # rather than through a `ports:` mapping, the healthcheck targets that same
+    # port, and there is no `networks:` entry — it no longer has a Docker DNS
+    # name, which nothing uses (the PBX never calls back into the portal).
+    network_mode: host
     env_file:
       - path: .env
         required: false
     environment:
       NODE_ENV: production
-      PORT: "3000"
-      # Next binds to $HOSTNAME (set to the public IP in .env, or injected by
-      # Docker as the container id) — pin it so the server listens on all
-      # local interfaces (0.0.0.0) instead of failing with EADDRNOTAVAIL.
+      # Host listening port: with network_mode: host there is no mapping, so
+      # 3001 here IS the port NPM forwards to. Matches docker-compose.yml, so
+      # the full stack stays off the shared :3000 owned by the Signara frontend.
+      PORT: "3001"
+      # Next binds to $HOSTNAME — pin it so the server listens on all local
+      # interfaces (0.0.0.0) instead of failing with EADDRNOTAVAIL.
       HOSTNAME: "0.0.0.0"
 
       # ── Session ──
@@ -217,13 +243,15 @@ services:
       VOIPMS_SIP_SERVER: ${VOIPMS_SIP_SERVER:-newyork1.voip.ms}
       VOIPMS_MAIN_ACCOUNT: ${VOIPMS_MAIN_ACCOUNT:-}
 
-      # ── FreePBX (internal Docker network) ──
-      FREEPBX_URL: http://freepbx
+      # ── FreePBX (this host's LAN IP — PROJECT RULE: never a docker
+      # bridge/service name; `freepbx` resolves only from the bridge, and the
+      # permit that would allow it is a Docker subnet) ──
+      FREEPBX_URL: http://${LAN_IP:-127.0.0.1}
       FREEPBX_CLIENT_ID: ${FREEPBX_CLIENT_ID:-pbxportal-api}
       FREEPBX_CLIENT_SECRET: ${FREEPBX_CLIENT_SECRET:-}
 
       # ── Asterisk AMI ──
-      ASTERISK_AMI_HOST: freepbx
+      ASTERISK_AMI_HOST: ${LAN_IP:-127.0.0.1}
       ASTERISK_AMI_PORT: "5038"
       ASTERISK_AMI_USERNAME: ${FREEPBX_AMI_USER:-pbxportal}
       ASTERISK_AMI_SECRET: ${FREEPBX_AMI_SECRET:-}
@@ -245,7 +273,7 @@ services:
       NEXT_PUBLIC_TURN_CREDENTIAL: ${TURN_CREDENTIAL:-}
 
       # ── AvantFax (runs inside freepbx container at /fax) ──
-      AVANTFAX_URL: http://freepbx/fax
+      AVANTFAX_URL: http://${LAN_IP:-127.0.0.1}/fax
       NEXT_PUBLIC_AVANTFAX_URL: http://${HOSTNAME:-fax.zeus.innotel.us}/fax
 
       # ── Atlas integration ──
@@ -281,13 +309,11 @@ services:
       # (FreePBX/VoIP.ms/Stripe) are down. The container is healthy as long as
       # the portal itself responds — any HTTP response counts; only transport
       # errors (connection refused/timeout) fail the check.
-      test: ["CMD", "curl", "-s", "-o", "/dev/null", "http://localhost:3000/api/health"]
+      test: ["CMD", "curl", "-s", "-o", "/dev/null", "http://localhost:3001/api/health"]
       interval: 30s
       timeout: 15s
       retries: 3
       start_period: 30s
-    networks:
-      - pbx-net
 
   # ── Coturn TURN server for WebRTC NAT traversal (enabled by default) ──
   # Realm/credentials come from .env (TURN_USERNAME/TURN_CREDENTIAL/

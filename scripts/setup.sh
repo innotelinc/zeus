@@ -69,7 +69,13 @@ ASTERISK_LEGACY_VER="${ASTERISK_LEGACY_VER:-20.20.1}"
 FAX_NUMBER="${FAX_NUMBER:-7745057136}"
 FAX_AREACODE="${FAX_AREACODE:-774}"
 FAX_COUNTRY="${FAX_COUNTRY:-1}"
-DOGRAH_WS_URI="${DOGRAH_WS_URI:-ws://host.docker.internal:8000/api/v1/telephony/ws/ari}"
+# Dograh's external-media WebSocket. Must be an address Asterisk can actually
+# reach: host.docker.internal does not resolve in the containers here (no
+# extra_hosts), so the LAN IP is the default — PROJECT RULE, LAN addresses only
+# for service targets. LAN_IP comes from the environment (pbx.env/.env); when it
+# is unset, derive it from the default route and fall back to loopback.
+DOGRAH_LAN_IP="${LAN_IP:-$(ip -4 route get 1 2>/dev/null | sed -n 's/.*src \([0-9.]*\).*/\1/p' | head -1)}"
+DOGRAH_WS_URI="${DOGRAH_WS_URI:-ws://${DOGRAH_LAN_IP:-127.0.0.1}:8000/api/v1/telephony/ws/ari}"
 DOGRAH_ARI_PASS="${DOGRAH_ARI_PASS:-$(openssl rand -hex 16)-dograh}"
 ARI_HTTP_PORT="${ARI_HTTP_PORT:-8088}"
 VOSK_MODEL_URL="${VOSK_MODEL_URL:-https://alphacephei.com/vosk/models/vosk-model-en-us-0.22-lgraph.zip}"
@@ -927,6 +933,9 @@ EOF
 
 # ─── WebSocket client to Dograh ───────────────────────────────
 cat > /etc/asterisk/websocket_client.conf <<EOF
+; Managed by scripts/setup.sh. The URI must be a LAN address: Asterisk cannot
+; resolve docker names here (host.docker.internal fails outright), and a stale
+; address fails silently — calls connect with no audio and nothing in the log.
 [dograh]
 type = websocket_client
 uri = ${DOGRAH_WS_URI}
