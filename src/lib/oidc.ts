@@ -231,6 +231,12 @@ export function upsertOidcUser(
   const email = (info.email ?? "").toLowerCase();
   const name = resolveName(info);
 
+  const adminEmails = (process.env.AUTHENTIK_ADMIN_EMAILS ?? "")
+    .split(",")
+    .map((s) => s.trim().toLowerCase())
+    .filter(Boolean);
+  const isAdmin = Boolean(email) && adminEmails.includes(email);
+
   let existing = db
     .prepare("SELECT id FROM users WHERE auth_subject = ?")
     .get(info.sub) as { id: string } | undefined;
@@ -242,17 +248,21 @@ export function upsertOidcUser(
   }
 
   if (existing) {
+    // Re-check the admin allowlist on every sign-in. Applying it only at
+    // creation left the first user to sign in permanently non-admin, with no
+    // way to promote them (there is no admin UI), even after the operator added
+    // their address to AUTHENTIK_ADMIN_EMAILS. Promotion is one-way on purpose:
+    // removing an address must not silently strip an operator's rights.
     db.prepare(
-      "UPDATE users SET auth_subject = COALESCE(auth_subject, ?), name = ?, email = CASE WHEN ? <> '' THEN ? ELSE email END, reseller_id = CASE WHEN reseller_id IS NULL THEN ? ELSE reseller_id END, updated_at = datetime('now') WHERE id = ?",
-    ).run(info.sub, name, email, email, resellerId, existing.id);
+      "UPDATE users SET auth_subject = COALESCE(auth_subject, ?), name = ?, email = CASE WHEN ? <> '' THEN ? ELSE email END, reseller_id = CASE WHEN reseller_id IS NULL THEN ? ELSE reseller_id END, "
+        + "role = CASE WHEN ? THEN 'admin' ELSE role END, "
+        + "updated_at = datetime('now') WHERE id = ?",
+    ).run(info.sub, name, email, email, resellerId, isAdmin ? 1 : 0, existing.id);
     return existing.id;
   }
 
   const id = randomUUID();
-  const adminEmails = (process.env.AUTHENTIK_ADMIN_EMAILS ?? "")
-    .split(",")
-    .map((s) => s.trim().toLowerCase());
-  const role = email && adminEmails.includes(email) ? "admin" : null;
+  const role = isAdmin ? "admin" : null;
   db.prepare(
     "INSERT INTO users (id, email, name, password_hash, plan, role, auth_subject, reseller_id) VALUES (?, ?, ?, '!oidc', 'consumer', ?, ?, ?)",
   ).run(id, email || null, name, role, info.sub, resellerId);
