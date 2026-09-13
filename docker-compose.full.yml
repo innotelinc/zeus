@@ -39,7 +39,10 @@ services:
     # No pull_policy set — the default (`missing`) pulls only when the image
     # is not present locally. The build override below relies on that default
     # to build instead of pull on offline servers.
-    image: ghcr.io/innotelinc/zeus:latest-fullstack
+    # Overridable so a bad published build can be rolled back with one line in
+    # .env instead of editing this file — e.g.
+    #   ZEUS_PBX_IMAGE=ghcr.io/innotelinc/zeus:latest-fullstack-rollback
+    image: ${ZEUS_PBX_IMAGE:-ghcr.io/innotelinc/zeus:latest-fullstack}
     container_name: zeus-freepbx
     restart: unless-stopped
     security_opt:
