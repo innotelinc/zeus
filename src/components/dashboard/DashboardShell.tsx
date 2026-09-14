@@ -164,13 +164,16 @@ export function DashboardShell({ user, extensions, brand, children }: Props) {
               <span className="hidden text-sm text-white/60 sm:inline">{user.email}</span>
             </div>
 
-            <Link
+            {/* Plain <a>, not next/link: the route 302s to Authentik's
+                end-session page, and a soft navigation to cross-origin HTML
+                fails silently — sign-out looked like a dead button. */}
+            <a
               href="/api/auth/logout"
               className="rounded-lg border border-white/[0.08] bg-white/[0.03] p-2 text-white/50 transition hover:text-white hover:bg-white/[0.06]"
               title="Sign out"
             >
               <LogoutIcon size={16} />
-            </Link>
+            </a>
           </div>
         </div>
       </header>

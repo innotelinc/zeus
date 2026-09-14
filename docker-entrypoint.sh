@@ -47,6 +47,32 @@ if [ -n "${INFISICAL_ADDR:-}" ] && [ -n "${INFISICAL_TOKEN:-}" ] && [ -n "${INFI
   eval "$(node /app/scripts/infisical-env.mjs $INFISICAL_KEYS)"
 fi
 
+# ── AMI password: adopt the one Asterisk actually authenticates against ──
+# This container's AMI secret can arrive three ways — env_file (.env), the
+# compose interpolation of the *host shell's* FREEPBX_AMI_SECRET, and Infisical
+# above — while Asterisk checks the [FREEPBX_AMI_USER] section of
+# manager_custom.conf, which the PBX writes from ITS environment. A stale
+# exported value therefore produced two different passwords for one account:
+# Asterisk logged "failed to authenticate as 'zeus-portal'" every 30s and the
+# dashboard showed "AMI Offline" while every secret in .env looked correct.
+# The shared config volume is mounted here, so the file wins — that is the
+# credential that actually gets checked.
+AMI_CONF=/etc/asterisk/manager_custom.conf
+AMI_USER_NAME="${ASTERISK_AMI_USERNAME:-${FREEPBX_AMI_USER:-zeus-portal}}"
+if [ -f "$AMI_CONF" ]; then
+  AMI_FILE_SECRET=$(awk -v u="$AMI_USER_NAME" '
+    $0 ~ "^\\[" u "\\]$" { inside=1; next }
+    /^\[/ { inside=0 }
+    inside && /^[[:space:]]*secret[[:space:]]*=/ {
+      sub(/^[^=]*=[[:space:]]*/, ""); print; exit
+    }' "$AMI_CONF")
+  if [ -n "$AMI_FILE_SECRET" ] && [ "$AMI_FILE_SECRET" != "${ASTERISK_AMI_SECRET:-}" ]; then
+    echo ">>> AMI: using the '$AMI_USER_NAME' password from $(basename "$AMI_CONF") — the environment had a different one"
+    ASTERISK_AMI_SECRET="$AMI_FILE_SECRET"
+    export ASTERISK_AMI_SECRET
+  fi
+fi
+
 # Ensure a consistent SESSION_SECRET across all Next.js worker threads.
 # Without this, each worker independently generates its own secret (because
 # module-level variables aren't shared across workers), causing session tokens

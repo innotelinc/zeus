@@ -31,10 +31,16 @@ export default function SettingsSection({ user }: Props) {
   const defaultWss = process.env.NEXT_PUBLIC_FREEPBX_WSS_URL ?? `wss://${typeof window !== "undefined" ? window.location.hostname : "localhost"}:8089/ws`;
   const [wssUrl, setWssUrl] = useState(defaultWss);
   const [wssSaved, setWssSaved] = useState(false);
+  // localStorage exists only in the browser, and this component is rendered on
+  // the server first. Reading it during render threw "localStorage is not
+  // defined" under SSR and took the whole Settings page down with it, so the
+  // stored value is read in the effect below and the display renders from state.
+  const [savedWss, setSavedWss] = useState<string | null>(null);
 
   useEffect(() => {
     const stored = localStorage.getItem(WSS_STORAGE_KEY);
     if (stored) setWssUrl(stored);
+    setSavedWss(stored);
   }, []);
 
   function saveWssUrl() {
@@ -44,6 +50,7 @@ export default function SettingsSection({ user }: Props) {
       return;
     }
     localStorage.setItem(WSS_STORAGE_KEY, trimmed);
+    setSavedWss(trimmed);
     setWssSaved(true);
     toast.success("WebSocket URL saved. Reconnect the softphone to apply.");
     setTimeout(() => setWssSaved(false), 3000);
@@ -52,6 +59,7 @@ export default function SettingsSection({ user }: Props) {
   function resetWssUrl() {
     localStorage.removeItem(WSS_STORAGE_KEY);
     setWssUrl(defaultWss);
+    setSavedWss(null);
     setWssSaved(false);
     toast.success("Reset to default. Reconnect the softphone to apply.");
   }
@@ -152,10 +160,10 @@ export default function SettingsSection({ user }: Props) {
           </span>
         </div>
         {user.plan === "consumer" && (
-          <p className="mt-4 text-sm text-white/45">
-            Need more numbers and features?{" "}
-            <Link href="/dashboard/billing" className="font-medium text-brand-300 hover:text-brand-200">Upgrade to Business</Link>
-          </p>
+        <p className="mt-4 text-sm text-white/45">
+          Want AI voice agents answering your calls, or a change to your billing?{" "}
+          <Link href="/dashboard/billing" className="font-medium text-brand-300 hover:text-brand-200">Open billing</Link>
+        </p>
         )}
       </div>
 
@@ -183,8 +191,8 @@ export default function SettingsSection({ user }: Props) {
             className="btn-ghost px-4 py-2 text-sm">Reset</button>
         </div>
         <p className="text-xs text-white/25">
-          Current: <code className="text-brand-300">{localStorage.getItem(WSS_STORAGE_KEY) || defaultWss}</code>
-          {localStorage.getItem(WSS_STORAGE_KEY) && <span className="text-sun-400"> (custom)</span>}
+          Current: <code className="text-brand-300">{savedWss || defaultWss}</code>
+          {savedWss && <span className="text-sun-400"> (custom)</span>}
         </p>
       </div>
 
