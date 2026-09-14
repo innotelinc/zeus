@@ -17,7 +17,13 @@ function credentials(): { api_username: string; api_password: string } {
   const api_username = process.env.VOIPMS_API_USERNAME;
   const api_password = process.env.VOIPMS_API_PASSWORD;
   if (!api_username || !api_password) {
-    throw new Error("VOIPMS_API_USERNAME and VOIPMS_API_PASSWORD must be set");
+    // Say where the credential comes from: the portal cannot provision, buy or
+    // release a number without it, and "must be set" left operators guessing.
+    throw new Error(
+      "VoIP.ms API credentials are not configured — set VOIPMS_API_USERNAME and " +
+        "VOIPMS_API_PASSWORD in this stack's .env (VoIP.ms portal → Main Menu → " +
+        "SOAP/REST API) and restart the portal container.",
+    );
   }
   return { api_username, api_password };
 }

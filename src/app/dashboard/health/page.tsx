@@ -18,6 +18,8 @@ interface HealthResponse {
     freepbx_api: ProbeResult;
     asterisk_ami: ProbeResult;
     stripe: ProbeResult;
+    voipms_api: ProbeResult;
+    avantfax: ProbeResult;
   };
 }
 
@@ -44,6 +46,16 @@ const serviceMeta: Record<
     label: "Stripe",
     desc: "Billing & subscription config",
     icon: "💳",
+  },
+  voipms_api: {
+    label: "VoIP.ms API",
+    desc: "Number provisioning, SMS and CDRs",
+    icon: "☎️",
+  },
+  avantfax: {
+    label: "AvantFAX",
+    desc: "Fax module web UI",
+    icon: "📠",
   },
 };
 

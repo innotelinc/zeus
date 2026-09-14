@@ -37,7 +37,12 @@ export default function FaxSection({ faxAccount, faxes: initialFaxes, numbers }:
   const [dragOver, setDragOver] = useState(false);
   const [previewFax, setPreviewFax] = useState<Fax | null>(null);
 
-  const avantfaxUrl = process.env.NEXT_PUBLIC_AVANTFAX_URL ?? "https://pbx.zeus.innotel.us/fax";
+  // AvantFAX's user interface is served from this path itself — the login form
+  // POSTs to <url>/index.php and the client pages live under <url>/ after
+  // sign-in. There is no /client/ subdirectory on this deployment (it 404s), so
+  // link the entry point rather than a path that does not exist.
+  const avantfaxUrl = (process.env.NEXT_PUBLIC_AVANTFAX_URL ?? "https://pbx.zeus.innotel.us/fax")
+    .replace(/\/+$/, "");
   const IS_DONE = (s: string) => s === "completed" || s === "success" || s === "sent" || s === "received" || s === "scheduled";
 
   async function setupAccount() {
@@ -155,8 +160,9 @@ export default function FaxSection({ faxAccount, faxes: initialFaxes, numbers }:
           </div>
         </div>
         <button type="button" onClick={() => window.open(
-          account.avantfax_username ? `${avantfaxUrl}/client/?user=${encodeURIComponent(account.avantfax_username)}` : avantfaxUrl, "_blank", "noopener,noreferrer"
-        )} className="btn-ghost px-4 py-2 text-xs">Open AvantFax</button>
+          `${avantfaxUrl}/`, "_blank", "noopener,noreferrer"
+        )} className="btn-ghost px-4 py-2 text-xs"
+          title={account.avantfax_username ? `Sign in to AvantFAX as ${account.avantfax_username}` : "Open AvantFAX"}>Open AvantFax</button>
       </div>
 
       {/* Send form */}
