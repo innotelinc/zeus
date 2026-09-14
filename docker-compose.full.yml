@@ -166,6 +166,13 @@ services:
       # module versions and re-trigger the disabled-module / "Unknown Error"
       # failure after the boot-time `fwconsole ma refreshsignatures`).
       - mariadb-data:/var/lib/mysql
+      # MariaDB drop-in that disables strict mode, which AvantFAX 3.4.1 needs.
+      # It writes '' into UserAccount's DATE/TIMESTAMP columns (last_mod on
+      # every save, plus pwdexpire) and MariaDB 10.11's default
+      # STRICT_TRANS_TABLES rejects that with error 1292, so logins, user edits
+      # and password changes all ended in HTTP 500. Mirrors scripts/setup.sh's
+      # bare-metal step; see the file for the full explanation.
+      - ./pbx/mariadb/zz-avantfax-sql-mode.cnf:/etc/mysql/conf.d/zz-avantfax-sql-mode.cnf:ro
     # `core show version` alone passes before Apache ever starts, so a fresh
     # container reports healthy while the GUI is still refusing connections
     # (observed on this host: 302 on :80 only minutes after `healthy`). The GUI

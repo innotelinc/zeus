@@ -13,7 +13,9 @@
 #             • ARI HTTP port open (ARI_HTTP_PORT, default 8088)
 #             • PBX fragments in sync (pbx/bootstrap-zeus-pbx.sh --check)
 #             • RTP plane: published block == Asterisk effective range
-#   Fax       • AvantFax reachable (AVANTFAX_URL)
+#   Fax       • AvantFax reachable (AVANTFAX_URL) and its MariaDB has strict
+#               mode off (AvantFAX writes '' into DATE/TIMESTAMP columns, which
+#               strict mode rejects with error 1292 → HTTP 500 after login)
 #   Numbers   • VoIP.ms credentials configured (VOIPMS_API_USERNAME)
 #
 # Optional sections are skipped (with a note) when their env vars are unset,
@@ -176,6 +178,33 @@ if [ "$SCOPE" = all ] || [ "$SCOPE" = fax ]; then
     fi
   else
     skip "AvantFax"
+  fi
+
+  # The strict-mode invariant is asserted whether or not AVANTFAX_URL is set: it
+  # is the difference between "the login page answers" and "the app works after
+  # login", and it needs nothing but the container. Reachability alone can't see
+  # this — the login page renders fine while every page after it 500s, because
+  # the failure starts at the first DB write. AvantFAX 3.4.1 writes '' into
+  # UserAccount's DATE/TIMESTAMP columns (last_mod on every save, plus
+  # pwdexpire) and MariaDB's default STRICT_TRANS_TABLES rejects that with error
+  # 1292. pbx/mariadb/zz-avantfax-sql-mode.cnf turns strict mode off for it.
+  AFX=$(docker ps -aq --filter "label=com.docker.compose.service=freepbx" 2>/dev/null | while read -r c; do
+    [ "$(docker inspect -f '{{.State.Status}}' "$c" 2>/dev/null)" = "running" ] && { echo "$c"; break; }
+  done)
+  AFX="${AFX:-zeus-freepbx}"
+  afx_dbs=$(docker exec "$AFX" mysql -u root -N -B \
+    -e "select count(*) from information_schema.schemata where schema_name='avantfax'" 2>/dev/null || true)
+  if [ "${afx_dbs:-0}" != "1" ]; then
+    skip "AvantFax DB (not deployed in $AFX)"
+  else
+    afx_mode=$(docker exec "$AFX" mysql -u root -N -B -e 'select @@global.sql_mode' 2>/dev/null || true)
+    if [[ "$afx_mode" == *STRICT_TRANS_TABLES* ]]; then
+      fail "AvantFax DB runs STRICT_TRANS_TABLES — logins/user saves will 500 (error 1292); apply pbx/mariadb/zz-avantfax-sql-mode.cnf"
+    elif [ -n "$afx_mode" ]; then
+      pass "AvantFax DB has strict mode off ($afx_mode)"
+    else
+      fail "AvantFax DB sql_mode unreadable in $AFX"
+    fi
   fi
 fi
 

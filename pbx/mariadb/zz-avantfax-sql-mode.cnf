@@ -1,0 +1,20 @@
+# AvantFAX 3.4.1 (2016) writes empty strings into DATE/TIMESTAMP columns when a
+# form leaves them blank — UserAccount.last_mod in every save, plus
+# .pwdexpire — and MDBOData::update() rewrites *all* columns on any save, so
+# that one empty value is carried into logins, user edits and password changes
+# alike. MariaDB 10.11 defaults to STRICT_TRANS_TABLES, which rejects those
+# writes with "Incorrect datetime value: ''" (error 1292); the PHP then dies and
+# every one of those pages answers HTTP 500.
+#
+# scripts/setup.sh already disables strict mode for exactly this reason on the
+# bare-metal path ("MariaDB: disable strict mode (AvantFax compat)"). Docker
+# installs mariadb-server in the image and never applied it, so the container
+# kept strict mode and AvantFAX was unusable. This file closes that gap: compose
+# mounts it at /etc/mysql/conf.d/ and MariaDB's `!includedir /etc/mysql/conf.d/`
+# picks it up on start. Named with a `zz-` prefix so it is read after the
+# package's own mysql.cnf and wins.
+#
+# Verify with:  docker exec zeus-freepbx mysql -u root -N -B -e "select @@global.sql_mode"
+# Expected: NO_ENGINE_SUBSTITUTION
+[mysqld]
+sql_mode = NO_ENGINE_SUBSTITUTION
