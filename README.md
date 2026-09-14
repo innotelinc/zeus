@@ -48,6 +48,7 @@ Every service has a fixed hostname under your base domain (default `zeus.innotel
 | Subdomain | Service | Upstream |
 |---|---|---|
 | `zeus.innotel.us` | Zeus Customer Portal (apex) | `:3000` |
+| `subscribe.zeus.innotel.us` | Zeus subscription page (plans & sign-up) | `:3000` |
 | `app.zeus.innotel.us` | Zeus Customer Portal / PWA | `:3000` |
 | `api.zeus.innotel.us` | Zeus Portal API | `:3000` |
 | `portal.zeus.innotel.us` | Zeus Customer Portal (alias) | `:3000` |
@@ -57,6 +58,36 @@ Every service has a fixed hostname under your base domain (default `zeus.innotel
 | `ws.zeus.innotel.us` | WebRTC WSS signaling (softphone) | `:8089` (WSS) |
 
 **Wildcard SSL:** with `NPM_WILDCARD_CERT=1` and the **TSIG key in your env** (default provider `rfc2136` — dynamic DNS updates signed with a TSIG key, matching the capstone convention), the sync script provisions the NPM DNS credential *and* issues one Let's Encrypt certificate covering `*.zeus.innotel.us` + the apex via DNS-01, auto-attached to every proxy host — **zero manual NPM clicks**. Without the TSIG key the sync falls back to per-host HTTP-01 certs.
+
+---
+
+## Subscriptions
+
+Zeus sells two things, and they are billed in two places on purpose:
+
+| Plan | Price | Where it is bought |
+|---|---|---|
+| **Phone** — one plan for everyone | $19.99/mo | this portal's `/signup` (it provisions the number, extension and softphone) |
+| **AI voice agents** (Capstone add-on) | $49/mo, $490/yr | Magnate's checkout, at `app.magnate.innotel.us/signup?plan=agents` |
+
+There is **one phone plan** — no Consumer/Business split. `business` still exists in the
+`plans` table for the subscribers already on it; it is no longer offered to anyone new and
+no longer appears on any page.
+
+**Two entry points, one page.** The subscription page is served from this same deployment
+twice:
+
+- `subscribe.zeus.innotel.us/` — the page a buyer lands on (its own hostname, so "where do I
+  buy this?" has a stable answer that is not the portal's own origin),
+- `zeus.innotel.us/subscribe` (and `/subscribe` on any other host) — the same page.
+
+Because it is one deployment there is no second build to keep in sync. The page reads its
+plans from `src/lib/catalog.ts`, and the agents card hands off to Magnate because **Magnate
+owns billing** — Zeus never holds Stripe keys and never processes a payment. The ecosystem-wide
+plan list lives at `subscribe.innotel.us`; `MAGNATE_SUBSCRIBE_URL` points at it.
+
+> Zeus is **not** an identity provider, a secrets store or a billing platform. Identity is
+> Cerulean (Authentik), secrets are Infisical, storage is Onyx and revenue is Magnate.
 
 ---
 
@@ -143,7 +174,7 @@ npm run dev            # runs on http://localhost:3000
 |----------|--------------------|
 | Email    | demo@zeus.innotel.us |
 | Password | 8dpWR8wl4eYncm5v   |
-| Plan     | Business           |
+| Plan     | Phone              |
 | Numbers  | 13025551001, 13025551002 |
 | Ext      | 1001               |
 

@@ -22,9 +22,9 @@ const BRAND_NAME = process.env.NEXT_PUBLIC_BRAND_NAME ?? "Zeus";
 const PUBLIC_URL = (process.env.NEXT_PUBLIC_URL ?? "https://app.zeus.innotel.us").replace(/\/+$/, "");
 
 export const metadata: Metadata = {
-  title: `${BRAND_NAME} VOIP — Business VoIP & Unified Communications`,
+  title: `${BRAND_NAME} — VoIP made simple`,
   description:
-    "Zeus provides business VoIP, SIP, SMS, and fax services. Get phone numbers, extensions, and unified messaging for your business or personal use.",
+    "Zeus provides VoIP, SIP, SMS, and fax services. Get phone numbers, extensions, and unified messaging — plus AI voice agents that answer your calls.",
   manifest: "/manifest.webmanifest",
   icons: {
     icon: "/icons/zeus-icon.svg",
