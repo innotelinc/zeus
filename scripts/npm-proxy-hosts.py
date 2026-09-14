@@ -358,6 +358,20 @@ def main() -> int:
     args.env = load_env_file(Path(args.env_file))
 
     api_url = args.api_url or cfg(args, "NPM_API_URL", DEFAULT_API_URL)
+
+    # Guard against a stale ambient NPM_* environment: cfg() lets the real
+    # environment win over this repo's .env, so a leftover NPM_BASE_DOMAIN
+    # exported by another stack makes this script manage and PRUNE that other
+    # service's proxy hosts. Refuse rather than write to a domain this repo
+    # does not own.
+    ambient_domain = (os.environ.get("NPM_BASE_DOMAIN") or "").strip().lstrip(".").lower()
+    env_domain = (args.env.get("NPM_BASE_DOMAIN") or "").strip().lstrip(".").lower()
+    if ambient_domain and env_domain and ambient_domain != env_domain and not args.base_domain:
+        print(f"FAIL NPM_BASE_DOMAIN={ambient_domain} is exported in the environment but this "
+              f"repo's .env says {env_domain} — refusing to touch {ambient_domain} hosts "
+              f"(unset the variable, or pass --base-domain explicitly).", file=sys.stderr)
+        return 1
+
     base_domain = (args.base_domain or cfg(args, "NPM_BASE_DOMAIN", "")).strip().lstrip(".")
     upstream = args.upstream_host or cfg(args, "NPM_UPSTREAM_HOST", "")
     npm_host_ip = args.npm_host_ip or cfg(args, "NPM_HOST_IP", "")
