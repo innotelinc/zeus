@@ -451,6 +451,16 @@ for pos, start in enumerate(starts):
         for line in lines[start + 1 : end]
         if not re.match(r"^\s*(permit|deny)\s*=", line, re.I)
     ]
+    if name == user and secret:
+        # Keep the portal's AMI password in step with FREEPBX_AMI_SECRET. The
+        # section itself was only ever created when it was missing, so rotating
+        # the secret in .env left this file holding the old one and the portal
+        # could not authenticate (it retried every 30s and the dashboard showed
+        # "AMI Offline"). Rewriting one line on every boot is idempotent.
+        body = [
+            line for line in body if not re.match(r"^\s*secret\s*=", line, re.I)
+        ]
+        body.insert(0, "secret = " + secret)
     while body and body[-1].strip() == "":
         body.pop()
     body.append("deny = 0.0.0.0/0.0.0.0")

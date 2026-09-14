@@ -100,9 +100,20 @@ export async function GET() {
       }),
 
       // ── Stripe (config check only) ─────────────────────────
+      // Self-billing is a deprecated mode: this portal's billing runs on
+      // Magnate (subscribe.innotel.us), and the checkout route that consumes
+      // STRIPE_SECRET_KEY says to leave it empty in exactly that case. Treating
+      // that deliberate, documented default as "down" made the whole dashboard
+      // read "System Degraded" on a healthy install. An empty key is only a
+      // real failure when nothing else owns billing.
       probe("stripe", async () => {
         const key = process.env.STRIPE_SECRET_KEY;
-        if (!key) throw new Error("STRIPE_SECRET_KEY not set");
+        if (!key) {
+          if (process.env.MAGNATE_PUBLIC_URL) return; // delegated — nothing to check here
+          throw new Error(
+            "STRIPE_SECRET_KEY not set and no billing platform configured",
+          );
+        }
         // Verify it looks like a valid Stripe secret key
         if (!key.startsWith("sk_") && !key.startsWith("rk_"))
           throw new Error("STRIPE_SECRET_KEY does not match expected format");
