@@ -49,9 +49,11 @@ export default function BillingSection({ user, invoices, magnateUrl }: Props) {
     }
     setLoading(true);
     try {
+      // Standalone mode: there is one plan, so re-checkout keeps the current
+      // one rather than promoting to a tier that no longer exists.
       const res = await api<{ url: string }>("/api/billing/checkout", {
         method: "POST",
-        body: JSON.stringify({ plan: user.plan === "consumer" ? "business" : user.plan }),
+        body: JSON.stringify({ plan: user.plan }),
       });
       window.location.href = res.url;
     } catch (e) {
@@ -96,16 +98,18 @@ export default function BillingSection({ user, invoices, magnateUrl }: Props) {
             <span className={`rounded-full px-2.5 py-0.5 text-[11px] font-medium ${user.plan_status === "active" ? "bg-mint-500/10 text-mint-400" : "bg-sun-400/10 text-sun-400"}`}>
               {user.plan_status === "active" ? "Active" : user.plan_status}
             </span>
-            {user.plan === "consumer" ? (
+            {user.plan === "consumer" && user.plan_status !== "active" ? (
               <button type="button" onClick={handlePlanAction} disabled={loading} className="btn-primary px-4 py-2 text-xs flex items-center gap-1.5">
-                {loading ? "Loading..." : "Upgrade to Business"} <ArrowRightIcon size={14} />
+                {loading ? "Loading..." : "Reactivate plan"} <ArrowRightIcon size={14} />
               </button>
-            ) : user.plan_status === "active" ? (
+            ) : (
               <>
                 <button type="button" onClick={handlePlanAction} disabled={loading} className="btn-ghost px-4 py-2 text-xs">{loading ? "Loading..." : "Manage plan"}</button>
-                <button type="button" onClick={handleCancelPlan} disabled={loading} className="btn-ghost px-4 py-2 text-xs text-rose-400 hover:text-rose-300">Cancel</button>
+                {user.plan_status === "active" && (
+                  <button type="button" onClick={handleCancelPlan} disabled={loading} className="btn-ghost px-4 py-2 text-xs text-rose-400 hover:text-rose-300">Cancel</button>
+                )}
               </>
-            ) : null}
+            )}
           </div>
         </div>
         <p className="mt-2 text-xs text-white/35">Since {fmtDate(user.created_at)}</p>

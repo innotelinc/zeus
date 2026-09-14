@@ -56,6 +56,7 @@ Usage (from the repo root):
 
 Canonical Zeus subdomains (each service gets <sub>.<NPM_BASE_DOMAIN>):
   zeus.innotel.us   Zeus Customer Portal (apex)          :3000
+  subscribe.<domain> Zeus subscription page (buyers)      :3000
   app.<domain>      Zeus Customer Portal / PWA            :3000
   api.<domain>      Zeus Customer Portal API              :3000
   portal.<domain>   Zeus Customer Portal (alias)          :3000
@@ -89,6 +90,11 @@ HOSTS: list[dict[str, Any]] = [
     # and leaving it on where it is unused costs nothing — not worth churning
     # live proxy hosts (and risking a GUI regression) over a cosmetic flag.
     {"key": "apex", "sub": None, "scheme": "http", "port": 3001, "websocket": True, "name": "Zeus Portal (apex origin)"},
+    # The subscription page, on its own hostname so "where do I buy this?" has a
+    # stable answer that is not the portal's own origin. Same deployment as the
+    # portal — app/page.tsx renders the subscribe page when the host starts with
+    # "subscribe." (and /subscribe works on every host too).
+    {"key": "subscribe", "sub": "subscribe", "scheme": "http", "port": 3001, "websocket": True, "name": "Zeus subscription page (plans & sign-up)"},
     {"key": "app", "sub": "app", "scheme": "http", "port": 3001, "websocket": True, "name": "Zeus Customer Portal (PWA)"},
     {"key": "api", "sub": "api", "scheme": "http", "port": 3001, "websocket": True, "name": "Zeus Portal API"},
     {"key": "portal", "sub": "portal", "scheme": "http", "port": 3001, "websocket": True, "name": "Zeus Customer Portal (alias)"},

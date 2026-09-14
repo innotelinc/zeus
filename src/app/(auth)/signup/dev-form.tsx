@@ -8,9 +8,10 @@ import { api } from "@/lib/client-api";
 export function DevSignupForm() {
   const router = useRouter();
   const params = useSearchParams();
-  const initialPlan = params?.get("plan") === "business" ? "business" : "consumer";
+  // One plan for everyone — no Business tier. The plan slug stays `consumer`
+  // so signups land on the plan the portal already provisions numbers for.
+  void params;
 
-  const [plan, setPlan] = useState<"consumer" | "business">(initialPlan);
   const [name, setName] = useState("");
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
@@ -26,7 +27,7 @@ export function DevSignupForm() {
     try {
       await api("/api/auth/register", {
         method: "POST",
-        body: JSON.stringify({ name, email, password, plan, phone: phone || null }),
+        body: JSON.stringify({ name, email, password, plan: "consumer", phone: phone || null }),
       });
       router.push("/dashboard");
       router.refresh();
@@ -39,36 +40,13 @@ export function DevSignupForm() {
 
   return (
     <>
-      {/* Plan selector */}
+      {/* Plan — one plan for everyone, so there is nothing to choose. */}
       <div className="mb-6">
-        <label className="input-label">Select your plan</label>
-        <div className="grid grid-cols-2 gap-3">
-          <button
-            type="button"
-            onClick={() => setPlan("consumer")}
-            className={`rounded-xl border p-4 text-left transition ${
-              plan === "consumer"
-                ? "border-brand-500/60 bg-brand-500/10 ring-1 ring-brand-500/30"
-                : "border-white/[0.08] bg-white/[0.02] hover:border-white/[0.15]"
-            }`}
-          >
-            <div className="text-sm font-semibold text-white">Consumer</div>
-            <div className="mt-1 text-xs text-white/40">$19.99/mo</div>
-            <div className="mt-1 text-xs text-white/30">1 number, SMS, basic fax</div>
-          </button>
-          <button
-            type="button"
-            onClick={() => setPlan("business")}
-            className={`rounded-xl border p-4 text-left transition ${
-              plan === "business"
-                ? "border-brand-500/60 bg-brand-500/10 ring-1 ring-brand-500/30"
-                : "border-white/[0.08] bg-white/[0.02] hover:border-white/[0.15]"
-            }`}
-          >
-            <div className="text-sm font-semibold text-white">Business</div>
-            <div className="mt-1 text-xs text-white/40">$49.99/mo</div>
-            <div className="mt-1 text-xs text-white/30">5 numbers, SMS, full fax</div>
-          </button>
+        <label className="input-label">Your plan</label>
+        <div className="rounded-xl border border-brand-500/60 bg-brand-500/10 p-4 ring-1 ring-brand-500/30">
+          <div className="text-sm font-semibold text-white">Zeus Phone</div>
+          <div className="mt-1 text-xs text-white/40">$19.99/mo</div>
+          <div className="mt-1 text-xs text-white/30">Your own number, SMS, fax and voicemail — for everyone. AI voice agents are available as an add-on.</div>
         </div>
       </div>
 

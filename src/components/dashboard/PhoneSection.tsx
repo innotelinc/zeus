@@ -237,7 +237,7 @@ export default function PhoneSection({ numbers: initialNumbers, extensions: init
         <div className="flex items-center justify-between mb-6">
           <div>
             <h2 className="text-lg font-semibold text-white">Your Numbers</h2>
-            <p className="text-sm text-white/40">{numbers.length} of {maxNumbers} DIDs ({plan === "business" ? "Business" : "Consumer"} plan)</p>
+            <p className="text-sm text-white/40">{numbers.length} of {maxNumbers} numbers</p>
           </div>
           <div className="flex items-center gap-2">
             <button type="button" onClick={refresh} className="rounded-lg border border-white/[0.08] bg-white/[0.03] p-2 text-white/40 transition hover:text-white" title="Refresh">

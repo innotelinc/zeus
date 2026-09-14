@@ -2,7 +2,7 @@ import type { NextConfig } from "next";
 
 const allowedOrigins = process.env.ALLOWED_DEV_ORIGINS
   ? process.env.ALLOWED_DEV_ORIGINS.split(",").map((s) => s.trim())
-  : ["zeus.innotel.us","app.zeus.innotel.us","portal.zeus.innotel.us","localhost"];
+  : ["zeus.innotel.us","subscribe.zeus.innotel.us","app.zeus.innotel.us","portal.zeus.innotel.us","localhost"];
 
 const nextConfig: NextConfig = {
   output: "standalone",
