@@ -2,7 +2,7 @@
 
 import { useState, useEffect } from "react";
 import { api } from "@/lib/client-api";
-import { CheckCircleIcon } from "@/components/icons";
+import { AlertCircleIcon, CheckCircleIcon } from "@/components/icons";
 import { useToast } from "@/components/ToastProvider";
 import type { User } from "@/lib/types";
 import Link from "next/link";
@@ -12,6 +12,21 @@ interface Props {
 }
 
 const WSS_STORAGE_KEY = "wssUrl";
+
+// The Integrations panel used to report a hardcoded "Connection active" for
+// every service, so a genuinely unconfigured one (VoIP.ms with no API
+// credentials) still showed green. These probe results come from the same
+// health endpoint the Health page uses.
+interface ServiceProbe {
+  status: "ok" | "degraded" | "down";
+  error?: string;
+}
+
+const INTEGRATIONS: Array<{ label: string; key: string }> = [
+  { label: "VoIP.ms", key: "voipms_api" },
+  { label: "FreePBX", key: "freepbx_api" },
+  { label: "AvantFax", key: "avantfax" },
+];
 
 export default function SettingsSection({ user }: Props) {
   const { toast } = useToast();
@@ -41,6 +56,17 @@ export default function SettingsSection({ user }: Props) {
     const stored = localStorage.getItem(WSS_STORAGE_KEY);
     if (stored) setWssUrl(stored);
     setSavedWss(stored);
+  }, []);
+
+  // Integration statuses are probed by the server; a failed fetch just leaves
+  // the badges in their neutral "checking" state rather than claiming green.
+  const [probes, setProbes] = useState<Record<string, ServiceProbe> | null>(null);
+  useEffect(() => {
+    let cancelled = false;
+    api<{ services: Record<string, ServiceProbe> }>("/api/health")
+      .then(res => { if (!cancelled) setProbes(res.services); })
+      .catch(() => { if (!cancelled) setProbes(null); });
+    return () => { cancelled = true; };
   }, []);
 
   function saveWssUrl() {
@@ -201,15 +227,28 @@ export default function SettingsSection({ user }: Props) {
         <h2 className="text-lg font-semibold text-white">Integrations</h2>
         <p className="mt-1 text-sm text-white/45">External services and API access.</p>
         <div className="mt-4 grid gap-3 sm:grid-cols-3">
-          {["VoIP.ms", "FreePBX", "AvantFax"].map(svc => (
-            <div key={svc} className="rounded-xl border border-white/[0.08] bg-white/[0.02] p-4">
-              <div className="flex items-center gap-2">
-                <CheckCircleIcon size={14} className="text-mint-400" />
-                <span className="text-sm font-medium text-white">{svc}</span>
+          {INTEGRATIONS.map(({ label, key }) => {
+            const probe = probes?.[key];
+            const ok = probe?.status === "ok";
+            const detail = !probe
+              ? "Checking…"
+              : ok
+                ? "Connection active"
+                : probe.error ?? "Needs configuration";
+            return (
+              <div key={key} className="rounded-xl border border-white/[0.08] bg-white/[0.02] p-4">
+                <div className="flex items-center gap-2">
+                  {ok ? (
+                    <CheckCircleIcon size={14} className="text-mint-400" />
+                  ) : (
+                    <AlertCircleIcon size={14} className={probe ? "text-sun-400" : "text-white/25"} />
+                  )}
+                  <span className="text-sm font-medium text-white">{label}</span>
+                </div>
+                <p className={`mt-1 text-xs ${ok ? "text-white/35" : "text-sun-400/80"}`}>{detail}</p>
               </div>
-              <p className="mt-1 text-xs text-white/35">Connection active</p>
-            </div>
-          ))}
+            );
+          })}
         </div>
       </div>
     </div>

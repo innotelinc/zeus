@@ -19,6 +19,8 @@ interface HealthResponse {
     freepbx_api: ProbeResult;
     asterisk_ami: ProbeResult;
     stripe: ProbeResult;
+    voipms_api: ProbeResult;
+    avantfax: ProbeResult;
   };
 }
 
@@ -45,7 +47,7 @@ export async function GET() {
   // ── Run all probes concurrently (avoids sequential timeouts
   //    exceeding the Docker healthcheck timeout when external
   //    services are unreachable). ─────────────────────────────
-  const [dbResult, freepbxResult, amiResult, stripeResult] =
+  const [dbResult, freepbxResult, amiResult, stripeResult, avantfaxResult] =
     await Promise.all([
       // ── Database (SQLite) ──────────────────────────────────
       probe("database", async () => {
@@ -121,7 +123,46 @@ export async function GET() {
         const wh = process.env.STRIPE_WEBHOOK_SECRET;
         if (!wh) throw new Error("STRIPE_WEBHOOK_SECRET not set");
       }),
+
+      // ── AvantFAX ───────────────────────────────────────────
+      probe("avantfax", async () => {
+        const url = process.env.AVANTFAX_URL || process.env.NEXT_PUBLIC_AVANTFAX_URL;
+        if (!url) throw new Error("AVANTFAX_URL not set");
+
+        const controller = new AbortController();
+        const timeout = setTimeout(() => controller.abort(), 5_000);
+        try {
+          // The fax module is served at <url>/ (its login form posts to
+          // <url>/index.php). Anything below 500 means the UI is up — the
+          // dashboard links straight to this path.
+          const res = await fetch(`${url.replace(/\/+$/, "")}/`, {
+            signal: controller.signal,
+          });
+          if (!res.ok && res.status >= 500)
+            throw new Error(`AvantFAX returned ${res.status}`);
+        } finally {
+          clearTimeout(timeout);
+        }
+      }),
     ]);
+
+  // ── VoIP.ms REST API credentials ───────────────────────────
+  // Config check, not a network probe: without these two the number
+  // provisioning, SMS and CDR routes cannot work at all, so the dashboard's
+  // "Connection active" badge was lying. Reported as degraded (never down) so
+  // a missing credential surfaces without flipping the whole install's status.
+  const voipmsConfigured = Boolean(
+    process.env.VOIPMS_API_USERNAME && process.env.VOIPMS_API_PASSWORD,
+  );
+  const voipmsResult: ProbeResult = voipmsConfigured
+    ? { status: "ok", latency_ms: 0 }
+    : {
+        status: "degraded",
+        latency_ms: 0,
+        error:
+          "VOIPMS_API_USERNAME / VOIPMS_API_PASSWORD not set — buying and managing " +
+          "numbers is disabled (VoIP.ms portal → Main Menu → SOAP/REST API)",
+      };
 
   // ── Aggregate status ───────────────────────────────────────
   const services: HealthResponse["services"] = {
@@ -129,6 +170,8 @@ export async function GET() {
     freepbx_api: freepbxResult,
     asterisk_ami: amiResult,
     stripe: stripeResult,
+    voipms_api: voipmsResult,
+    avantfax: avantfaxResult,
   };
 
   const downCount = Object.values(services).filter((s) => s.status === "down").length;
