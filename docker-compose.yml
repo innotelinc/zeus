@@ -11,6 +11,10 @@
 # Demo login: demo@zeus.innotel.us / 8dpWR8wl4eYncm5v
 # ═══════════════════════════════════════════════════════════════
 
+# Project name is pinned so container/volume names never depend on where this
+# repo is checked out (the mesh puts it in 2-voice/zeus).
+name: zeus
+
 services:
   pbx:
     build:
