@@ -242,9 +242,9 @@ index) cannot take the build down. Bump a version by editing the pins in
 | Service | Image | Ports |
 |---|---|---|
 | MariaDB | inside full-stack image | 3306 (internal) |
-| Asterisk + FreePBX | `ghcr.io/innotelinc/zeus:latest-fullstack` | 80, 5060/udp, 8088, 8089, 5038, 10000, 10101-10120/udp (RTP — `FREEPBX_RTP_PORT_START/END`) |
+| Asterisk + FreePBX | `ghcr.io/innotelinc/zeus:latest-fullstack` | `8083` (GUI, **loopback only**), 5060/udp, 8088, 8089, 5038, 10000, 10101-10120/udp (RTP — `FREEPBX_RTP_PORT_START/END`) |
 | coturn (TURN/STUN) | `coturn/coturn:latest` | 3478/tcp+udp, 49152-49251/udp (relay — `TURN_RELAY_PORT_START/END`) |
-| AvantFax | inside full-stack image (`/fax`) | via :8083 (host :80 is the NPM edge) |
+| AvantFax | inside full-stack image (`/fax`) | over `pbx-net` as `http://zeus-freepbx/fax`; `pbx.<domain>` reaches it through the `pbx-sso` gateway |
 | Zeus Portal | built from `Dockerfile` | 3000 |
 
 The RTP block is parameterized (`.env`: `FREEPBX_RTP_PORT_START` /

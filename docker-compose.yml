@@ -58,6 +58,18 @@ services:
       # "both" = Authentik button + password form. Default: "authentik"
       # when the AUTHENTIK_* OIDC vars are set, "freepbx" otherwise.
       - AUTH_MODE=${AUTH_MODE:-}
+      # ── FreePBX + AvantFax (the shared voice plane on pbx-net) ──
+      # This portal joins the pinned pbx-net bridge, which Zeus's PBX container
+      # sits on, so both are dialled by container name. The GUI's host :8083 is
+      # loopback-only (it fronts pbx.<domain> through the pbx-sso gateway), so
+      # no LAN address works here — and 8083 is Apache, not AMI, so none of the
+      # Docker-subnet caveats attached to 5038 apply.
+      - FREEPBX_URL=${FREEPBX_URL:-http://zeus-freepbx}
+      - FREEPBX_CLIENT_ID=${FREEPBX_CLIENT_ID:-pbxportal-api}
+      - FREEPBX_CLIENT_SECRET=${FREEPBX_CLIENT_SECRET:-}
+      - AVANTFAX_URL=${AVANTFAX_URL:-http://zeus-freepbx/fax}
+      # AvantFax's own DB, consumed by the fax module.
+      - AVANTFAX_DB_PASS=${AVANTFAX_DB_PASS:-}
     healthcheck:
       # No `-f`: the health endpoint returns 503 when >=2 external services
       # (FreePBX/VoIP.ms/Stripe) are down. The container is healthy as long as
