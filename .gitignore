@@ -16,3 +16,9 @@ __pycache__/
 # Pinned full-stack build inputs (scripts/fetch-vendor.sh). ~40 MB of
 # upstream artifacts — fetched, never committed; CI caches them.
 /vendor/
+
+# Env snapshots (pre-migration backups, .env.bak-<ts>, …) — these hold live
+# credentials. Never tracked: they leaked once (see the 2026-09-15 cleanup).
+.env.pre-*
+.env.bak*
+.env.*.bak
