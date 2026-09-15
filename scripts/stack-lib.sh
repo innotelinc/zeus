@@ -2,7 +2,7 @@
 # stack-lib.sh — the central shared library for Innotel Platform Stack tasks.
 #
 # Every platform repo's setup/npm scripts can source this from the canonical
-# stack repo (innotel-platform-stack) so common tasks live in ONE place:
+# stack repo (`ips`) so common tasks live in ONE place:
 #
 #   STACK_LIB="${STACK_LIB:-/usr/local/lib/innotel/stack-lib.sh}"
 #   [ -f "$STACK_LIB" ] && . "$STACK_LIB"
@@ -55,18 +55,14 @@ stack_lib_lan_ip() { # -> prints the LAN IP or empty
 }
 
 # Resolve the forward host for NPM: explicit NPM_FORWARD_HOST wins, else the
-# host's LAN IP.
-#
-# Never host.docker.internal, and never a bridge/service address: docker
-# addresses do not resolve for this project (host.docker.internal is not
-# resolvable at all here — no extra_hosts — and a container name is not a
-# contract NPM on another host can rely on). If the LAN IP cannot be detected
-# the caller gets an empty value and must fail loudly rather than publish an
-# unreachable upstream.
+# LAN IP, else `host.docker.internal` (the docker-internal alias).
 stack_lib_forward_host() { # [explicit] <override> -> prints the forward host (pass "$@")
   local explicit="${1:-}"
   if [ -n "$explicit" ]; then printf '%s' "$explicit"; return 0; fi
-  stack_lib_lan_ip
+  local lan
+  lan="$(stack_lib_lan_ip)"
+  if [ -n "$lan" ]; then printf '%s' "$lan"; return 0; fi
+  printf 'host.docker.internal'
 }
 
 # ── NPM API helpers (stdlib curl) ───────────────────────────────────────────

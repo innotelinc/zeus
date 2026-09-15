@@ -28,7 +28,7 @@ provides, and explicitly does not own.
 ## Consumes
 
 - Authentik — identity, SSO
-- Infisical — secrets, VoIP.ms credentials, Magnate storefront URL; legacy Stripe keys (deprecated)
+- Cerulean Vault — secrets, VoIP.ms credentials, Magnate storefront URL; legacy Stripe keys (deprecated)
 - Magnate — subscriptions and entitlements
 - Cerulean — certificates and trust
 - NPM Edge — public routing, TLS termination at the edge
@@ -36,7 +36,7 @@ provides, and explicitly does not own.
 ## Explicitly does NOT own
 
 - Identity (Authentik)
-- Secrets (Infisical)
+- Secrets (Cerulean Vault)
 - Billing (Magnate)
 
 
@@ -123,7 +123,7 @@ the invocation:
 
 ```bash
 # .env wins: strip every key the other project defines, then bring this one up
-OTHER=/usr/src/projects/complete/capstone-voice-aiagent-platform/.env
+OTHER=/usr/src/projects/complete/2-voice/capstone/.env
 UNSETS=(); while IFS='=' read -r k _; do
   case "$k" in ''|\#*) continue;; esac; UNSETS+=(-u "$k")
 done < "$OTHER"
@@ -135,7 +135,7 @@ way any given invocation resolved, which is the quickest way to confirm it.
 
 ## Golden rules
 
-- **Authentik = Identity** · **Infisical = Secrets** · **Cerulean = Trust** ·
+- **Authentik = Identity** · **Cerulean Vault = Secrets** · **Cerulean = Trust** ·
   **ONYX = Storage** · **Magnate = Revenue** · **NPM Edge = Edge** — everything else is a business function.
 - No platform duplicates another's responsibility.
 - No credit in commits, footers, or headers to anyone but the project owner.

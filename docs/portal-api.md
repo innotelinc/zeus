@@ -4,7 +4,7 @@ The Zeus customer portal (Next.js, `src/app`) exposes its REST API under
 `/api`. This document is the machine-to-machine contract for **Capstone
 (AgentOps)** and any other client that builds on Zeus telephony: SMS/fax
 actions and voicemail intelligence. It covers exactly what the convergence
-plan (innotel-platform-stack `docs/convergence-capstone-zeus.md`) requires:
+plan (`ips` `docs/convergence-capstone-zeus.md`) requires:
 *messages, fax, and voicemail* — plus the agent transfer-resolver, which is
 already part of the Capstone contract.
 
