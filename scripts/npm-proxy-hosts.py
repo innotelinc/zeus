@@ -89,34 +89,37 @@ HOSTS: list[dict[str, Any]] = [
     # always served them that way, FreePBX's UCP genuinely needs the upgrade,
     # and leaving it on where it is unused costs nothing — not worth churning
     # live proxy hosts (and risking a GUI regression) over a cosmetic flag.
-    {"key": "apex", "sub": None, "scheme": "http", "port": 3001, "websocket": True, "name": "Zeus Portal (apex origin)", "forward_auth": False},
+    {"key": "apex", "sub": None, "scheme": "http", "port": 3001, "websocket": True, "name": "Zeus Portal (apex origin)"},
     # The subscription page, on its own hostname so "where do I buy this?" has a
     # stable answer that is not the portal's own origin. Same deployment as the
     # portal — app/page.tsx renders the subscribe page when the host starts with
     # "subscribe." (and /subscribe works on every host too).
-    {"key": "subscribe", "sub": "subscribe", "scheme": "http", "port": 3001, "websocket": True, "name": "Zeus subscription page (plans & sign-up)", "forward_auth": False},
-    {"key": "app", "sub": "app", "scheme": "http", "port": 3001, "websocket": True, "name": "Zeus Customer Portal (PWA)", "forward_auth": False},
-    {"key": "api", "sub": "api", "scheme": "http", "port": 3001, "websocket": True, "name": "Zeus Portal API", "forward_auth": False},
-    {"key": "portal", "sub": "portal", "scheme": "http", "port": 3001, "websocket": True, "name": "Zeus Customer Portal (alias)", "forward_auth": False},
-    {"key": "auth", "sub": "auth", "scheme": "http", "port": 9000, "websocket": True, "name": "Authentik (SSO / user management)", "forward_auth": False},
-    {"key": "pbx", "sub": "pbx", "scheme": "http", "port": 80, "websocket": True, "name": "FreePBX"},
-    # AvantFax is served by the FreePBX container at /fax (pbx service, port 80).
-    {"key": "fax", "sub": "fax", "scheme": "http", "port": 80, "websocket": True, "name": "AvantFax (fax UI, /fax on FreePBX)"},
+    {"key": "subscribe", "sub": "subscribe", "scheme": "http", "port": 3001, "websocket": True, "name": "Zeus subscription page (plans & sign-up)"},
+    {"key": "app", "sub": "app", "scheme": "http", "port": 3001, "websocket": True, "name": "Zeus Customer Portal (PWA)"},
+    {"key": "api", "sub": "api", "scheme": "http", "port": 3001, "websocket": True, "name": "Zeus Portal API"},
+    {"key": "portal", "sub": "portal", "scheme": "http", "port": 3001, "websocket": True, "name": "Zeus Customer Portal (alias)"},
+    {"key": "auth", "sub": "auth", "scheme": "http", "port": 9000, "websocket": True, "name": "Authentik (SSO / user management)"},
+    # FreePBX is published on the host as 8083 -> 80 (zeus-freepbx in the
+    # stack's compose), and that is what the live proxy hosts forward to.
+    {"key": "pbx", "sub": "pbx", "scheme": "http", "port": 8083, "websocket": True, "name": "FreePBX"},
+    # AvantFax is served by the FreePBX container at /fax (same host port).
+    {"key": "fax", "sub": "fax", "scheme": "http", "port": 8083, "websocket": True, "name": "AvantFax (fax UI, /fax on FreePBX)"},
     # TURN itself is UDP on 3478 — this host exists so the documented
     # coturn.<domain> name resolves and answers the (optional) HTTP probe; the
     # softphone is pointed at TURN_HOSTNAME, not this proxy.
-    {"key": "coturn", "sub": "coturn", "scheme": "http", "port": 3478, "websocket": True, "name": "coturn (TURN relay — UDP 3478)", "forward_auth": False},
-    # The NPM admin UI is published on its own host and is pinned to the UI's
-    # LOOPBACK inside the NPM container, where nginx runs. It must not point at
-    # NPM_HOST_IP: NPM Edge believes the Authentik identity headers only on a
-    # connection that arrived over loopback — that is what stops a client
-    # reaching the admin port directly from forging one — so a LAN-IP upstream
-    # answers the gate and then serves a login page with no SSO
-    # (see the npm repo's docs/stack.md). Gated like every other surface that
-    # keeps a login of its own; the gate signs in at auth.zeus.
-    {"key": "admin", "sub": "admin", "scheme": "http", "port": 81, "websocket": True,
-     "forward_host": "127.0.0.1", "name": "Nginx Proxy Manager admin UI"},
-    {"key": "ws", "sub": "ws", "scheme": "https", "port": 8089, "websocket": True, "name": "WebRTC WSS signaling (softphone)", "forward_auth": False},
+    {"key": "coturn", "sub": "coturn", "scheme": "http", "port": 3478, "websocket": True, "name": "coturn (TURN relay — UDP 3478)"},
+    # The NPM admin UI is published on its own host. Its upstream is the SSO
+    # gateway (oauth2-proxy, `cerulean-npm-sso`) on the NPM container's loopback
+    # port — never the UI's :81, and never NPM_HOST_IP. The gateway runs the
+    # browser through a real OIDC code flow against Cerulean Authentik and only
+    # then proxies to :81, where NPM Edge believes the identity headers the
+    # gateway set. Pointing at :81 (or at a LAN IP) skips that flow, so the UI
+    # answers 403 instead of signing anyone in (see the npm repo's
+    # docs/stack.md). Port is the gateway, overridable with
+    # NPM_SSO_GATEWAY_PORT when the npm side moves it.
+    {"key": "admin", "sub": "admin", "scheme": "http", "port": 4180, "websocket": True,
+     "forward_host": "127.0.0.1", "name": "Nginx Proxy Manager admin UI (via the SSO gateway)"},
+    {"key": "ws", "sub": "ws", "scheme": "https", "port": 8089, "websocket": True, "name": "WebRTC WSS signaling (softphone)"},
 ]
 
 
@@ -239,125 +242,8 @@ def resolve_dns_credentials(args: argparse.Namespace, dns_provider: str) -> str:
             return build_rfc2136_credentials(nameserver, key_name, key_secret, algorithm, port)
     return ""
 
-
-# ── Cerulean Authentik forward auth ─────────────────────────────────────
-# Injected as each proxy host's nginx "advanced config": an auth_request
-# against the Authentik embedded outpost. The outpost runs the domain-level
-# proxy provider (`zeus-npm-forward-auth`), so ONE provider covers every host
-# under zeus.innotel.us — the outpost matches a request by X-Forwarded-Host.
-#
-# Only hosts that keep a LOCAL login of their own are gated: FreePBX,
-# AvantFAX and the NPM admin UI. Everything else opts out with
-# `"forward_auth": False` in HOSTS — `auth` (Authentik itself), the portal
-# hosts and `api` (the portal already signs in through Authentik and its API is
-# called programmatically) and `ws` (the softphone's WSS signaling can't
-# present an interactive login). Same pattern as 2-voice/capstone.
-#
-# `admin` used to opt out on the reasoning that gating the UI locks you out of
-# the thing serving the gate. It does not any more: the admin UI signs in
-# through the gate (NPM Edge forward-auth sign-in), and the way back in if the
-# gate ever misconfigures is the admin port on the LAN, not the public host.
-#
-# NOTE: braces are doubled for .format() — only {outpost_url} is a field.
-FORWARD_AUTH_SNIPPET = """\
-# ── Cerulean Authentik forward auth (managed by npm-proxy-hosts.py) ──
-# Increase buffer size for large headers (SSO redirects are big).
-proxy_buffers 8 16k;
-proxy_buffer_size 32k;
-auth_request /outpost.goauthentik.io/auth/nginx;
-error_page 401 = @goauthentik_proxy_signin;
-auth_request_set $auth_cookie $upstream_http_set_cookie;
-add_header Set-Cookie $auth_cookie;
-auth_request_set $authentik_username $upstream_http_x_authentik_username;
-auth_request_set $authentik_groups $upstream_http_x_authentik_groups;
-auth_request_set $authentik_email $upstream_http_x_authentik_email;
-auth_request_set $authentik_name $upstream_http_x_authentik_name;
-auth_request_set $authentik_uid $upstream_http_x_authentik_uid;
-proxy_set_header X-authentik-username $authentik_username;
-proxy_set_header X-authentik-groups $authentik_groups;
-proxy_set_header X-authentik-email $authentik_email;
-proxy_set_header X-authentik-name $authentik_name;
-proxy_set_header X-authentik-uid $authentik_uid;
-location /outpost.goauthentik.io {{
-    proxy_pass {outpost_url}/outpost.goauthentik.io;
-    proxy_set_header Host $host;
-    proxy_set_header X-Original-URL $scheme://$http_host$request_uri;
-    # The outpost runs the forward-auth provider in `forward_domain` mode and
-    # identifies which app a request belongs to from the forwarded host. These
-    # live in NPM's generated `location /`, which a custom location does NOT
-    # inherit — without them the embedded outpost logs "failed to detect a
-    # forward URL from nginx" and 401s/500s the auth subrequest.
-    proxy_set_header X-Forwarded-Host $host;
-    proxy_set_header X-Forwarded-Proto $scheme;
-    proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-    add_header Set-Cookie $auth_cookie;
-    auth_request_set $auth_cookie $upstream_http_set_cookie;
-    proxy_pass_request_body off;
-    proxy_set_header Content-Length "";
-}}
-location @goauthentik_proxy_signin {{
-    internal;
-    add_header Set-Cookie $auth_cookie;
-    return 302 {signin_url}/outpost.goauthentik.io/start?rd=$scheme://$http_host$request_uri;
-}}
-"""
-
-
-def forward_auth_snippet(outpost_url: str, signin_url: str) -> str:
-    """Render the auth_request nginx snippet for one proxy host.
-
-    outpost_url is server-side only (NPM → Authentik over the LAN, direct —
-    never through NPM's own vhosts); signin_url is what the BROWSER is
-    redirected to on 401, so it must be the public auth domain.
-    """
-    return FORWARD_AUTH_SNIPPET.format(outpost_url=outpost_url.rstrip("/"),
-                                       signin_url=signin_url.rstrip("/"))
-
-
-def build_outpost_url(upstream_host: str) -> str:
-    """URL of the Authentik embedded outpost as NPM reaches it.
-
-    NPM must hit the outpost DIRECTLY (http://<upstream>:9000) — routing it
-    through https://auth.<domain> would re-enter NPM's own vhost selection
-    with the app's Host header and loop the request back to the app vhost.
-    """
-    return f"http://{upstream_host}:9000"
-
-
-def resolve_forward_auth(args: argparse.Namespace, env: dict[str, str],
-                         upstream: str, base_domain: str) -> tuple[bool, str, str, set[str]]:
-    """Resolve forward-auth settings: (enabled, outpost_url, signin_url, excluded)."""
-    enabled = True  # default ON — that's the point of the Cerulean SSO gate
-    if cfg(args, "NPM_FORWARD_AUTH", "").strip().lower() in {"0", "false", "no", "off"}:
-        enabled = False
-    if args.no_forward_auth:
-        enabled = False
-    excluded = {s.strip() for s in cfg(args, "NPM_FORWARD_AUTH_EXCLUDE", "").split(",") if s.strip()}
-    if "all" in excluded:
-        enabled = False
-    outpost = build_outpost_url(upstream)
-    signin_url = (cfg(args, "NPM_AUTHENTIK_URL", "") or "").strip().rstrip("/")
-    if not signin_url and base_domain:
-        signin_url = f"https://auth.{base_domain}"
-    if not signin_url:
-        signin_url = outpost
-    return enabled, outpost, signin_url, excluded
-
-
-def snippet_for_host(h: dict, enabled: bool, outpost_url: str, signin_url: str,
-                     excluded: set[str]) -> str:
-    """The auth snippet this host should carry ('' = no forward auth)."""
-    if not enabled:
-        return ""
-    if h.get("forward_auth") is False:  # explicit per-host opt-out in HOSTS
-        return ""
-    if h["key"] in excluded:
-        return ""
-    return forward_auth_snippet(outpost_url, signin_url)
-
-
 def build_payload(domain: str, h: dict, forward_host: str,
-                  cert_id: int | None, ssl: bool, auth_snippet: str = "") -> dict:
+                  cert_id: int | None, ssl: bool, ) -> dict:
     return {
         "domain_names": [domain],
         "forward_scheme": h["scheme"],
@@ -369,7 +255,9 @@ def build_payload(domain: str, h: dict, forward_host: str,
         "caching_enabled": False,
         "allow_websocket_upgrade": h["websocket"],
         "access_list_id": "0",
-        "advanced_config": auth_snippet,
+        # Never a gate: identity is Authentik OIDC. A host with no OIDC of its
+        # own is fronted by an oauth2-proxy SSO gateway, not an auth_request.
+        "advanced_config": "",
         "meta": {"letsencrypt_agree": False, "dns_challenge": False},
         "locations": [],
         "hsts_enabled": False,
@@ -425,7 +313,7 @@ def ensure_cert(api: NpmApi, domains: list[str], le_email: str,
 
 
 def desired(domain: str, h: dict, forward_host: str,
-            cert_id: int | None, ssl: bool, auth_snippet: str = "") -> dict:
+            cert_id: int | None, ssl: bool, ) -> dict:
     """The field values we own, used to diff an existing host against the map."""
     return {
         "domain_names": [domain],
@@ -435,7 +323,9 @@ def desired(domain: str, h: dict, forward_host: str,
         "allow_websocket_upgrade": h["websocket"],
         "ssl_forced": ssl,
         "certificate_id": cert_id if cert_id else None,  # NPM wants null, not 0
-        "advanced_config": auth_snippet,
+        # Never a gate: identity is Authentik OIDC. A host with no OIDC of its
+        # own is fronted by an oauth2-proxy SSO gateway, not an auth_request.
+        "advanced_config": "",
         "enabled": True,
     }
 
@@ -474,9 +364,6 @@ def main() -> int:
     parser.add_argument("--ws-port", type=int, default=None,
                         help="upstream port for the ws.<domain> host (default 8089; use 8088 with --ws-scheme http)")
     parser.add_argument("--no-ssl", action="store_true", help="skip certificates and HTTPS forcing")
-    parser.add_argument("--no-forward-auth", action="store_true",
-                        help="do not put Authentik forward auth in front of the PBX/AvantFAX hosts "
-                             "(NPM_FORWARD_AUTH=0 does the same for every host)")
     parser.add_argument("--no-prune", action="store_true", help="never delete NPM hosts")
     parser.add_argument("--check", action="store_true", help="verify only — no writes, exit 1 if out of sync")
     parser.add_argument("--env-file", default=str(repo / ".env"), help="zeus .env path")
@@ -518,21 +405,6 @@ def main() -> int:
     dns_credentials = resolve_dns_credentials(args, dns_provider)
     if dns_credentials:
         print(f"PASS DNS provider credentials ready ({dns_provider} — {len(dns_credentials)} bytes)")
-
-    # Cerulean Authentik forward auth. One domain-level proxy provider covers
-    # the whole zeus.innotel.us zone, so a gated host only needs the
-    # auth_request snippet in its nginx "advanced config" — see
-    # FORWARD_AUTH_SNIPPET for which hosts opt out and why.
-    fa_enabled, fa_outpost, fa_signin, fa_excluded = resolve_forward_auth(
-        args, args.env, upstream, base_domain)
-    if fa_enabled:
-        gated = [h["key"] for h in HOSTS
-                 if snippet_for_host(h, True, fa_outpost, fa_signin, fa_excluded)]
-        print(f"PASS Authentik forward auth on for {len(gated)} host(s): "
-              f"{', '.join(gated) or '(none)'} (outpost {fa_outpost}, sign-in {fa_signin})")
-    else:
-        print("WARN Authentik forward auth is OFF — the PBX and AvantFAX hosts would not "
-              "require a Cerulean session", file=sys.stderr)
 
     hosts = [dict(h) for h in HOSTS]
     if args.ws_scheme is not None or args.ws_port is not None:
@@ -639,7 +511,6 @@ def main() -> int:
         domain = base_domain if h["sub"] is None else f"{h['sub']}.{base_domain}"
         managed_domains.add(domain)
         label = h["name"]
-        auth_snippet = snippet_for_host(h, fa_enabled, fa_outpost, fa_signin, fa_excluded)
         existing = by_domain.get(domain.lower())
 
         # In wildcard mode every host attaches the one *.base cert: looking up
@@ -653,14 +524,14 @@ def main() -> int:
                 continue
 
         fwd = forward_host(h)
-        want = desired(domain, h, fwd, cert_id, ssl, auth_snippet)
+        want = desired(domain, h, fwd, cert_id, ssl)
         if existing is None:
             if args.check:
                 print(f"FAIL {label} — proxy host {domain} missing")
                 failed.append(domain)
                 continue
             try:
-                api.create_proxy_host(build_payload(domain, h, fwd, cert_id, ssl, auth_snippet))
+                api.create_proxy_host(build_payload(domain, h, fwd, cert_id, ssl))
                 created += 1
                 print(f"PASS {label} — created {domain} → {h['scheme']}://{fwd}:{h['port']}")
             except (NpmError, urllib.error.URLError, OSError) as e:
@@ -693,7 +564,7 @@ def main() -> int:
             # read-only properties (id, created_on, modified_on,
             # owner_user_id) and `locations: null`, which the update schema
             # rejects with "must NOT have additional properties".
-            payload = build_payload(domain, h, fwd, cert_id, ssl, auth_snippet)
+            payload = build_payload(domain, h, fwd, cert_id, ssl)
             payload.update(want)
             api.update_proxy_host(existing["id"], payload)
             updated += 1
