@@ -100,10 +100,14 @@ HOSTS: list[dict[str, Any]] = [
     {"key": "portal", "sub": "portal", "scheme": "http", "port": 3001, "websocket": True, "name": "Zeus Customer Portal (alias)"},
     {"key": "auth", "sub": "auth", "scheme": "http", "port": 9000, "websocket": True, "name": "Authentik (SSO / user management)"},
     # FreePBX is published on the host as 8083 -> 80 (zeus-freepbx in the
-    # stack's compose), and that is what the live proxy hosts forward to.
-    {"key": "pbx", "sub": "pbx", "scheme": "http", "port": 8083, "websocket": True, "name": "FreePBX"},
-    # AvantFax is served by the FreePBX container at /fax (same host port).
-    {"key": "fax", "sub": "fax", "scheme": "http", "port": 8083, "websocket": True, "name": "AvantFax (fax UI, /fax on FreePBX)"},
+    # stack's compose), but the proxy host does NOT forward straight there: the
+    # GUI has no OIDC of its own, so it is fronted by the oauth2-proxy gateway
+    # `pbx-sso` (Capstone's compose, host port 14014), which performs the
+    # Authentik code flow before the app is reached. The Zeus portal keeps
+    # calling the app directly on :8083 (see FREEPBX_URL in the compose).
+    {"key": "pbx", "sub": "pbx", "scheme": "http", "port": 14014, "websocket": True, "name": "FreePBX — via SSO gateway"},
+    # AvantFax is served by the FreePBX container at /fax (same upstream).
+    {"key": "fax", "sub": "fax", "scheme": "http", "port": 14014, "websocket": True, "name": "AvantFax (fax UI, /fax on FreePBX) — via SSO gateway"},
     # TURN itself is UDP on 3478 — this host exists so the documented
     # coturn.<domain> name resolves and answers the (optional) HTTP probe; the
     # softphone is pointed at TURN_HOSTNAME, not this proxy.
