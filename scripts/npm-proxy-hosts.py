@@ -106,10 +106,16 @@ HOSTS: list[dict[str, Any]] = [
     # coturn.<domain> name resolves and answers the (optional) HTTP probe; the
     # softphone is pointed at TURN_HOSTNAME, not this proxy.
     {"key": "coturn", "sub": "coturn", "scheme": "http", "port": 3478, "websocket": True, "name": "coturn (TURN relay — UDP 3478)", "forward_auth": False},
-    # The NPM admin UI does NOT run on the Docker host, so this entry must
-    # forward to the NPM host itself (NPM_HOST_IP) rather than NPM_UPSTREAM_HOST.
+    # The NPM admin UI is published on its own host and is pinned to the UI's
+    # LOOPBACK inside the NPM container, where nginx runs. It must not point at
+    # NPM_HOST_IP: NPM Edge believes the Authentik identity headers only on a
+    # connection that arrived over loopback — that is what stops a client
+    # reaching the admin port directly from forging one — so a LAN-IP upstream
+    # answers the gate and then serves a login page with no SSO
+    # (see the npm repo's docs/stack.md). Gated like every other surface that
+    # keeps a login of its own; the gate signs in at auth.zeus.
     {"key": "admin", "sub": "admin", "scheme": "http", "port": 81, "websocket": True,
-     "host_key": "NPM_HOST_IP", "name": "Nginx Proxy Manager admin UI", "forward_auth": False},
+     "forward_host": "127.0.0.1", "name": "Nginx Proxy Manager admin UI"},
     {"key": "ws", "sub": "ws", "scheme": "https", "port": 8089, "websocket": True, "name": "WebRTC WSS signaling (softphone)", "forward_auth": False},
 ]
 
@@ -240,13 +246,17 @@ def resolve_dns_credentials(args: argparse.Namespace, dns_provider: str) -> str:
 # proxy provider (`zeus-npm-forward-auth`), so ONE provider covers every host
 # under zeus.innotel.us — the outpost matches a request by X-Forwarded-Host.
 #
-# Only hosts that keep a LOCAL login of their own are gated: FreePBX and
-# AvantFAX. Everything else opts out with `"forward_auth": False` in HOSTS —
-# `auth` (Authentik itself), the portal hosts and `api` (the portal already
-# signs in through Authentik and its API is called programmatically), `ws`
-# (the softphone's WSS signaling can't present an interactive login) and
-# `admin` (NPM's own UI — gating it locks you out of the thing serving the
-# gate). Same pattern as 2-voice/capstone.
+# Only hosts that keep a LOCAL login of their own are gated: FreePBX,
+# AvantFAX and the NPM admin UI. Everything else opts out with
+# `"forward_auth": False` in HOSTS — `auth` (Authentik itself), the portal
+# hosts and `api` (the portal already signs in through Authentik and its API is
+# called programmatically) and `ws` (the softphone's WSS signaling can't
+# present an interactive login). Same pattern as 2-voice/capstone.
+#
+# `admin` used to opt out on the reasoning that gating the UI locks you out of
+# the thing serving the gate. It does not any more: the admin UI signs in
+# through the gate (NPM Edge forward-auth sign-in), and the way back in if the
+# gate ever misconfigures is the admin port on the LAN, not the public host.
 #
 # NOTE: braces are doubled for .format() — only {outpost_url} is a field.
 FORWARD_AUTH_SNIPPET = """\
@@ -593,6 +603,12 @@ def main() -> int:
     # Hosts (like admin.<domain>) that forward somewhere other than the Docker
     # host — resolved here so the fallback warns exactly once.
     def forward_host(h: dict) -> str:
+        # A row may pin its own upstream outright (admin.<domain> pins the NPM
+        # admin UI's loopback: nginx runs beside it, and the app only trusts the
+        # edge's identity headers there).
+        pinned = h.get("forward_host")
+        if pinned:
+            return pinned
         key = h.get("host_key")
         if not key:
             return upstream
