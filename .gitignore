@@ -22,3 +22,8 @@ __pycache__/
 .env.pre-*
 .env.bak*
 .env.*.bak
+
+# Cerulean Vault token copies (data/vault/token/<product>.token) — live credentials.
+data/vault/token/
+data/vault/init/
+data/vault/file/

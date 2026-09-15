@@ -64,43 +64,54 @@ provides, and explicitly does not own.
   `OTEL_EXPORTER_OTLP_ENDPOINT=http://zeus-signoz-otel-collector:4318` with
   `OTEL_SERVICE_NAME=zeus-portal` when you want portal spans.
 
-## Secrets (Infisical)
+## Secrets (Cerulean Vault)
 
-Secrets for this platform live in **Infisical** (SecretOps): credentials are imported
-into an Infisical workspace and the stack's `.env` is derived from it. Enable it with:
+The platform's SecretOps is **Cerulean Vault** — HashiCorp Vault, KV v2, hosted by
+Cerulean — with `vault://<mount>/<path>#<key>` references in `.env`:
 
 ```bash
-# generate the required keys and add them to .env
-openssl rand -base64 32   # INFISICAL_ENCRYPTION_KEY
-openssl rand -hex 16      # INFISICAL_AUTH_SECRET
-openssl rand -hex 16      # INFISICAL_DB_PASSWORD
-
-# start the profile and provision the workspace + import .env secrets
-docker compose -f docker-compose.yml -f compose.infisical.yml --profile infisical up -d
-bash scripts/infisical-setup.sh
+VOIPMS_SIP_PASS=vault://cerulean/zeus#VOIPMS_SIP_PASS
 ```
 
-See [compose.infisical.yml](../compose.infisical.yml) and
-[scripts/infisical-setup.py](../scripts/infisical-setup.py) for details.
+Cerulean mints this stack's **path-scoped** token (its policy covers only
+`cerulean/data/zeus`, never a sibling's secrets) and renews it in place. Copy it
+to `./data/vault/token/zeus.token`, then move any plaintext values across:
 
-### Runtime resolution (`infisical://`)
+```bash
+VAULT_ADDR=http://<cerulean-host>:8200 \
+  VAULT_TOKEN_FILE=./data/vault/token/zeus.token \
+  VAULT_PREFIX=cerulean VAULT_PATH=zeus \
+  python3 scripts/vault-migrate.py --from-env-file .env \
+    --keys VOIPMS_SIP_PASS,TURN_CREDENTIAL
+```
 
-Portal `.env` values may be **plain text or `infisical://<name>` references**
-(same contract as Cerulean/Onyx/zapit). When `INFISICAL_ADDR`,
-`INFISICAL_TOKEN`, and `INFISICAL_WORKSPACE_ID` are set, the portal
-`docker-entrypoint.sh` resolves references **at container startup** — before
-the Next.js server boots — so every consumer reads the plain value from
+`vault-migrate.py` never prints a value, unions with whatever is already at the
+path (so a re-run is a no-op, not an overwrite), and accepts either `.env` or a
+legacy Infisical workspace as its source.
+
+### Runtime resolution (`vault://`)
+
+Portal `.env` values may be **plain text or `vault://<mount>/<path>#<key>`
+references** (the same grammar Cerulean/Onyx/Atlas/Distro resolve). The portal
+`docker-entrypoint.sh` resolves references **at container startup** — before the
+Next.js server boots — so every consumer reads the plain value from
 `process.env` and no application code knows about references:
 
-- `docker-entrypoint.sh` → `scripts/infisical-env.mjs` (resolver, `node --test`
+- `docker-entrypoint.sh` → `scripts/vault-env.mjs` (resolver, `node --test`
   covered) → shell-exported resolved values → `node server.js`.
-- Supported keys: `SESSION_SECRET`, `VOIPMS_SIP_PASS`, `VOIPMS_API_PASSWORD`,
-  `VOIPMS_IAX_PASS`, `VOIPMS_WEBHOOK_SECRET`, `FREEPBX_AMI_SECRET`,
-  `ASTERISK_AMI_SECRET`, `AVANTFAX_WEBHOOK_SECRET`, `STRIPE_SECRET_KEY`,
-  `STRIPE_WEBHOOK_SECRET`, `TURN_CREDENTIAL`.
-- A configured reference that cannot be resolved **fails the container** (no
-  silent boot with a literal `infisical://` value); plain values pass through
-  untouched when Infisical is not configured.
+- `VAULT_ADDR` plus `VAULT_TOKEN` (or `VAULT_TOKEN_FILE`) are the only required
+  settings; `VAULT_PREFIX` defaults to `cerulean`, and `VAULT_NAMESPACE` /
+  `VAULT_SKIP_VERIFY` / `VAULT_CACERT` cover Enterprise namespaces and TLS.
+- Resolvable keys: `SESSION_SECRET`, `VOIPMS_SIP_PASS`, `VOIPMS_API_USERNAME`,
+  `VOIPMS_API_PASSWORD`, `VOIPMS_IAX_PASS`, `VOIPMS_WEBHOOK_SECRET`,
+  `FREEPBX_AMI_SECRET`, `ASTERISK_AMI_SECRET`, `AVANTFAX_WEBHOOK_SECRET`,
+  `STRIPE_SECRET_KEY`, `STRIPE_WEBHOOK_SECRET`, `TURN_CREDENTIAL`.
+- A reference that cannot be resolved — unconfigured Vault, an unreachable
+  server, a missing key, an empty value — **fails the container** rather than
+  booting with a literal reference, and a leftover `infisical://` value is
+  refused outright. Plain values pass through untouched.
+- One read per Vault path, not per key: the whole key list above is one secret,
+  so a boot costs a single round trip.
 
 ## Co-hosting with Capstone (shared host)
 

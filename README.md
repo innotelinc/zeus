@@ -87,7 +87,7 @@ owns billing** — Zeus never holds Stripe keys and never processes a payment. T
 plan list lives at `subscribe.innotel.us`; `MAGNATE_SUBSCRIBE_URL` points at it.
 
 > Zeus is **not** an identity provider, a secrets store or a billing platform. Identity is
-> Cerulean (Authentik), secrets are Infisical, storage is Onyx and revenue is Magnate.
+> Cerulean (Authentik), secrets are Cerulean Vault, storage is Onyx and revenue is Magnate.
 
 ---
 

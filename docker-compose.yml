@@ -31,6 +31,14 @@ services:
       - "3001:3000"                     # Zeus portal (3001 avoids conflict with capstone portal)
     volumes:
       - pbx-data:/app/data
+      # This product's Vault token, read-only. Cerulean's Vault bootstrap mints
+      # it (VAULT_PRODUCT_TOKENS=zeus there) and renews it in place; the stack
+      # only ever reads it. See data/vault/token/ (gitignored).
+      - ./data/vault/token:/vault/token:ro
+    # Vault is published on the host, not on this compose network, so the
+    # container reaches it through the bridge gateway alias (onyx's pattern).
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     env_file:
       - .env
     environment:

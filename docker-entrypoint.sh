@@ -26,31 +26,34 @@ else
   echo ">>> Database exists — skipping seed."
 fi
 
-# ── SecretOps (Infisical) — boot-time reference resolution ──────────────
-# .env values may be `infisical://<name>` references (same runtime contract
-# as Cerulean/Onyx/zapit, docs/stack.md). Resolve them BEFORE boot so every
-# Next.js consumer reads the plain value from process.env. Plain values are
-# left untouched; a configured reference that cannot be resolved aborts the
-# container instead of booting with a literal `infisical://` value.
+# ── SecretOps (Cerulean Vault) — boot-time reference resolution ─────────
+# .env values may be `vault://<mount>/<path>#<key>` references (the same
+# grammar Cerulean/Onyx/Atlas/Distro resolve, docs/stack.md). Resolve them
+# BEFORE boot so every Next.js consumer reads the plain value from process.env.
+# Plain values are left untouched; a reference that cannot be resolved aborts
+# the container instead of booting with a literal `vault://` value.
 #
-# INFISICAL_* env (written by scripts/infisical-setup.py):
-#   INFISICAL_ADDR / INFISICAL_TOKEN / INFISICAL_WORKSPACE_ID /
-#   INFISICAL_ENVIRONMENT (default prod)
-INFISICAL_KEYS="\
+# VAULT_* env (see .env.example):
+#   VAULT_ADDR / VAULT_TOKEN (or VAULT_TOKEN_FILE) / VAULT_PREFIX /
+#   VAULT_NAMESPACE / VAULT_SKIP_VERIFY / VAULT_CACERT
+VAULT_KEYS="\
   SESSION_SECRET VOIPMS_SIP_PASS VOIPMS_API_USERNAME VOIPMS_API_PASSWORD VOIPMS_IAX_PASS \
   VOIPMS_WEBHOOK_SECRET FREEPBX_AMI_SECRET ASTERISK_AMI_SECRET \
   AVANTFAX_WEBHOOK_SECRET STRIPE_SECRET_KEY STRIPE_WEBHOOK_SECRET \
   TURN_CREDENTIAL"
-if [ -n "${INFISICAL_ADDR:-}" ] && [ -n "${INFISICAL_TOKEN:-}" ] && [ -n "${INFISICAL_WORKSPACE_ID:-}" ]; then
-  echo ">>> Resolving Infisical secret references at boot..."
-  # shellcheck disable=SC2086  # INFISICAL_KEYS is a space-separated key list for word splitting
-  eval "$(node /app/scripts/infisical-env.mjs $INFISICAL_KEYS)"
+# Always run the resolver: with no references it is a silent no-op, and the
+# status is checked explicitly so an unresolvable reference fails the container
+# rather than being masked by `eval` exiting 0 on an empty substitution.
+# shellcheck disable=SC2086  # VAULT_KEYS is a space-separated key list for word splitting
+VAULT_EXPORTS="$(node /app/scripts/vault-env.mjs $VAULT_KEYS)" || exit 1
+if [ -n "$VAULT_EXPORTS" ]; then
+  eval "$VAULT_EXPORTS"
 fi
 
 # ── AMI password: adopt the one Asterisk actually authenticates against ──
 # This container's AMI secret can arrive three ways — env_file (.env), the
-# compose interpolation of the *host shell's* FREEPBX_AMI_SECRET, and Infisical
-# above — while Asterisk checks the [FREEPBX_AMI_USER] section of
+# compose interpolation of the *host shell's* FREEPBX_AMI_SECRET, and Cerulean
+# Vault above — while Asterisk checks the [FREEPBX_AMI_USER] section of
 # manager_custom.conf, which the PBX writes from ITS environment. A stale
 # exported value therefore produced two different passwords for one account:
 # Asterisk logged "failed to authenticate as 'zeus-portal'" every 30s and the
