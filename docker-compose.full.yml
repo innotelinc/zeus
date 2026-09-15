@@ -14,7 +14,7 @@
 #      docker compose -f docker-compose.full.yml -f docker-compose.full.build.yml up -d
 #
 # Ports exposed:
-#   80        FreePBX web UI
+#   8083      FreePBX web UI (host :80 belongs to the NPM edge since the cutover)
 #   3000      Zeus Customer Portal (Next.js)
 #   5060/udp  SIP signalling
 #   5038      Asterisk AMI
@@ -48,11 +48,16 @@ services:
     security_opt:
       - apparmor=unconfined
     ports:
-      - "80:80"            # FreePBX web UI
+      # Port 80 was dropped in the NPM-edge cutover (ips/docs/npm-edge-migration.md
+      # §4.2): host :80 belongs to the NPM edge now. The GUI keeps :8083 — the port
+      # the docs and every pbx.<domain> edge host already used — and the portal's
+      # PBX URLs below were repointed to it in the same cutover.
+      - "8083:80"
       # The same UI on 8083 — the port the bundled add-on FreePBX published and
-      # the one docs/networking.md + any existing `pbx.<domain>` proxy host
-      # point at, so taking the voice plane over does not move the GUI out from
-      # under the operator. Both map container :80.
+      # the one docs/networking.md + every `pbx.<domain>` proxy host point at,
+      # so taking the voice plane over did not move the GUI out from
+      # under the operator. Since the NPM-edge cutover this is the ONLY web
+      # mapping: the old 80:80 was dropped so the edge could take host :80.
       - "8083:80"
       - "5060:5060/udp"   # SIP
       - "5061:5061/tcp"   # SIP TLS
@@ -262,7 +267,9 @@ services:
       # ── FreePBX (this host's LAN IP — PROJECT RULE: never a docker
       # bridge/service name; `freepbx` resolves only from the bridge, and the
       # permit that would allow it is a Docker subnet) ──
-      FREEPBX_URL: http://${LAN_IP:-127.0.0.1}
+      # Port 8083 — host :80 became the NPM edge in the cutover, so the portal
+      # reaches the PBX GUI (and AvantFAX) through the published :8083 mapping.
+      FREEPBX_URL: http://${LAN_IP:-127.0.0.1}:8083
       FREEPBX_CLIENT_ID: ${FREEPBX_CLIENT_ID:-pbxportal-api}
       FREEPBX_CLIENT_SECRET: ${FREEPBX_CLIENT_SECRET:-}
 
@@ -289,7 +296,7 @@ services:
       NEXT_PUBLIC_TURN_CREDENTIAL: ${TURN_CREDENTIAL:-}
 
       # ── AvantFax (runs inside freepbx container at /fax) ──
-      AVANTFAX_URL: http://${LAN_IP:-127.0.0.1}/fax
+      AVANTFAX_URL: http://${LAN_IP:-127.0.0.1}:8083/fax
       NEXT_PUBLIC_AVANTFAX_URL: http://${HOSTNAME:-fax.zeus.innotel.us}/fax
 
       # ── Atlas integration ──
