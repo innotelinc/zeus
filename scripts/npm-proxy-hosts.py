@@ -9,7 +9,9 @@ What it does:
    or use a persistent NPM_API_TOKEN (NPM → Access → API Tokens)
 2. sync — for every service in the README "NPM proxy hosts" table,
    create-or-update its proxy host under NPM_BASE_DOMAIN
-   (forward host/port from the compose port map)
+   (forward host/port from the compose port map), plus the REDIRECTS map
+   (www.<domain> → 301 to the canonical origin, so the name visitors type
+   resolves without becoming a second SSO origin)
 3. ssl — when NPM_LETSENCRYPT_EMAIL is set, create-or-reuse a Let's Encrypt
    certificate per host and force HTTPS. With --wildcard (default on:
    NPM_WILDCARD_CERT=1) + DNS provider credentials, ONE wildcard certificate
@@ -98,7 +100,15 @@ HOSTS: list[dict[str, Any]] = [
     {"key": "app", "sub": "app", "scheme": "http", "port": 3001, "websocket": True, "name": "Zeus Customer Portal (PWA)"},
     {"key": "api", "sub": "api", "scheme": "http", "port": 3001, "websocket": True, "name": "Zeus Portal API"},
     {"key": "portal", "sub": "portal", "scheme": "http", "port": 3001, "websocket": True, "name": "Zeus Customer Portal (alias)"},
-    {"key": "auth", "sub": "auth", "scheme": "http", "port": 9000, "websocket": True, "name": "Authentik (SSO / user management)"},
+    # Authentik is NOT part of this stack: it belongs to the Cerulean trust
+    # plane, which in the deployed estate runs on the edge host. It therefore
+    # does not follow NPM_UPSTREAM_HOST — after zeus moved to its own host, the
+    # inherited default pointed auth.<domain> at a machine with no Authentik on
+    # it, which breaks sign-in for the whole estate. AUTHENTIK_UPSTREAM_HOST
+    # names that host explicitly; when it is unset the fallback warns rather
+    # than silently re-pointing the estate's identity provider.
+    {"key": "auth", "sub": "auth", "scheme": "http", "port": 9000, "websocket": True,
+     "host_key": "AUTHENTIK_UPSTREAM_HOST", "name": "Authentik (SSO / user management)"},
     # FreePBX is published on the host as 8083 -> 80 (zeus-freepbx in the
     # stack's compose), but the proxy host does NOT forward straight there: the
     # GUI has no OIDC of its own, so it is fronted by the oauth2-proxy gateway
@@ -129,6 +139,22 @@ HOSTS: list[dict[str, Any]] = [
 
 class NpmError(Exception):
     pass
+
+
+# ── Redirection hosts ──────────────────────────────────────────────────────
+# Names that must land on the canonical origin instead of being proxied to a
+# deployment of their own.
+#
+# `www` is the one that matters. Visitors type it, and until now nothing
+# defined it — not the zone, not the edge — so it simply did not resolve. A
+# second proxy host forwarding to the same portal would be worse than the
+# NXDOMAIN: the OIDC redirect_uri registered with Authentik is the apex, so a
+# sign-in started on www is refused with a redirect_uri mismatch — a page that
+# looks fine and whose login is broken. A 301 to the apex keeps one canonical
+# origin and one cookie domain, and www still resolves and works.
+REDIRECTS: list[dict[str, Any]] = [
+    {"sub": "www", "target_sub": None, "code": 301, "name": "www → apex (canonical origin)"},
+]
 
 
 def load_env_file(path: Path) -> dict[str, str]:
@@ -197,6 +223,18 @@ class NpmApi:
 
     def create_certificate(self, payload: dict) -> dict:
         return self._call("POST", "/api/nginx/certificates", payload)
+
+    def redirection_hosts(self) -> list[dict]:
+        return self._call("GET", "/api/nginx/redirection-hosts") or []
+
+    def create_redirection_host(self, payload: dict) -> dict:
+        return self._call("POST", "/api/nginx/redirection-hosts", payload)
+
+    def update_redirection_host(self, rid: int, payload: dict) -> dict:
+        return self._call("PUT", f"/api/nginx/redirection-hosts/{rid}", payload)
+
+    def delete_redirection_host(self, rid: int) -> None:
+        self._call("DELETE", f"/api/nginx/redirection-hosts/{rid}")
 
 
 def build_rfc2136_credentials(server: str, key_name: str, key_secret: str,
@@ -577,6 +615,111 @@ def main() -> int:
             print(f"FAIL {label} — could not update {domain}: {e}", file=sys.stderr)
             failed.append(domain)
 
+    # ── Redirection hosts ──────────────────────────────────────────────────
+    # Same create-or-update-prune discipline as the proxy hosts above, against
+    # NPM's separate redirection resource. Its schema accepts no `enabled`
+    # property (it rejects the field outright), so this payload is
+    # deliberately narrower than the proxy-host one — do not "align" them.
+    if REDIRECTS:
+        try:
+            existing_redirects = api.redirection_hosts()
+        except (NpmError, urllib.error.URLError, OSError) as e:
+            print(f"WARN could not list NPM redirection hosts ({e})", file=sys.stderr)
+            existing_redirects = []
+
+        redirects_by_domain: dict[str, dict] = {}
+        for eh in existing_redirects:
+            for d in eh.get("domain_names") or []:
+                redirects_by_domain.setdefault(d.lower(), eh)
+
+        # The apex's own certificate covers www through the wildcard SAN; in
+        # per-host cert mode there is no such cert, so a redirect created
+        # without one is left un-SSL rather than pointed at a name it does not
+        # cover, which a browser refuses.
+        redirect_cert = (wc_id or certs_by_domain.get(base_domain.lower())) if ssl else None
+
+        managed_redirects: set[str] = set()
+        for r in REDIRECTS:
+            domain = f"{r['sub']}.{base_domain}"
+            target = base_domain if r["target_sub"] is None else f"{r['target_sub']}.{base_domain}"
+            managed_redirects.add(domain.lower())
+            existing = redirects_by_domain.get(domain.lower())
+
+            want = {
+                "domain_names": [domain],
+                "forward_scheme": "https",
+                "forward_domain_name": target,
+                "forward_http_code": r["code"],
+                "preserve_path": True,
+                "certificate_id": redirect_cert,
+                "ssl_forced": bool(redirect_cert),
+            }
+            if ssl and not redirect_cert:
+                print(f"WARN {r['name']} — nothing covers {domain}; serving it without SSL",
+                      file=sys.stderr)
+
+            if existing is None:
+                if args.check:
+                    print(f"FAIL {r['name']} — redirection host {domain} missing")
+                    failed.append(domain)
+                    continue
+                try:
+                    api.create_redirection_host(want)
+                    created += 1
+                    print(f"PASS {r['name']} — created {domain} → "
+                          f"{want['forward_http_code']} {want['forward_scheme']}://{target}")
+                except (NpmError, urllib.error.URLError, OSError) as e:
+                    print(f"FAIL {r['name']} — could not create {domain}: {e}", file=sys.stderr)
+                    failed.append(domain)
+                continue
+
+            diffs = []
+            for k, v in want.items():
+                cur = existing.get(k)
+                if k == "certificate_id":
+                    cur, v = int(cur or 0), int(v or 0)
+                elif k == "domain_names":
+                    cur, v = sorted(cur or []), sorted(v)
+                if cur != v:
+                    diffs.append(k)
+            if not diffs:
+                ok += 1
+                print(f"PASS {r['name']} — {domain} already correct")
+                continue
+            if args.check:
+                print(f"FAIL {r['name']} — {domain} out of date ({', '.join(diffs)})")
+                failed.append(domain)
+                continue
+            try:
+                api.update_redirection_host(existing["id"], want)
+                updated += 1
+                print(f"PASS {r['name']} — updated {domain} ({', '.join(diffs)})")
+            except (NpmError, urllib.error.URLError, OSError) as e:
+                print(f"FAIL {r['name']} — could not update {domain}: {e}", file=sys.stderr)
+                failed.append(domain)
+
+        if not args.no_prune:
+            scope_suffix = f".{base_domain}"
+            for eh in existing_redirects:
+                doms = eh.get("domain_names") or []
+                in_scope = any(d.lower() == base_domain or d.lower().endswith(scope_suffix) for d in doms)
+                if not in_scope:
+                    continue
+                if any(d.lower() in managed_redirects for d in doms):
+                    continue
+                if args.check:
+                    print(f"FAIL stale NPM redirection host would be pruned: {', '.join(doms)}")
+                    failed.append(doms[0])
+                    continue
+                try:
+                    api.delete_redirection_host(eh["id"])
+                    pruned += 1
+                    print(f"PASS pruned stale NPM redirection host {', '.join(doms)}")
+                except (NpmError, urllib.error.URLError, OSError) as e:
+                    print(f"FAIL could not prune redirection host {', '.join(doms)}: {e}",
+                          file=sys.stderr)
+                    failed.append(doms[0])
+
     # Prune: hosts under our base domain that are no longer in the map.
     if not args.no_prune:
         scope_suffix = f".{base_domain}"
@@ -603,7 +746,7 @@ def main() -> int:
         if failed:
             print(f"FAIL {len(failed)} host(s) out of sync", file=sys.stderr)
             return 1
-        print(f"PASS all {len(hosts)} proxy hosts in sync")
+        print(f"PASS all {len(hosts)} proxy hosts and {len(REDIRECTS)} redirection host(s) in sync")
         return 0
 
     print(f"PASS sync complete — created {created}, updated {updated}, unchanged {ok}, pruned {pruned}, failed {len(failed)}")
