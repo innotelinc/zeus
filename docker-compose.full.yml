@@ -308,8 +308,17 @@ services:
       NEXT_PUBLIC_TURN_CREDENTIAL: ${TURN_CREDENTIAL:-}
 
       # ── AvantFax (runs inside freepbx container at /fax) ──
+      # Server-side probe: the portal runs in host networking mode, so the
+      # FreePBX container's loopback-published :8083 is reachable as-is.
       AVANTFAX_URL: http://127.0.0.1:8083/fax
-      NEXT_PUBLIC_AVANTFAX_URL: http://${HOSTNAME:-fax.zeus.innotel.us}/fax
+      # Browser-facing, and therefore https: the portal is served over https and
+      # a plain-http URL here is blocked as mixed content, so the fax link died
+      # silently on every page. This used to be built from ${HOSTNAME}, which is
+      # not a hostname in any usable sense (it is 0.0.0.0 in the container) and
+      # hardcoded the http scheme, overriding the correct value documented in
+      # .env.example. An explicit NEXT_PUBLIC_AVANTFAX_URL wins; the default is
+      # the edge hostname NPM already terminates TLS for.
+      NEXT_PUBLIC_AVANTFAX_URL: ${NEXT_PUBLIC_AVANTFAX_URL:-https://fax.zeus.innotel.us/fax}
 
       # ── Atlas integration ──
       ATLAS_API_URL: ${ATLAS_API_URL:-http://atlas-server:3000}
@@ -339,6 +348,14 @@ services:
     volumes:
       - portal-data:/app/data
       - asterisk-config:/etc/asterisk:rw
+      # This product's Vault token, read-only — the same mount docker-compose.yml
+      # gives its portal. Cerulean's Vault bootstrap mints it
+      # (VAULT_PRODUCT_TOKENS=zeus there) and renews it in place; the stack only
+      # ever reads it. Without it the portal boots holding literal `vault://…`
+      # strings for SESSION_SECRET and VOIPMS_SIP_PASS — signing sessions with a
+      # reference instead of a secret — because .env names the secret and this
+      # file is what has to let the reader reach it. See data/vault/token/.
+      - ./data/vault/token:/vault/token:ro
     healthcheck:
       # No `-f`: the health endpoint returns 503 when >=2 external services
       # (FreePBX/VoIP.ms/Stripe) are down. The container is healthy as long as
