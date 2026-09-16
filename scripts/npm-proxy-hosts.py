@@ -653,6 +653,13 @@ def main() -> int:
                 "preserve_path": True,
                 "certificate_id": redirect_cert,
                 "ssl_forced": bool(redirect_cert),
+                "block_exploits": False,
+                # NOT NULL with no default in NPM's schema. The API's own insert
+                # omits it, and MySQL's strict mode then rejects the whole row
+                # with a flat "Internal Error" — so a redirect created without
+                # this field 500s, on the API and in the UI alike.
+                "advanced_config": "",
+                "http2_support": True,
             }
             if ssl and not redirect_cert:
                 print(f"WARN {r['name']} — nothing covers {domain}; serving it without SSL",
