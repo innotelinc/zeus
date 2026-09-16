@@ -86,6 +86,18 @@ services:
       VOIPMS_SIP_PASS: ${VOIPMS_SIP_PASS:-}
       VOIPMS_SIP_SERVER: ${VOIPMS_SIP_SERVER:-newyork1.voip.ms}
       VOIPMS_MAIN_ACCOUNT: ${VOIPMS_MAIN_ACCOUNT:-}
+      # DID → dograh agent extension map, e.g. "2125551234:8003,4132643964:8000"
+      VOIPMS_DIDS: ${VOIPMS_DIDS:-}
+      # Cloudonix SIP peering (pbx/setup-cloudonix-trunk.sh, called by
+      # docker-entrypoint-full.sh). Enabled when CLOUDONIX_SIP_ENABLED=1, or
+      # automatically when a server, edge IP, credential or DID is provided.
+      CLOUDONIX_SIP_ENABLED: ${CLOUDONIX_SIP_ENABLED:-}
+      CLOUDONIX_SIP_SERVER: ${CLOUDONIX_SIP_SERVER:-sip.cloudonix.net}
+      CLOUDONIX_EDGE_IP: ${CLOUDONIX_EDGE_IP:-18.219.128.166}
+      CLOUDONIX_SIP_PORT: ${CLOUDONIX_SIP_PORT:-5060}
+      CLOUDONIX_SIP_USER: ${CLOUDONIX_SIP_USER:-}
+      CLOUDONIX_SIP_PASS: ${CLOUDONIX_SIP_PASS:-}
+      CLOUDONIX_DIDS: ${CLOUDONIX_DIDS:-}
       # AMI credentials
       FREEPBX_AMI_USER: ${FREEPBX_AMI_USER:-pbxportal}
       FREEPBX_AMI_SECRET: ${FREEPBX_AMI_SECRET:-}
