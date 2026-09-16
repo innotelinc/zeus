@@ -63,21 +63,34 @@ export default function SoftphoneSection({ extensions }: Props) {
     return `wss://${window.location.hostname}:8089/ws`;
   }, []);
 
-  const iceServers = useMemo(() => {
-    const servers: RTCIceServer[] = [
-      { urls: "stun:stun.l.google.com:19302" },
-    ];
-    const turnUrl = process.env.NEXT_PUBLIC_TURN_SERVER;
-    const turnUser = process.env.NEXT_PUBLIC_TURN_USERNAME;
-    const turnCred = process.env.NEXT_PUBLIC_TURN_CREDENTIAL;
-    if (turnUrl) {
-      servers.push({
-        urls: turnUrl,
-        username: turnUser,
-        credential: turnCred,
-      });
-    }
-    return servers;
+  // ICE servers come from the server at runtime (/api/rtc-config) rather than
+  // from process.env.NEXT_PUBLIC_TURN_* here: those are inlined at build time,
+  // and the released portal image is built in CI, where this host's TURN url
+  // does not exist — the browser was therefore getting STUN alone and calls
+  // carried no audio from behind NAT. STUN-only stays the initial value so a
+  // failed or slow fetch still leaves a working registration.
+  const [iceServers, setIceServers] = useState<RTCIceServer[]>([
+    { urls: "stun:stun.l.google.com:19302" },
+  ]);
+
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const res = await fetch("/api/rtc-config", { cache: "no-store" });
+        if (!res.ok) return;
+        const data = (await res.json()) as { iceServers?: RTCIceServer[] };
+        if (!cancelled && Array.isArray(data?.iceServers) && data.iceServers.length > 0) {
+          setIceServers(data.iceServers);
+        }
+      } catch {
+        // No toast: the softphone still registers and calls still connect on
+        // the local network. A relay-less call is diagnosable from ICE stats.
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
   }, []);
 
   function cleanupAll() {
