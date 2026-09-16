@@ -54,7 +54,9 @@ REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 # invocation on the host picks up the same CLOUDONIX_* the containers see.
 if [ -z "${CLOUDONIX_SIP_ENABLED:-}${CLOUDONIX_SIP_USER:-}${CLOUDONIX_DIDS:-}" ]; then
   for f in "${PBX_ENV_FILE:-}" "${REPO_ROOT}/pbx.env" "${REPO_ROOT}/.env"; do
-    [ -n "$f" ] && [ -f "$f" ] || continue
+    if [ -z "$f" ] || [ ! -f "$f" ]; then
+      continue
+    fi
     set -a
     # shellcheck disable=SC1090
     . "$f"
