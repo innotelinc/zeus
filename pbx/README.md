@@ -13,6 +13,7 @@ operational shape.
 | `asterisk/http_custom.conf` | Asterisk HTTP server + WebSocket transport for the WebRTC softphone (genuinely included) |
 | `asterisk/rtp_custom.conf` | RTP media plane: canonical `stunaddr`/`icesupport` + `rtpstart`/`rtpend` cap. **Entrypoint-owned** — `bootstrap-zeus-pbx.sh` skips it; `docker-entrypoint-full.sh`/`scripts/setup.sh` derive it from `FREEPBX_RTP_PORT_*` + `PJSIP_STUN_TURN_ADDR` on every boot. Mirrored by the Capstone repo so both products cap one range |
 | `asterisk/extensions_custom.conf` | Portal dialplan context (`[from-zeus-portal]`) — converge-owned |
+| `setup-cloudonix-trunk.sh` | Peer a Cloudonix domain with this PBX (`pjsip_custom_cloudonix.conf` + `extensions_custom_cloudonix.conf`), **script-owned** — `bootstrap-zeus-pbx.sh` skips both files, and `docker-entrypoint-full.sh` calls this on boot. `--check` drift mode |
 | `bootstrap-zeus-pbx.sh` | Render + apply the fragments idempotently; `--check` drift mode |
 | `asterisk_converge.py` | Per-section merge for the **shared** `extensions_custom.conf` / `ari.conf` (ownership markers) |
 | `MSTeams-DR-Wizard.sh` | MS Teams Direct Routing wizard (vendored from [Vince-0/MSTeams-FreePBX](https://github.com/Vince-0/MSTeams-FreePBX), MIT) — configures the native `external_signaling_hostname` PJSIP transport (Asterisk 20.21+/22.11+/23.5+/24+), endpoint/AOR/identify for the Microsoft SIP proxies, RSA cert wiring, `--check` audit |
@@ -74,6 +75,76 @@ python3 pbx/asterisk_converge.py \
   --source <capstone-repo>/pbx/asterisk/ari.conf \
   --owner capstone
 ```
+
+## Cloudonix SIP peering (dograh's carrier, over plain SIP)
+
+Dograh can carry calls over Cloudonix's own websocket transport, which needs
+Dograh's hosted service. `pbx/setup-cloudonix-trunk.sh` wires the other option —
+plain SIP — by trusting the Cloudonix regional edge as a pjsip peer:
+
+```bash
+pbx/setup-cloudonix-trunk.sh            # apply (idempotent, reloads the PBX)
+pbx/setup-cloudonix-trunk.sh --check    # drift check only, exit 1 if out of sync
+```
+
+The script exists because the **live** PBX is owned by this stack
+(`docker-compose.full.yml` → `freepbx`), whose entrypoint is baked into the
+published image — a SIP peer change should not need a 45–90 minute rebuild. It
+is the Zeus counterpart of Capstone's `pbx/entrypoint-dograh.sh`
+`setup_cloudonix_trunk()`, which plays the same role for Capstone's standalone
+PBX. `docker-entrypoint-full.sh` calls it on boot when `CLOUDONIX_*` is set, so
+the box also self-heals.
+
+What it writes:
+
+- `pjsip_custom_cloudonix.conf` — `[cloudonix-identify]` (trusts the edge),
+  `[cloudonix-endpoint]` (`context=from-trunk`), `[cloudonix-aor]` (static
+  contact to `sip.cloudonix.net:5060`, `qualify_frequency=60`), plus an optional
+  `[cloudonix-reg]`/`[cloudonix-auth]` pair in registration mode.
+- `extensions_custom_cloudonix.conf` — the explicit `CLOUDONIX_DIDS`
+  (`did:agent-ext`) routes, and the same catch-all the VoIP.ms trunk keeps.
+
+Both files are kept alive by `#include` lines the script appends to
+`pjsip_custom_post.conf` / `extensions_custom.conf` (FreePBX never manages
+them, so they survive Apply Config).
+
+Two ways to admit Cloudonix traffic, both may be on at once:
+
+- **IP identity** (default): `CLOUDONIX_EDGE_IP` defaults to the Global edge IP
+  Dograh's own region table publishes
+  (`api/services/telephony/providers/cloudonix/regions.py`), so PBX and
+  platform agree on the peer with no extra configuration.
+- **Registration** (NAT-friendly, mirrors the VoIP.ms trunk): set
+  `CLOUDONIX_SIP_USER`/`CLOUDONIX_SIP_PASS` and the trunk registers out, so
+  inbound calls arrive on that registration and no inbound 5060 port-forward is
+  needed.
+
+### Verifying the peering
+
+The AOR's qualify is the liveness proof — the PBX sends SIP OPTIONS to the edge
+and reports the round trip:
+
+```bash
+docker exec zeus-freepbx asterisk -rx 'pjsip show aor cloudonix-aor'
+# Contact: cloudonix-aor/sip:sip.cloudonix.net:5060  <hash>  Avail  127.0xx
+
+docker exec zeus-freepbx asterisk -rx 'pjsip show endpoint cloudonix-endpoint'
+```
+
+`Avail` with an RTT means the path works. Expect `Unavail`/`nan` for up to one
+`qualify_frequency` (60s) after a reload — that is the first OPTIONS still in
+flight, not a broken peer.
+
+### Inbound PSTN DIDs
+
+Real DID routes come from FreePBX's incoming-route table (Connectivity →
+Inbound Routes), not from the fragments above: the Cloudonix endpoint's context
+is `[from-trunk]`, so a hit is matched there and sent to `[dograh-inbound]`
+`<ext>`, which Capstone's converge half owns. `VOIPMS_DIDS` in the stack `.env`
+(`did:ext,did:ext`) records the mapping the repo expects — the VoIP.ms DID
+`4132643964` is routed to dograh agent `8000` that way. `capstone`'s
+`scripts/sync_dograh_routes.py` re-creates those rows from Dograh's own
+`telephony_phone_numbers` when its API is reachable.
 
 ## RTP media plane (one range for both products)
 

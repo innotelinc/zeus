@@ -793,6 +793,19 @@ until asterisk -rx 'core show version' >/dev/null 2>&1; do
   sleep 2
 done
 
+# ── Cloudonix SIP peering ─────────────────────────────────────
+# Applied from the repo-mounted script (docker-compose.full.yml mounts the
+# repo's pbx/ at /opt/zeus/pbx) so a SIP peer lives beside the other PBX
+# fragments and can be changed without rebuilding this image. Idempotent, and
+# a no-op unless CLOUDONIX_* is configured. PBX_CONTAINER is deliberately
+# empty: we ARE the PBX, so the script writes into this container's
+# /etc/asterisk directly instead of shelling out to docker.
+if [ -n "${CLOUDONIX_SIP_ENABLED:-}${CLOUDONIX_SIP_USER:-}${CLOUDONIX_DIDS:-}" ] && \
+   [ -x /opt/zeus/pbx/setup-cloudonix-trunk.sh ]; then
+  PBX_CONTAINER='' bash /opt/zeus/pbx/setup-cloudonix-trunk.sh || \
+    echo ">>> WARNING: Cloudonix trunk setup failed — see output above"
+fi
+
 # ── Asterisk watchdog ─────────────────────────────────────────
 # If the Asterisk control socket disappears while the container is
 # still up (crash, hang, or a stuck Apply Config), every FreePBX

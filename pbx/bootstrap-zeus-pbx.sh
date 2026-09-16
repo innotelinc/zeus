@@ -90,7 +90,11 @@ AMI_PERMIT_LINE="permit = ${AMI_PERMIT}"
 #       PJSIP_STUN_TURN_ADDR. A static copy from this repo would fight it and
 #       always report drift on a non-default range. The repo file is the shape
 #       reference the entrypoint mirrors.
-ENTRYPOINT_OWNED="rtp_custom.conf"
+#   pjsip_custom_cloudonix.conf / extensions_custom_cloudonix.conf —
+#       pbx/setup-cloudonix-trunk.sh renders both from CLOUDONIX_* and keeps
+#       their #include lines alive. Check them with that script's own --check
+#       instead of staging them here (two owners would fight over the file).
+ENTRYPOINT_OWNED="rtp_custom.conf pjsip_custom_cloudonix.conf extensions_custom_cloudonix.conf"
 
 _is_entrypoint_owned() {
   local name="$1" owned
