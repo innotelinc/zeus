@@ -371,6 +371,19 @@ services:
   # Realm/credentials come from .env (TURN_USERNAME/TURN_CREDENTIAL/
   # TURN_REALM/TURN_EXTERNAL_IP); the softphone advertises the public
   # address coturn.zeus.innotel.us (DNS CNAME + edge proxy).
+  #
+  # TLS is ON and the client is offered BOTH `turn:` and `turns:` (TURN_SERVER
+  # in .env lists them). `turns:` is worth having because it rides one TCP port
+  # and so survives networks that filter UDP; `turn:` is kept first because UDP
+  # costs less latency when it is allowed. Both reach the outside only if the
+  # router delivers their ports here, and its static forwards for TURN still
+  # point at this platform's OLD host — the TURN control ports AND the relay
+  # range, because relayed media is a peer-to-peer flow into 49152-49251 that
+  # a TLS control channel does not remove. scripts/edge-turn-relay.sh carries
+  # those forwards across the move (see its header for the measurements).
+  # The certificate is the `*.zeus.innotel.us` wildcard Cerulean already issues
+  # and the edge already holds; scripts/install-turn-cert.sh places it and
+  # checks it actually covers the name before coturn will start.
   coturn:
     image: coturn/coturn:latest
     container_name: pbx-coturn
@@ -378,10 +391,16 @@ services:
     # NB: only flags this image's turnserver actually accepts. `--no-dtls` is
     # rejected outright ("unrecognized option") and `--no-cli` is deprecated in
     # favour of `--cli`, so both made the container exit 255 in a restart loop
-    # the first time anyone ran `docker compose up coturn`.
+    # the first time anyone ran `docker compose up coturn`. For the same reason
+    # DTLS is left at its default: TLS cannot be disabled per-transport here,
+    # and the wildcard already covers the name DTLS validates against.
+    volumes:
+      # Host state, not repo content (data/ is ignored): the wildcard key must
+      # never be committed, and scripts/install-turn-cert.sh is what puts it
+      # here. Mounted read-only — turnserver has no business writing a key.
+      - ./data/coturn/certs:/etc/coturn/certs:ro
     command:
       - turnserver
-      - --no-tls
       - --fingerprint
       - --lt-cred-mech
       - --user=${TURN_USERNAME:-turnuser}:${TURN_CREDENTIAL:?set TURN_CREDENTIAL in .env}
@@ -390,6 +409,12 @@ services:
       - --min-port=${TURN_RELAY_PORT_START:-49152}
       - --max-port=${TURN_RELAY_PORT_END:-49251}
       - --listening-ip=0.0.0.0
+      # TLS/DTLS on the one port, using the wildcard above. Without both the
+      # cert and the key turnserver exits rather than serving plaintext on a
+      # port the client reaches with TLS, which is the failure worth having.
+      - --cert=/etc/coturn/certs/fullchain.pem
+      - --pkey=/etc/coturn/certs/privkey.pem
+      - --tls-listening-port=${TURN_TLS_PORT:-5349}
       # Public address coturn advertises for relayed candidates. It sits behind
       # Docker NAT and cannot discover this itself. The coturn image eval()s
       # each argument and ships detect-external-ip (a DNS probe returning the
@@ -405,8 +430,8 @@ services:
     ports:
       - "${TURN_LISTENING_PORT:-3478}:3478"
       - "${TURN_LISTENING_PORT:-3478}:3478/udp"
-      - "5349:5349"
-      - "5349:5349/udp"
+      - "${TURN_TLS_PORT:-5349}:5349"
+      - "${TURN_TLS_PORT:-5349}:5349/udp"
       # The relay range has to be published: 3478 alone only carries the TURN
       # control channel. Relayed media is delivered to a relayed transport
       # address inside 49152-49251, so without this mapping every peer outside
