@@ -96,7 +96,7 @@ jobs:
       # The full-stack image installs FreePBX from vendor/, not from
       # mirror.freepbx.org — see scripts/fetch-vendor.sh.
       - name: Cache pinned build inputs
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: vendor
           key: vendor-${{ hashFiles('scripts/fetch-vendor.sh') }}
