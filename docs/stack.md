@@ -44,6 +44,39 @@ provides, and explicitly does not own.
 > See the [**Capstone ↔ Zeus convergence plan**](https://github.com/innotelinc/innotel-platform-stack/blob/main/docs/convergence-capstone-zeus.md)
 > for the target architecture and the structural-parity checklist Zeus mirrors from Capstone.
 
+## Roadmap — where Zeus stands (17 September 2026)
+
+**Live and verified on the deployment (`.30` hosts the Zeus stack; Capstone's
+Dograh ARI connects to Zeus/FreePBX):**
+
+- [x] **Phase 1 parity shipped** — `pbx/` fragments with idempotent apply + drift
+      mode, `zeus-pbx-sync.service` re-applying every 15 minutes, live smoke test,
+      and the optional SigNoz observability profile (OTel → ClickHouse on `:3301`).
+- [x] **Multi-origin OIDC** — the portal's Authentik client registers every
+      origin it answers on (`app.`, `zeus.`, `api.`, `portal.`) as a
+      comma-separated callback list, the same pattern Distro now uses.
+- [x] **Portal + PBX on the shared host** — `zeus-freepbx`, `zeus-portal`,
+      `pbx-coturn` and the SSO gate run on `.30` alongside Capstone; ARI/AMI/WSS
+      transports are wired.
+
+**Open, in priority order:**
+
+1. **Capstone convergence phase 2 — retire the bundled PBX.** Capstone's
+      docker-compose still ships its own FreePBX for standalone installs; the
+      target is Capstone dialing Zeus as the only voice plane on the shared host.
+      The structural-parity checklist is the gate.
+2. **AI voicemail summaries in the default path** — the feature ships but the
+      LLM call rides the shared OmniRoute; give it its own model pin so a
+      free-tier cooldown cannot silence summaries.
+3. **Observability profile parity with Capstone** — the SigNoz profile is
+      optional; when both stacks run on one host, point Zeus's OTLP at Capstone's
+      collector and read from Capstone's Grafana instead of running a second
+      ClickHouse (already noted in ips `docs/service-audit.md` §4).
+4. **SMS trunk docs into the smoke test** — `docs/ops-sms-trunk.md` is manual;
+      add the trunk check to `scripts/smoke-test.sh` so a dead trunk surfaces in
+      the same pass as the portal and PBX checks.
+
+
 ### Phase 1 parity (shipped)
 
 - `pbx/` — version-controlled Asterisk/FreePBX fragments (AMI, ARI, WSS
