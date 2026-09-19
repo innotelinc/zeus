@@ -793,6 +793,43 @@ until asterisk -rx 'core show version' >/dev/null 2>&1; do
   sleep 2
 done
 
+# ── Blacklist destination (Terminate Call: Hangup) ────────────
+# FreePBX's Blacklist module routes blacklisted callers to a destination it
+# keeps in Asterisk's AstDB (family `blacklist`, key `dest`). Its default lives
+# inside install() — `if (astman->connected() && empty(destinationGet()))
+# destinationSet('app-blackhole,hangup,1');` — and install() does not run again
+# on an already-installed module, so a PBX that never had the value seeded ships
+# EMPTY. System Status reports
+#
+#   DEST STATUS: EMPTY   Blacklist: Destination for BlackListed Calls
+#
+# and a blacklisted caller falls through to a normal route instead of being
+# hung up. AstDB is not on a volume here (only `/var/lib/asterisk/sounds` is),
+# so `astdb.sqlite3` sits in the container's writable layer and every recreate
+# starts it empty — the status simply comes back. Re-assert the destination on
+# boot, once Asterisk answers, so it is a property of the stack rather than of
+# one container's filesystem. Idempotent, and overridable for a PBX that should
+# route blacklisted calls somewhere else.
+BLACKLIST_DESTINATION="${BLACKLIST_DESTINATION:-app-blackhole,hangup,1}"
+
+write_blacklist_destination() {
+  local current
+  current=$(asterisk -rx 'database get blacklist dest' 2>/dev/null \
+    | sed -n 's/^Value: //p' | tr -d '\r' || true)
+  if [ "$current" = "$BLACKLIST_DESTINATION" ]; then
+    echo ">>> [blacklist] destination already '${BLACKLIST_DESTINATION}'"
+    return 0
+  fi
+  if asterisk -rx "database put blacklist dest ${BLACKLIST_DESTINATION}" >/dev/null 2>&1; then
+    echo ">>> [blacklist] destination set to '${BLACKLIST_DESTINATION}' (was '${current:-<empty>}')"
+  else
+    echo ">>> WARNING: could not set the blacklist destination in AstDB"
+  fi
+  return 0
+}
+
+write_blacklist_destination
+
 # ── Cloudonix SIP peering ─────────────────────────────────────
 # Applied from the repo-mounted script (docker-compose.full.yml mounts the
 # repo's pbx/ at /opt/zeus/pbx) so a SIP peer lives beside the other PBX
