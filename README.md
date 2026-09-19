@@ -406,6 +406,43 @@ warm); registration then completes and the AOR reports `Avail` with a ~40 ms RTT
 write-up and a one-liner that proves the WAN path is healthy: Capstone repo →
 `docs/operations.md` → "The trunk sits at `Rejected`".
 
+### `DEST STATUS: EMPTY` — Blacklist destination
+
+`fwconsole reload` (Apply Config) ends with a problem-destination report, and on a fresh
+PBX it names one:
+
+```
+DEST STATUS: EMPTY
+   Blacklist: Destination for BlackListed Calls
+```
+
+This is **bookkeeping, not call handling**. Blacklisted callers are already hung up: the
+generated `[app-blacklist-check]` context reads the destination at call time and falls
+back to the hangup when the value is missing.
+
+```
+Set(BLDEST=${DB(blacklist/dest)})
+ExecIf($["${BLDEST}"=""]?Set(BLDEST=app-blackhole,hangup,1))
+```
+
+FreePBX's *Destinations* report reads the raw AstDB value instead, so an unseeded
+`blacklist/dest` still reads as EMPTY. The Blacklist module seeds it only inside
+`install()`, which never runs again on an already-installed module — and AstDB is not on a
+volume here (only `/var/lib/asterisk/sounds` is), so `astdb.sqlite3` lives in the
+container's writable layer and every recreate starts it empty. The entrypoint re-asserts
+the destination on boot, so this heals itself; to do it by hand, or to send blacklisted
+calls somewhere other than the hangup:
+
+```bash
+docker exec zeus-freepbx asterisk -rx 'database put blacklist dest app-blackhole,hangup,1'
+docker exec zeus-freepbx fwconsole reload          # clears the report
+docker exec zeus-freepbx asterisk -rx 'database show blacklist'
+```
+
+Set `BLACKLIST_DESTINATION` in the container environment to change what the entrypoint
+converges (`app-blackhole,hangup,1` by default); any FreePBX destination works, e.g.
+`from-did-direct,600,1` to ring an extension instead.
+
 ---
 
 ## CI / CD
