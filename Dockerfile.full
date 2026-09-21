@@ -770,6 +770,14 @@ RUN postconf -e 'mynetworks = 127.0.0.0/8 [::1]/128' && \
 COPY docker-entrypoint-full.sh /usr/local/bin/entrypoint.sh
 RUN chmod +x /usr/local/bin/entrypoint.sh
 
+# FreePBX's core module reassigns trunk id 1 to every new trunk and writes
+# PJSIP rows without clearing the ones already there, which makes saving a
+# trunk fail with a duplicate-key error. The patcher is applied by the
+# entrypoint on every boot (see patch_core_trunk_write), so the file has to be
+# in the image — kept beside the entrypoint since the two change together.
+COPY pbx/patch-freepbx-trunk-next-id.py /usr/local/bin/patch-freepbx-trunk-next-id.py
+RUN chmod +x /usr/local/bin/patch-freepbx-trunk-next-id.py
+
 # 10000/tcp = Webmin admin panel; 10101-10120/udp = RTP media
 EXPOSE 80 5060/udp 5061 8088 8089 5038 10000 10101-10120/udp
 
