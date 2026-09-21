@@ -8,9 +8,9 @@ operational shape.
 
 | Path | Purpose |
 |---|---|
-| `asterisk/manager_custom.conf` | AMI user for the portal (`pbxportal`) with a deny-by-default permit list (genuinely included) |
+| `asterisk/manager_custom.conf` | AMI user for the portal, with a deny-by-default permit list. **Entrypoint-owned** — `bootstrap-zeus-pbx.sh` skips it: `docker-entrypoint-full.sh` rewrites the secrets, re-adds UCP's `[ucp_events]` user and normalises the permits on every boot, while FreePBX's `ucp` module and the estate's own `[pbxportal]` user live in the same file. A wholesale copy from bootstrap deleted both and then flapped against the next container boot. Bare metal's owner is `scripts/setup.sh` |
 | `asterisk/ari.conf` | `[pbxportal]` ARI user section — **converged into the real `/etc/asterisk/ari.conf`** (see below) |
-| `asterisk/http_custom.conf` | Asterisk HTTP server + WebSocket transport for the WebRTC softphone (genuinely included) |
+| `asterisk/http_custom.conf` | Asterisk HTTP server + WebSocket transport for the WebRTC softphone (genuinely included). Deliberately does **not** set `enablestatic`: FreePBX's http module already owns `[general]` in `http_additional.conf` (included before this file) and ships `enablestatic=no` |
 | `asterisk/rtp_custom.conf` | RTP media plane: canonical `stunaddr`/`icesupport` + `rtpstart`/`rtpend` cap. **Entrypoint-owned** — `bootstrap-zeus-pbx.sh` skips it; `docker-entrypoint-full.sh`/`scripts/setup.sh` derive it from `FREEPBX_RTP_PORT_*` + `PJSIP_STUN_TURN_ADDR` on every boot. Mirrored by the Capstone repo so both products cap one range |
 | `asterisk/extensions_custom.conf` | Portal dialplan context (`[from-zeus-portal]`) — converge-owned |
 | `setup-cloudonix-trunk.sh` | Peer a Cloudonix domain with this PBX (`pjsip_custom_cloudonix.conf` + `extensions_custom_cloudonix.conf`), **script-owned** — `bootstrap-zeus-pbx.sh` skips both files, and `docker-entrypoint-full.sh` calls this on boot. `--check` drift mode |
