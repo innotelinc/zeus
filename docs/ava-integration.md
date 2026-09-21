@@ -110,7 +110,7 @@ operator — a caller is never dropped silently.
 | `pbx/asterisk/extensions_custom.conf` | the static dialplan: router, first response, hand-off destinations, refusal |
 | `pbx/asterisk/ari.conf` | AVA's own ARI user, separate from the portal's |
 | `pbx/ava_routing.py` | renders `[zeus-ai-accounts]` from the accounts; **the add-on gate** |
-| `scripts/fetch-ava.sh` | pinned AVA checkout (`5d8f888`, v7.6.1) + runtime seeding |
+| `scripts/fetch-ava.sh` | pinned AVA checkout (`5d8f888`, v7.6.1) + runtime seeding + the provenance stamp below |
 | `src/lib/ava.ts` | server-side AVA admin API client (login, typed failure states) |
 | `src/lib/addons.ts` | add-on gating for UI **and** routing (see below) |
 | `src/app/api/voice/*` | agents, calls, live status, agent mapping |
@@ -166,10 +166,18 @@ from that cache, so the cache is an audit trail rather than the source.
 # 1. add the voice settings to .env (see .env.example: AVA_*, LOCAL_*, OMNIROUTE_API_KEY)
 #    AVA_ADMIN_JWT_SECRET (openssl rand -hex 32) and AVA_ARI_SECRET (openssl rand -hex 16) are required.
 
-# 2. pinned AVA checkout + runtime tree (refuses to continue without those secrets)
+# 2. pinned AVA checkout + runtime tree. Refuses to seed without
+#    AVA_ADMIN_JWT_SECRET, AVA_ARI_SECRET and OMNIROUTE_API_KEY — each one
+#    fails quietly at runtime otherwise (a published dev JWT secret, an engine
+#    that cannot attach to ARI, and a placeholder LLM adapter that answers no
+#    turn while the call still connects).
 bash scripts/fetch-ava.sh
 
-# 3. AVA's ARI user is rendered into the PBX by the bootstrap, alongside the portal's
+# 3. AVA's ARI user is rendered into the PBX by the bootstrap, alongside the
+#    portal's. It reads AVA_ARI_SECRET from the PBX host's scripts/pbx.env and
+#    the engine reads it from .env — the SAME secret in both, or the engine
+#    never attaches (a blank one there is regenerated per run):
+#      grep AVA_ARI_SECRET .env scripts/pbx.env
 pbx/bootstrap-zeus-pbx.sh
 
 # 4. the voice plane
@@ -201,6 +209,29 @@ the engine's STT/TTS is unavailable until it answers on `127.0.0.1:8765`.
    the merge is per-context and owner-marked, so Zeus's contexts cannot clobber
    Capstone's (`pbx/asterisk_converge.py` documents the two policies).
 
+### The runtime config is stamped, not frozen
+
+`fetch-ava.sh` seeds `data/ava/project/config/ai-agent.yaml` from the tracked
+template **once** and then never touches it again — AVA's admin UI owns that
+file as soon as calls are being taken. That is deliberate, and it is also the
+one way a fix can silently fail to ship: the template gains a corrected
+AudioSocket port, a renamed model key, a transfer inventory, and the deployed
+engine keeps running the old file.
+
+So the seed writes the template revision it came from
+(`data/ava/project/config/.template-rev`), and every later run compares:
+
+| state | `bash scripts/fetch-ava.sh --check` |
+|---|---|
+| stamped at the current template | passes |
+| stamped at an older template | **fails**, prints the diff to run and names `--force` |
+| no stamp, content differs | warns (unverifiable — could be a stale seed *or* a deliberate edit); `--force` would discard the edit, so it never acts on its own |
+| no stamp, content identical | passes, and adopts the revision |
+
+Admin edits are invisible to this on purpose: only *provenance* is judged, so
+an operator who tunes a prompt through the UI is not nagged, while a template
+fix that never reached the engine is not missed.
+
 ### Agents
 
 AVA v7.4+ is **agent-only and fails closed**, so a DID whose agent does not
@@ -215,7 +246,9 @@ defaults `AI_AGENT` to `receptionist` for a DID with no mapping.
 
 ```bash
 python3 -m unittest discover -s pbx/tests -v        # routing + gate + converge
+python3 -m unittest discover -s scripts/tests -v    # seeding + runtime-config provenance
 npm test                                            # portal tests
+bash scripts/fetch-ava.sh --check                   # pin, seeded config, provenance
 docker compose --profile voice config --services    # as above
 
 # AVA actually attached
