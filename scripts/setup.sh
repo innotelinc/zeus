@@ -157,8 +157,8 @@ fi
 # doesn't depend on the legacy "sarge" repo + GPG key staying valid.
 # Version and SHA256 are pinned; bump both together when upgrading.
 info "Installing Webmin"
-WEBMIN_VER="2.653"
-WEBMIN_SHA256="e7698812d5fe79268202c6051dbfb140c94a43df0d28509b894511b27e5f0b15"
+WEBMIN_VER="2.670"
+WEBMIN_SHA256="9fdacf6b219a186ec5d7dbbbe0f46e9802cbd7050d91605bd0dfc48e150e47dc"
 if ! command -v webmin >/dev/null 2>&1; then
   # download.webmin.com round-robins across backends, and one of them
   # (45.76.69.64) returns 404 for the .deb while another (104.207.151.13)

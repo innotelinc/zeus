@@ -146,11 +146,11 @@ RUN apt update && \
     for IP in $(getent ahostsv4 download.webmin.com | cut -d' ' -f1 | sort -u); do \
       curl -fsSL --connect-timeout 20 --max-time 600 \
         --resolve "download.webmin.com:443:${IP}" \
-        "https://download.webmin.com/download/repository/pool/contrib/w/webmin/webmin_2.653_all.deb" \
+        "https://download.webmin.com/download/repository/pool/contrib/w/webmin/webmin_2.670_all.deb" \
         -o /tmp/webmin.deb && break; \
     done && \
     test -s /tmp/webmin.deb && \
-    echo "e7698812d5fe79268202c6051dbfb140c94a43df0d28509b894511b27e5f0b15  /tmp/webmin.deb" | sha256sum -c - && \
+    echo "9fdacf6b219a186ec5d7dbbbe0f46e9802cbd7050d91605bd0dfc48e150e47dc  /tmp/webmin.deb" | sha256sum -c - && \
     # webmin's postinst starts its own apt-get, which takes
     # /var/lib/apt/lists/lock, and apt refuses that lock outright — exit 100,
     # "Could not get lock ... held by process N (apt-get)" — instead of
