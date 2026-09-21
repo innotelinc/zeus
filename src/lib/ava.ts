@@ -51,6 +51,20 @@ function failure<T>(state: Exclude<AvaState, "ok">, error: string): AvaResult<T>
 const TOKEN_TTL_MS = 23 * 60 * 60 * 1000;
 let cachedToken: { value: string; expiresAt: number } | null = null;
 
+// Why the last attempt produced no usable token. Kept at module scope so
+// request() can report the specific cause: AVA leaves the admin account on a
+// one-time password at first run and refuses every other API call until it is
+// changed, and from the outside that is indistinguishable from wrong
+// credentials — "rejected the credentials" sends an operator to the wrong
+// place. See admin_ui/backend/auth.py, ensure_default_user().
+let authFailure: string | null = null;
+
+const FIRST_RUN_HINT =
+  "AVA's admin password is still its first-run value, and AVA refuses API " +
+  "calls until it is changed — set AVA_ADMIN_PASSWORD from the password in " +
+  "data/ava/project/config/.first-run-password on the host that runs the " +
+  "admin container (docs/ava-integration.md)";
+
 async function getToken(): Promise<string | null> {
   if (AVA_STATIC_TOKEN) return AVA_STATIC_TOKEN;
   if (!AVA_PASSWORD) return null;
@@ -72,13 +86,30 @@ async function getToken(): Promise<string | null> {
     });
     if (!resp.ok) {
       cachedToken = null;
+      authFailure = `AVA admin API returned ${resp.status} for ${AVA_USER}/AVA_ADMIN_PASSWORD`;
       return null;
     }
-    const parsed = z.object({ access_token: z.string() }).safeParse(await resp.json());
+    const parsed = z
+      .object({
+        access_token: z.string(),
+        // Login succeeds while this is set; every other endpoint then answers
+        // 403 (auth.py gates all data routers on it).
+        must_change_password: z.boolean().optional(),
+      })
+      .safeParse(await resp.json());
     if (!parsed.success) {
       cachedToken = null;
+      authFailure = "AVA admin API returned an unexpected login payload";
       return null;
     }
+    if (parsed.data.must_change_password) {
+      // Do not cache it: a token that cannot read a single endpoint would
+      // turn this into a 403 per screen with nothing naming the cause.
+      cachedToken = null;
+      authFailure = FIRST_RUN_HINT;
+      return null;
+    }
+    authFailure = null;
     cachedToken = {
       value: parsed.data.access_token,
       expiresAt: Date.now() + TOKEN_TTL_MS,
@@ -86,6 +117,7 @@ async function getToken(): Promise<string | null> {
     return cachedToken.value;
   } catch {
     cachedToken = null;
+    authFailure = null;
     return null;
   }
 }
@@ -93,6 +125,7 @@ async function getToken(): Promise<string | null> {
 /** Drop the cached token — used after a 401 so the next call re-authenticates. */
 export function avaResetToken(): void {
   cachedToken = null;
+  authFailure = null;
 }
 
 // ── request plumbing ──────────────────────────────────────────────
@@ -106,7 +139,7 @@ async function request<T>(
 
   const token = await getToken();
   if (!token) {
-    return failure("unauthorized", "could not authenticate to the AVA admin API");
+    return failure("unauthorized", authFailure ?? "could not authenticate to the AVA admin API");
   }
 
   let resp: Response;
@@ -131,7 +164,15 @@ async function request<T>(
 
   if (resp.status === 401 || resp.status === 403) {
     avaResetToken();
-    return failure("unauthorized", "AVA admin API rejected the credentials");
+    // 401 is the credential; 403 is AVA's must_change_password gate (or an
+    // account without access), and a token minted before the change looks
+    // exactly like this. Name the difference rather than collapsing both.
+    return failure(
+      "unauthorized",
+      resp.status === 403
+        ? "AVA admin API refused the request (403) — " + FIRST_RUN_HINT
+        : `AVA admin API rejected the credentials for ${AVA_USER}`,
+    );
   }
   if (!resp.ok) {
     return failure("invalid", `AVA admin API returned ${resp.status}`);
