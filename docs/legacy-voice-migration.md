@@ -1,0 +1,137 @@
+# Legacy `voice` → Zeus account migration
+
+The old `voice` box (bare-metal FreePBX 17) is being folded into Zeus. This is
+the record of moving its accounts across, and the two tools that do it:
+
+| Tool | Moves |
+|---|---|
+| `pbx/legacy_voice_migrate.py` | extensions, device secrets, voicemail, User Management password hashes, ring groups, inbound routes |
+| `scripts/legacy_portal_merge.py` | portal accounts, phone numbers and extension rows |
+
+Both are idempotent and take `plan`, `apply` and (PBX side) `verify`. `plan`
+says what would change and writes nothing.
+
+## What the source held
+
+11 extension accounts — 7 chan_pjsip, 4 chan_iax2 — one fax ring group, three
+inbound routes, and five User Management users. Six of the eleven are named
+accounts holding a DID:
+
+| Extension | Name | Device | Voicemail |
+|---|---|---|---|
+| 4132643964 | Darnel Hunter | pjsip | yes |
+| 4132951200 | Grandmas Place Inc | pjsip | yes |
+| 4135612020 | HD Logistics Inc | pjsip | yes |
+| 7745057135 | Denovo Credit Corporation | pjsip | yes |
+| 8579901777 | US Agents Inc | pjsip | yes |
+| 12000 / 15000 | Cordless Phone / Fax Machine | pjsip | no |
+| 3291–3294 | Fax 1–4 | **iax2** | no |
+
+The source's SMS module tables are empty, so there was nothing to bring for SMS,
+and the only voicemail spool contents are a leftover box's busy/unavail
+greetings — no messages, so no audio was carried.
+
+## Three things the FreePBX API cannot carry
+
+Each of these was found by probing the target rather than assumed, and each is
+handled explicitly in `pbx/legacy_voice_migrate.py`:
+
+1. **Device secrets.** `addExtension` has no secret field — it generates one —
+   and `updateExtension` is a **no-op** in this build: it answers
+   `{"status": null, "message": null}` and changes nothing. The bulk handler has
+   no secret column either. The legacy secret is therefore written into the
+   `sip` table, which is FreePBX's own store for device keyword/data and what
+   the GUI's device editor writes, and applied by `fwconsole reload`. `verify`
+   reads it back **out of the generated `pjsip.auth.conf`**, not out of the
+   table, so the check covers what Asterisk actually loads.
+
+2. **IAX2 devices.** The target refuses them outright — *"The existing driver
+   not support this tech(`iax2`) option. Please use pjsip instead"* — even
+   though `chan_iax2` is loaded. The four fax ATAs therefore landed as pjsip,
+   and each one is reported per account rather than switched silently. **Those
+   four ATAs need reprovisioning to SIP.**
+
+3. **User Management passwords.** The API only accepts a plaintext
+   `umPassword`, and a bcrypt hash cannot be reversed. The legacy hash is copied
+   verbatim into `userman_users`, which is what the userman driver reads, so
+   anyone who knew their portal password still does.
+
+The API also validates inbound-route destinations against destinations that
+exist on the target, so the source's `from-external,824,1` — extension 824 was
+`Stasis(dograh)`, the voice agent with no explicit agent, i.e. the default — is
+translated to `dograh-inbound,8000,1`, which is where Zeus already sends its own
+PSTN DID. The translation is declared in `DESTINATION_TRANSLATION` and printed
+with `(was …)` so it is visible in the plan.
+
+## What landed
+
+On the PBX: 11 extensions and 11 devices, each carrying its legacy device
+secret; five User Management password hashes; the fax ring group 329; and three
+inbound routes — two new, `4132643964` skipped because Zeus already routed it.
+
+In the portal: 7 accounts (the five named ones plus the two that already
+existed), 7 numbers and 12 extensions. Existing objects were matched by name and
+left alone — `Darnel Hunter` kept the `dhunter@innotel.us` account rather than
+being duplicated. Accounts the portal did not have are created with
+`password_hash = '!oidc'`, the portal's own marker for "managed by Authentik",
+so the first SSO login binds to them by email; those addresses are placeholders
+derived from the account name (`Grandmas Place Inc` →
+`grandmas-place-inc@innotel.us`) and should be replaced with the customers' real
+addresses.
+
+## Verifying
+
+```
+python3 pbx/legacy_voice_migrate.py verify      # PBX side, incl. generated config
+python3 scripts/legacy_portal_merge.py plan     # portal side, all OK when done
+```
+
+`verify` reports, per account: the extension exists, its generated credential
+matches the source secret, and the portal row agrees with the PBX. All three
+should read `matches source` / `yes`.
+
+Unit tests for the decision logic (run by CI):
+
+```
+python3 -m unittest discover -s pbx/tests -v
+python3 -m unittest discover -s scripts/tests -v
+```
+
+## Backups taken before the change
+
+On the target host, under `/root/pbx-merge/backup/`:
+
+* `zeus-asterisk-premerge.sql.gz` — the whole `asterisk` database
+* `zeus-etc-asterisk.tgz` — `/etc/asterisk` and `freepbx.conf`
+* `portal-pbx-premerge.db` — the portal's SQLite, taken with `.backup`
+
+The snapshots themselves (`accounts.json`, `um_users.json`, `routes.json`) live
+in `/root/pbx-merge/` and contain device secrets and password hashes — treat them
+as credentials.
+
+## Outbound routes were reported, not moved
+
+The source had two outbound routes, `PSTN` and `FAX`, each with the legacy digit
+normalisation (10-digit → prepend `1`, 7-digit → prepend `1413`), the fax route
+carrying the fax caller ID. Zeus has one route that reaches the same carrier and
+whose first pattern is `X.` — **every number**.
+
+That ordering makes the merge a decision rather than a copy: a migrated route
+placed after it can never be reached, and one placed before it would take over
+ordinary dialling and stamp the fax caller ID on normal calls. `plan` prints both
+sides and writes nothing. Adding the legacy normalisation means changing the
+priority or the patterns of a live dial plan.
+
+The source's two trunks (`voipms_pjsip`, `voipms_iax`) are both sub-accounts of
+the same VoIP.ms master account Zeus already uses through its own trunk, so
+nothing new was needed there.
+
+## Still open
+
+* **The four fax ATAs** must be reprovisioned from IAX2 to SIP (item 2 above).
+* **Outbound routes** — whether to adopt the legacy normalisation and fax route,
+  and at what priority.
+* **Portal email addresses** — replace the placeholder addresses with the
+  customers' real ones, which is also what makes SSO bind to the right account.
+* **`7745057135` moved to Denovo Credit Corporation**, off the demo account,
+  because the legacy PBX had it on Denovo.
