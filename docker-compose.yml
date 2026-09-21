@@ -261,9 +261,15 @@ services:
     depends_on:
       - ai-engine
 
-  # On-box STT/TTS/LLM for the zeus_hybrid pipeline (Vosk/Piper by default;
-  # Faster-Whisper/Kokoro when the host has a GPU). Slow to start — models
-  # load at boot — but it is what keeps caller audio on the premises.
+  # On-box STT/TTS for the zeus_hybrid pipeline. Slow to start — models load
+  # at boot — but it is what keeps caller audio on the premises.
+  #
+  # Defaults match the pipeline this estate actually runs: Vosk STT + Piper
+  # TTS, and no local LLM (reasoning goes to the LAN gateway, so llama.cpp
+  # would only add a torch-sized image). A GPU host can trade quality for the
+  # build by enabling Kokoro and Faster-Whisper:
+  #   INCLUDE_KOKORO=true INCLUDE_FASTER_WHISPER=true docker compose \
+  #     --profile voice build local-ai-server
   local-ai-server:
     profiles: ["voice"]
     build:
@@ -271,12 +277,12 @@ services:
       dockerfile: Dockerfile
       args:
         - INCLUDE_VOSK=${INCLUDE_VOSK:-true}
-        - INCLUDE_SHERPA=${INCLUDE_SHERPA:-true}
+        - INCLUDE_SHERPA=${INCLUDE_SHERPA:-false}
         - INCLUDE_FASTER_WHISPER=${INCLUDE_FASTER_WHISPER:-false}
         - INCLUDE_WHISPER_CPP=${INCLUDE_WHISPER_CPP:-false}
         - INCLUDE_PIPER=${INCLUDE_PIPER:-true}
-        - INCLUDE_KOKORO=${INCLUDE_KOKORO:-true}
-        - INCLUDE_LLAMA=${INCLUDE_LLAMA:-true}
+        - INCLUDE_KOKORO=${INCLUDE_KOKORO:-false}
+        - INCLUDE_LLAMA=${INCLUDE_LLAMA:-false}
     image: zeus-ava-local-ai:${AVA_VERSION:-v7.6.1}
     container_name: zeus-ava-local-ai
     restart: unless-stopped
