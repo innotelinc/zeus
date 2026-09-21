@@ -122,11 +122,20 @@ providers:
     response_timeout_sec: ${LOCAL_WS_RESPONSE_TIMEOUT:=5.0}
     chunk_ms: ${LOCAL_WS_CHUNK_MS:=320}
 
-  # LLM reasoning. The key is the estate's gateway key, not an OpenAI
-  # key — the base_url in each pipeline redirects it to OmniRoute.
+  # LLM reasoning. "openai" here is the WIRE FORMAT, not the vendor: the
+  # per-pipeline base_url sends these requests to the estate's OmniRoute
+  # gateway, so the credential is the gateway key, not an OpenAI one.
+  #
+  # The key is deliberately NOT written here. AVA refuses secrets from YAML
+  # (src/config/security.py, inject_provider_api_keys): a block named
+  # `openai` belongs to the OPENAI_API_KEY family, so the engine sets
+  # `api_key` from that environment variable and DELETES any inline value
+  # when the variable is unset. An `api_key: "${OMNIROUTE_API_KEY}"` here is
+  # therefore stripped before the pipeline resolves, and the engine silently
+  # falls back to a placeholder adapter. The key arrives as OPENAI_API_KEY
+  # from compose instead — see docker-compose.yml, ai-engine.
   openai:
     enabled: true
-    api_key: "${OMNIROUTE_API_KEY}"
 
   # Optional premium voice (only used by the zeus_premium pipeline).
   elevenlabs_tts:

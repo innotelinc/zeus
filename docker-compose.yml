@@ -185,6 +185,19 @@ services:
       # Reasoning goes to the estate's canonical gateway, never to a
       # cloud API directly.
       - OMNIROUTE_API_KEY=${OMNIROUTE_API_KEY:-}
+      # AVA enforces an env-only secret contract (src/config/security.py,
+      # inject_provider_api_keys): for every provider block it recognises it
+      # sets the inline key from the matching environment variable, and STRIPS
+      # the inline value when that variable is unset. So an
+      # `api_key: "${OMNIROUTE_API_KEY}"` written in the YAML is deleted before
+      # the pipeline resolves and the engine falls back to a placeholder
+      # adapter — logging only "requires an API key", with no hint that the
+      # key it wants is this one. `openai` is AVA's name for the OpenAI wire
+      # format, and a block named `openai` belongs to the OPENAI_API_KEY
+      # family, so the gateway key has to arrive under that name. The YAML
+      # keeps only the base_url and model that point the wire format at
+      # OmniRoute.
+      - OPENAI_API_KEY=${OMNIROUTE_API_KEY:-}
       - AVA_LLM_BASE_URL=${AVA_LLM_BASE_URL:-http://192.168.1.46:20129/v1}
       - AVA_LLM_MODEL=${AVA_LLM_MODEL:-gemini/gemini-3.1-flash-lite}
       # On-box speech (local_ai_server) — the pipeline's STT/TTS.
