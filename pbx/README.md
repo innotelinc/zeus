@@ -56,6 +56,23 @@ section and converges it **into** the real file, so FreePBX's `[general]` and
 any other product's ARI users (e.g. capstone's `[dograh]`) pass through
 untouched.
 
+**One owner per ARI user — a duplicate costs every user.** `ari.conf`
+`#include`s `ari_additional_custom.conf`, so a user defined in both is a
+duplicate object and sorcery refuses the *whole* file:
+
+```
+ERROR res_sorcery_config.c: Config file 'ari.conf' could not be loaded;
+configuration contains a duplicate object: 'zeus-ava' of type 'user'
+```
+
+Every ARI credential then fails with **401**, which reads exactly like a wrong
+password. Worse, it is invisible until the next fresh Asterisk start: a reload
+keeps serving the users already in memory, so a container recreate is what
+finally surfaces it. Zeus's AVA user therefore lives *only* in
+`ari_additional_custom.conf` — `ari.conf` carries `[pbxportal]` and nothing
+else. Converge does not delete a section that leaves its source, so retiring
+one is a manual edit plus a reload.
+
 On a shared PBX run the tool once per product (the zeus half is already
 wired into `bootstrap-zeus-pbx.sh`):
 
