@@ -79,7 +79,15 @@ pipelines:
         # "Gateway responded 502" report). Both ids below answered 200:
         # gemini/gemini-3.1-flash-lite in 1.5 ms, gemini/gemini-2.5-flash
         # in 1.9 ms. Keep the fallback to a working id.
-        model: "${AVA_LLM_MODEL:-gemini/gemini-3.1-flash-lite}"
+        #
+        # Named `chat_model`, not `model`, on purpose. The adapter's
+        # validate_connectivity drops `model` when it does not start with
+        # "gpt-", "o" or "chatgpt", so a gateway id is discarded and the
+        # validation runs against the provider's default GPT model — which
+        # the gateway does not serve, so it answers 400 and the pipeline is
+        # declared unhealthy even though every runtime call would work.
+        # `chat_model` is read ahead of `model` and skips that substitution.
+        chat_model: "${AVA_LLM_MODEL:-gemini/gemini-3.1-flash-lite}"
         temperature: 0.4
         max_tokens: 200
       tts:
