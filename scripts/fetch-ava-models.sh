@@ -46,7 +46,9 @@ while [[ $# -gt 0 ]]; do
     -h|--help) sed -n '2,30p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; exit 0 ;;
     *) echo "fetch-ava-models: unknown argument: $1" >&2; exit 2 ;;
   esac
-donesay() { printf 'fetch-ava-models: %s\n' "$*" >&2; }
+done
+
+say() { printf 'fetch-ava-models: %s\n' "$*" >&2; }
 
 command -v curl >/dev/null 2>&1 || { echo "fetch-ava-models: curl is required" >&2; exit 1; }
 
