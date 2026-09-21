@@ -175,20 +175,68 @@ export type AvaAgent = z.infer<typeof agentSchema>;
 
 const callSchema = z
   .object({
+    // AVA names the key `id` on a record and `record_id` on some payloads.
     record_id: z.string().nullable().optional(),
     id: z.string().nullable().optional(),
     call_id: z.string().nullable().optional(),
     caller_number: z.string().nullable().optional(),
+    caller_name: z.string().nullable().optional(),
     from_number: z.string().nullable().optional(),
+    called_number: z.string().nullable().optional(),
     agent_slug: z.string().nullable().optional(),
+    agent_name: z.string().nullable().optional(),
     agent: z.string().nullable().optional(),
     started_at: z.string().nullable().optional(),
+    start_time: z.string().nullable().optional(),
+    end_time: z.string().nullable().optional(),
     duration_seconds: z.number().nullable().optional(),
     outcome: z.string().nullable().optional(),
     summary: z.string().nullable().optional(),
+    // Latency the engine measured for the call — the honest source for
+    // "how fast does this feel", rather than a wall-clock guess.
+    avg_turn_latency_ms: z.number().nullable().optional(),
+    max_turn_latency_ms: z.number().nullable().optional(),
+    total_turns: z.number().nullable().optional(),
+    barge_in_count: z.number().nullable().optional(),
+    routing_method: z.string().nullable().optional(),
   })
   .passthrough();
 export type AvaCall = z.infer<typeof callSchema>;
+
+/** The record id, whichever key THIS payload used. */
+export function callRecordId(call: AvaCall): string | null {
+  return call.record_id ?? call.id ?? null;
+}
+
+/** The call's start time, whichever key this payload used. */
+export function callStartTime(call: AvaCall): string | null {
+  return call.start_time ?? call.started_at ?? null;
+}
+
+/**
+ * The full record. The list endpoint deliberately omits the heavy fields
+ * (transcript turns, tool payloads), and `transfer_destination` only appears
+ * here — so a hand-off cannot be confirmed from the list alone.
+ */
+const callRecordSchema = callSchema.extend({
+  transfer_destination: z.string().nullable().optional(),
+  pipeline_name: z.string().nullable().optional(),
+  provider_name: z.string().nullable().optional(),
+  context_name: z.string().nullable().optional(),
+  tool_calls: z.array(z.record(z.string(), z.unknown())).optional(),
+  error_message: z.string().nullable().optional(),
+});
+export type AvaCallRecord = z.infer<typeof callRecordSchema>;
+
+export const transcriptTurnSchema = z
+  .object({
+    role: z.string().optional(),
+    content: z.string().nullable().optional(),
+    text: z.string().nullable().optional(),
+    timestamp: z.string().nullable().optional(),
+  })
+  .passthrough();
+export type AvaTranscriptTurn = z.infer<typeof transcriptTurnSchema>;
 
 const callListSchema = z
   .object({
@@ -237,6 +285,42 @@ export function listCalls(limit = 50): Promise<AvaResult<{ calls: AvaCall[]; tot
 
 export function liveStatus(): Promise<AvaResult<z.infer<typeof liveSchema>>> {
   return request("/api/system/live-status", { method: "GET", schema: liveSchema });
+}
+
+/** One call's full record (adds transfer destination + tool calls). */
+export function getCall(recordId: string): Promise<AvaResult<AvaCallRecord>> {
+  return request(`/api/calls/${encodeURIComponent(recordId)}`, {
+    method: "GET",
+    schema: callRecordSchema,
+  });
+}
+
+/**
+ * What was said. This is the record the operator needs when a caller disputes
+ * how a hand-off went, so it is read from AVA rather than reconstructed.
+ */
+export function getCallTranscript(
+  recordId: string,
+): Promise<AvaResult<{ call_id: string | null; turns: AvaTranscriptTurn[] }>> {
+  return request(`/api/calls/${encodeURIComponent(recordId)}/transcript`, {
+    method: "GET",
+    schema: z
+      .object({
+        call_id: z.string().nullable().optional(),
+        conversation_history: z.array(transcriptTurnSchema).optional(),
+      })
+      .passthrough(),
+  }).then((res) =>
+    res.state === "ok"
+      ? {
+          state: "ok" as const,
+          data: {
+            call_id: res.data.call_id ?? null,
+            turns: res.data.conversation_history ?? [],
+          },
+        }
+      : res,
+  );
 }
 
 /**
