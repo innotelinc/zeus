@@ -46,13 +46,19 @@ while [[ $# -gt 0 ]]; do
     -h|--help) sed -n '2,30p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; exit 0 ;;
     *) echo "fetch-ava-models: unknown argument: $1" >&2; exit 2 ;;
   esac
-done
+donesay() { printf 'fetch-ava-models: %s\n' "$*" >&2; }
 
-say() { printf 'fetch-ava-models: %s\n' "$*"; }
+command -v curl >/dev/null 2>&1 || { echo "fetch-ava-models: curl is required" >&2; exit 1; }
 
-for cmd in curl unzip; do
-  command -v "$cmd" >/dev/null 2>&1 || { echo "fetch-ava-models: $cmd is required" >&2; exit 1; }
-done
+# A zip extractor. `unzip` is the obvious one and is simply not installed on
+# every host we deploy to (Zeus 30 has none of unzip/7z/bsdtar), so python3's
+# zipfile is the fallback. Extracting in-process avoids installing a package on
+# a PBX host just to unpack a model.
+if ! command -v unzip >/dev/null 2>&1 && ! command -v python3 >/dev/null 2>&1; then
+  echo "fetch-ava-models: need unzip or python3 to extract the Vosk model" >&2
+  exit 1
+fi
+
 
 STT_DIR="${MODELS_DIR}/stt"
 TTS_DIR="${MODELS_DIR}/tts"
@@ -69,7 +75,14 @@ else
   say "downloading STT model ${VOSK_NAME} ..."
   curl -fL --retry 3 --retry-delay 2 -o "$tmp_zip" "$VOSK_URL"
   rm -rf "${STT_DIR:?}/${VOSK_NAME}"
-  unzip -q -o "$tmp_zip" -d "$STT_DIR"
+  # unzip takes the destination after -d; the python fallback takes it as an
+  # argv, so the two are invoked separately rather than through one array.
+  if command -v unzip >/dev/null 2>&1; then
+    unzip -q -o "$tmp_zip" -d "$STT_DIR"
+  else
+    python3 -c 'import sys, zipfile; zipfile.ZipFile(sys.argv[1]).extractall(sys.argv[2])' \
+      "$tmp_zip" "$STT_DIR"
+  fi
   rm -f "$tmp_zip"
   [[ -f "${STT_DIR}/${VOSK_NAME}/README" ]] \
     || { echo "fetch-ava-models: extraction did not produce ${VOSK_NAME}/README" >&2; exit 1; }
