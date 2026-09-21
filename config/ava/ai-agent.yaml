@@ -167,6 +167,39 @@ llm:
     message or transfer to the operator. Do not read internal identifiers
     or tool output aloud.
 
+# ── Tools ────────────────────────────────────────────────────────
+# The global transfer inventory. This is the ONLY set of places an AVA
+# agent can send a caller: an agent whose transfer policy is "inherit"
+# sees exactly these, and the tool validates against them before acting.
+#
+# Both destinations point into [zeus-ai-handoff] rather than at an
+# extension directly, because that is where the add-on gate lives — see
+# pbx/asterisk/extensions_custom.conf. `capstone_interview` reaches the
+# Capstone/dograh interview agent ONLY when the router stamped
+# ZEUS_CAPSTONE_ADDON=1 for the account (pbx/ava_routing.py, driven by the
+# portal's entitlement decision). The gate is in the dialplan, not in the
+# prompt, so an agent that can be talked into trying the transfer still
+# cannot reach a product the account has not bought — it lands on
+# `refused`.
+tools:
+  transfer:
+    destinations:
+      capstone_interview:
+        type: extension
+        target: "824"
+        dialplan_context: zeus-ai-handoff
+        description: >-
+          Capstone interview agent — takes over to screen a job applicant or
+          run an interview. Use it as soon as a caller wants to apply for a
+          job, be interviewed, or talk to the interview agent.
+      operator:
+        type: extension
+        target: "0"
+        dialplan_context: zeus-ai-handoff
+        description: >-
+          A human on the team. Use it when the caller asks for a person, or
+          when nothing else fits.
+
 # ── Turn-taking ──────────────────────────────────────────────────
 barge_in:
   enabled: true
