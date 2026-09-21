@@ -74,7 +74,12 @@ pass "AVA_ADMIN_JWT_SECRET, AVA_ARI_SECRET and OMNIROUTE_API_KEY are set"
 
 # ── 2. one ARI secret, two files ────────────────────────────────────────────
 info "2/6 the engine and the PBX share one ARI secret"
-python3 pbx/ava_ari_check.py || fail "fix the ARI secret before deploying: an engine the PBX does not recognise is calls that are never answered"
+# Checked against the same two files this script validated above, not the
+# defaults: run with AVA_ENV_FILE/PBX_ENV_FILE pointed elsewhere and the check
+# must follow, or it approves one deployment and starts another.
+python3 pbx/ava_ari_check.py --engine-env "$ENV_FILE" \
+  --pbx-env "${PBX_ENV_FILE:-${REPO_ROOT}/scripts/pbx.env}" \
+  || fail "fix the ARI secret before deploying: an engine the PBX does not recognise is calls that are never answered"
 
 # ── 3. pinned checkout + seeded config ──────────────────────────────────────
 info "3/6 AVA checkout and seeded runtime config"

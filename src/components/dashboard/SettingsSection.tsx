@@ -26,6 +26,11 @@ const INTEGRATIONS: Array<{ label: string; key: string }> = [
   { label: "VoIP.ms", key: "voipms_api" },
   { label: "FreePBX", key: "freepbx_api" },
   { label: "AvantFax", key: "avantfax" },
+  // The voice plane. Only probed where AVA is configured (see /api/health), so
+  // a portal-only install shows these as healthy rather than alarming about a
+  // profile it was never asked to run.
+  { label: "Voice engine", key: "ava_engine" },
+  { label: "Voice console", key: "ava_admin" },
 ];
 
 export default function SettingsSection({ user }: Props) {

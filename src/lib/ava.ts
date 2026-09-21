@@ -34,6 +34,15 @@ export function avaConfigured(): boolean {
   return Boolean(AVA_STATIC_TOKEN || AVA_PASSWORD);
 }
 
+/**
+ * Where the portal talks to the admin API. Exported so the health probe in
+ * /api/health describes the same address the screens use, rather than a
+ * second reading of the same variable that can drift from it.
+ */
+export function avaAdminBase(): string {
+  return AVA_BASE;
+}
+
 export type AvaState = "ok" | "unreachable" | "unauthorized" | "invalid" | "not_configured";
 
 export type AvaResult<T> =

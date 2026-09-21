@@ -70,6 +70,17 @@ services:
       - AVANTFAX_URL=${AVANTFAX_URL:-http://zeus-freepbx/fax}
       # AvantFax's own DB, consumed by the fax module.
       - AVANTFAX_DB_PASS=${AVANTFAX_DB_PASS:-}
+      # ── AVA voice plane (this portal is its console) ──
+      # Both addresses are the CONTAINER's view. AVA_ADMIN_URL in .env is the
+      # host's loopback address, which is right for scripts and curl and wrong
+      # here — inside a container 127.0.0.1 is the container itself, so pointing
+      # this at it is how every Voice screen came to report "unreachable" on a
+      # deployment where AVA was fine. The admin joins pbx-net on its real port
+      # (ai-engine-admin, above); the engine is host-networked with its health
+      # port bound on 0.0.0.0, so it is reached through the bridge gateway.
+      # Override when the voice plane lives on another host.
+      - AVA_ADMIN_URL=${AVA_ADMIN_CONTAINER_URL:-http://zeus-ava-admin:8000}
+      - AVA_ENGINE_URL=${AVA_ENGINE_CONTAINER_URL:-http://host.docker.internal:15000}
     healthcheck:
       # No `-f`: the health endpoint returns 503 when >=2 external services
       # (FreePBX/VoIP.ms/Stripe) are down. The container is healthy as long as
@@ -286,7 +297,18 @@ services:
       # access, so it is deliberately NOT mounted here; the Zeus portal is
       # the operator console. Compose an opt-in override if you want it.
     ports:
+      # The HOST's loopback door, for operators and scripts
+      # (scripts/ava-admin-password.sh reads AVA_ADMIN_URL from .env). Kept
+      # loopback-only on purpose: this API exposes agent prompts and call
+      # transcripts, so it must not answer on the LAN. The portal does not use
+      # this door — it comes in over pbx-net, below.
       - "127.0.0.1:${AVA_ADMIN_PORT:-8770}:8000"
+    # On pbx-net with the portal, so the console is reached by service name.
+    # Without this the two sit on different compose networks and every Voice
+    # screen reports "unreachable" while both containers are healthy — the
+    # admin on the project's default network, the portal on pbx-net.
+    networks:
+      - pbx-net
     depends_on:
       - ai-engine
 

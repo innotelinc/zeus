@@ -20,6 +20,8 @@ interface HealthResponse {
     stripe: ProbeResult;
     voipms_api: ProbeResult;
     avantfax: ProbeResult;
+    ava_engine: ProbeResult;
+    ava_admin: ProbeResult;
   };
 }
 
@@ -56,6 +58,16 @@ const serviceMeta: Record<
     label: "AvantFAX",
     desc: "Fax module web UI",
     icon: "📠",
+  },
+  ava_engine: {
+    label: "Voice engine",
+    desc: "AVA: attached to ARI, AudioSocket listening",
+    icon: "🤖",
+  },
+  ava_admin: {
+    label: "Voice console",
+    desc: "AVA admin API behind the Voice screens",
+    icon: "🎛️",
   },
 };
 

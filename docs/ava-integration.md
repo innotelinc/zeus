@@ -277,6 +277,7 @@ docker compose --profile voice config --services    # as above
 
 # AVA actually attached
 docker compose logs ai-engine | grep -E "ARI|AudioSocket"
+curl -s localhost:15000/health | python3 -m json.tool   # ari_connected, audiosocket, pipelines
 curl -s localhost:15000/metrics | head
 
 # the gate, end to end: a call from an unentitled number must NOT reach 824
@@ -296,6 +297,10 @@ Two checks that catch the failures this integration is most exposed to:
   before assuming calls still work: a listed-but-absent model answers 400 and
   a slow free route answers 502 *after 30 s*, both of which look like "the
   agent is thinking" to a caller.
+
+When a call is not answered, `docs/ava-runbook.md` walks the same layers in
+the order a fault reveals itself — engine verdict, dialplan, the two ARI
+secrets, the seeded config, the gateway model, and the admin password.
 
 ### Known limits
 

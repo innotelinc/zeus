@@ -1,8 +1,106 @@
 import { NextResponse } from "next/server";
 import db from "@/lib/db";
 import { getAmiClient } from "@/lib/ami";
+import { avaAdminBase, avaConfigured, listAgents } from "@/lib/ava";
 
 export const dynamic = "force-dynamic";
+
+// The voice engine, from the portal container. The engine is host-networked
+// and binds its health port on every interface (HEALTH_BIND_HOST=0.0.0.0 in
+// compose), so the bridge gateway reaches it; AVA_ADMIN_URL is the address the
+// portal talks to the admin API on (see docker-compose.yml — inside a
+// container that is a service name, not the host's loopback).
+const AVA_ENGINE_URL = (process.env.AVA_ENGINE_URL ?? "http://host.docker.internal:15000").replace(/\/+$/, "");
+
+interface EngineHealth {
+  status?: string;
+  ari_connected?: boolean;
+  default_ready?: boolean;
+  audiosocket?: { listening?: boolean };
+}
+
+/**
+ * The engine's own verdict, plus the two things it reports separately because
+ * they fail without changing its `status`: an engine that never attached to
+ * ARI, and one whose AudioSocket transport is not listening. Both mean the
+ * same thing to a caller — the call is never answered — while the process
+ * looks perfectly healthy.
+ */
+async function probeAvaEngine(): Promise<ProbeResult> {
+  const t0 = Date.now();
+  try {
+    const res = await fetch(`${AVA_ENGINE_URL}/health`, {
+      cache: "no-store",
+      signal: AbortSignal.timeout(3_000),
+    });
+    if (!res.ok) throw new Error(`engine health returned ${res.status}`);
+    const body = (await res.json()) as EngineHealth;
+    const latency_ms = Date.now() - t0;
+    if (body.ari_connected === false) {
+      return {
+        status: "degraded",
+        latency_ms,
+        error:
+          "engine is running but not attached to Asterisk (ARI) — inbound calls are not answered",
+      };
+    }
+    if (body.audiosocket?.listening === false) {
+      return {
+        status: "degraded",
+        latency_ms,
+        error:
+          "AudioSocket is not listening — Asterisk has no port to hand the call audio to",
+      };
+    }
+    if (body.default_ready === false || (body.status && body.status !== "healthy")) {
+      return {
+        status: "degraded",
+        latency_ms,
+        error: `engine reports ${body.status ?? "not ready"} — its own /health names the cause`,
+      };
+    }
+    // Per-pipeline validity is deliberately NOT judged here: an optional
+    // pipeline (the licensed premium voice) is invalid until its key is set on
+    // a perfectly healthy install, and calling that a system failure is the
+    // false alarm the Stripe probe already had to be rescued from.
+    return { status: "ok", latency_ms };
+  } catch (e) {
+    return {
+      status: "degraded",
+      latency_ms: Date.now() - t0,
+      error: `no voice engine at ${AVA_ENGINE_URL} — calls routed to AVA are not answered (${e instanceof Error ? e.message : String(e)})`,
+    };
+  }
+}
+
+/**
+ * Reachability is not usability: on a first run AVA mints a one-time admin
+ * password and answers 403 to everything until it is rotated, so the console
+ * can be up while the Voice screens read nothing. The authenticated call is
+ * what makes that difference visible — and it is the same client the screens
+ * use, so this probe cannot pass while they fail.
+ */
+async function probeAvaAdmin(): Promise<ProbeResult> {
+  const t0 = Date.now();
+  try {
+    const res = await fetch(`${avaAdminBase()}/health`, {
+      cache: "no-store",
+      signal: AbortSignal.timeout(3_000),
+    });
+    if (!res.ok) throw new Error(`admin health returned ${res.status}`);
+  } catch (e) {
+    return {
+      status: "down",
+      latency_ms: Date.now() - t0,
+      error: `AVA admin API not reachable at ${avaAdminBase()} — the Voice screens have no data (${e instanceof Error ? e.message : String(e)})`,
+    };
+  }
+
+  const latency_ms = Date.now() - t0;
+  const agents = await listAgents();
+  if (agents.state === "ok") return { status: "ok", latency_ms };
+  return { status: "degraded", latency_ms, error: agents.error };
+}
 
 interface ProbeResult {
   status: "ok" | "degraded" | "down";
@@ -21,6 +119,8 @@ interface HealthResponse {
     stripe: ProbeResult;
     voipms_api: ProbeResult;
     avantfax: ProbeResult;
+    ava_engine: ProbeResult;
+    ava_admin: ProbeResult;
   };
 }
 
@@ -47,7 +147,14 @@ export async function GET() {
   // ── Run all probes concurrently (avoids sequential timeouts
   //    exceeding the Docker healthcheck timeout when external
   //    services are unreachable). ─────────────────────────────
-  const [dbResult, freepbxResult, amiResult, stripeResult, avantfaxResult] =
+  // ── The voice plane is `--profile voice`, so it is only probed where it is
+  //    configured. Reporting a missing engine as "down" on every portal-only
+  //    install is the mistake the Stripe probe already made once: a deliberate
+  //    default read as a failure. avaConfigured() is the same switch the Voice
+  //    screens use, so the two agree about whether AVA is in play here.
+  const voiceExpected = avaConfigured();
+
+  const [dbResult, freepbxResult, amiResult, stripeResult, avantfaxResult, engineResult, adminResult] =
     await Promise.all([
       // ── Database (SQLite) ──────────────────────────────────
       probe("database", async () => {
@@ -144,6 +251,13 @@ export async function GET() {
           clearTimeout(timeout);
         }
       }),
+
+      // ── AVA engine + admin API ─────────────────────────────
+      // Position matters: this array is destructured by position below, and a
+      // probe inserted in the wrong place reports one service's state under
+      // another's name (which is exactly how it looked on the first run).
+      voiceExpected ? probeAvaEngine() : Promise.resolve<ProbeResult>({ status: "ok", latency_ms: 0 }),
+      voiceExpected ? probeAvaAdmin() : Promise.resolve<ProbeResult>({ status: "ok", latency_ms: 0 }),
     ]);
 
   // ── VoIP.ms REST API credentials ───────────────────────────
@@ -172,6 +286,8 @@ export async function GET() {
     stripe: stripeResult,
     voipms_api: voipmsResult,
     avantfax: avantfaxResult,
+    ava_engine: engineResult,
+    ava_admin: adminResult,
   };
 
   const downCount = Object.values(services).filter((s) => s.status === "down").length;
