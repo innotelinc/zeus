@@ -215,7 +215,12 @@ services:
       - ./data/ava/models:/app/models
       - ava-media:/mnt/asterisk_media
     healthcheck:
-      test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:${AVA_HEALTH_PORT:-15000}/metrics >/dev/null || exit 1"]
+      # NOT curl: the engine image is python-slim and ships no curl, so a
+      # `curl -f` check reported the engine unhealthy forever (FailingStreak 54)
+      # while it was in fact serving calls — a healthcheck that can never pass
+      # is worse than none, because it hides a real failure later. urllib is
+      # always present.
+      test: ["CMD-SHELL", "python3 -c \"import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:${AVA_HEALTH_PORT:-15000}/metrics', timeout=5).status == 200 else 1)\""]
       interval: 30s
       timeout: 10s
       retries: 3
@@ -254,6 +259,13 @@ services:
       # PROJECT_ROOT: config/ai-agent.yaml + config/users.json + .env.
       # Writable — this is where the admin UI persists agent and config edits.
       - ./data/ava/project:/app/project
+      # The admin backend imports the ENGINE's packages as `src.*` (api/config.py,
+      # api/calls.py, agents_migration.py and others put PROJECT_ROOT on sys.path
+      # precisely so it can). Its own image copies the admin backend to /app and
+      # only a single flattened file out of src/, so without this the container
+      # dies at import with "ModuleNotFoundError: No module named 'src'". Mounted
+      # read-only: it borrows the engine's code, it never owns it.
+      - ${AVA_SRC:-./vendor/ava}/src:/app/project/src:ro
       - ./data/ava/data:/app/data
       - ./data/ava/models:/app/models
       # NOTE: AVA's shipped compose also mounts /var/run/docker.sock so its
@@ -294,16 +306,27 @@ services:
     environment:
       - LOCAL_STT_BACKEND=${LOCAL_STT_BACKEND:-vosk}
       - LOCAL_TTS_BACKEND=${LOCAL_TTS_BACKEND:-piper}
-      - LOCAL_WS_HOST=0.0.0.0
+      # Loopback, not 0.0.0.0. Both consumers (the engine and the admin API)
+      # are host-networked, so 127.0.0.1 reaches this server and nothing else
+      # does — the server's own guard refuses to bind a non-loopback address
+      # without LOCAL_WS_AUTH_TOKEN, and it is right to: speech would otherwise
+      # be served to anything on the LAN. Binding loopback satisfies the guard
+      # by making the exposure impossible rather than by adding a secret.
+      - LOCAL_WS_HOST=127.0.0.1
       - LOCAL_WS_PORT=${LOCAL_WS_PORT:-8765}
       - LOCAL_WS_AUTH_TOKEN=${LOCAL_WS_AUTH_TOKEN:-}
+      # The server's built-in defaults name models it does not ship
+      # (vosk-model-en-us-0.22 is the 1.8 GB model). These point at what
+      # scripts/fetch-ava-models.sh actually downloads for an 8-core CPU box.
+      - LOCAL_STT_MODEL_PATH=${LOCAL_STT_MODEL_PATH:-/app/models/stt/vosk-model-small-en-us-0.15}
+      - LOCAL_TTS_MODEL_PATH=${LOCAL_TTS_MODEL_PATH:-/app/models/tts/en_US-lessac-medium.onnx}
       - TZ=${TZ:-America/New_York}
       - PYTHONUNBUFFERED=1
     volumes:
       - ./data/ava/models:/app/models
       - ./data/ava/data:/app/data
     healthcheck:
-      test: ["CMD-SHELL", "python -c \"import socket;socket.create_connection(('127.0.0.1',${LOCAL_WS_PORT:-8765}),3)\" || exit 1"]
+      test: ["CMD-SHELL", "python3 -c \"import socket;socket.create_connection(('127.0.0.1',${LOCAL_WS_PORT:-8765}),3)\" || exit 1"]
       interval: 60s
       timeout: 10s
       retries: 5
