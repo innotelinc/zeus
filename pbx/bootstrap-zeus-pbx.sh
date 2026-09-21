@@ -38,6 +38,9 @@
 #   ARI_HTTP_PORT     (default 8088)        AMI_PERMIT (permit line, default:
 #                                            this host's LAN subnet — never a
 #                                            docker bridge range)
+#   ZEUS_PORTAL_DB    portal SQLite database the [zeus-ai-accounts] context is
+#                     rendered from. Default: the zeus-portal-data volume. When
+#                     neither is readable the static placeholder stands.
 # ═══════════════════════════════════════════════════════════════════
 set -euo pipefail
 
@@ -171,6 +174,65 @@ _is_converge_owned() {
   return 1
 }
 
+# ── the one GENERATED context ──────────────────────────────────────────
+# Every other context in extensions_custom.conf is stored in pbx/asterisk/.
+# [zeus-ai-accounts] is not: it is a per-account decision, so it is rendered
+# from the portal's accounts and the Capstone hand-off gate then follows
+# billing instead of a file someone has to remember to re-render.
+# pbx/ava_routing.py writes ZEUS_CAPSTONE_ADDON=1 only for accounts the portal
+# recorded as entitled, and treats a MISSING record as not entitled — so this
+# render can only ever be too strict, never too generous.
+#
+# The portal's SQLite database is the source. ZEUS_PORTAL_DB names it
+# explicitly; otherwise it is located through the compose volume the portal
+# writes. When neither is readable — a fresh host, a portal that has never run
+# — the static placeholder stands, which says what the renderer would have
+# said anyway: no agent recorded, no add-on granted.
+AVA_ROUTING_PY="${SCRIPT_DIR}/ava_routing.py"
+ACCOUNTS_DIR=""
+ACCOUNTS_SRC=""
+
+cleanup() {
+  [ -n "${work:-}" ] && rm -rf "$work"
+  [ -n "${ACCOUNTS_DIR:-}" ] && rm -rf "$ACCOUNTS_DIR"
+  return 0
+}
+
+portal_db() {
+  if [ -n "${ZEUS_PORTAL_DB:-}" ]; then
+    [ -f "$ZEUS_PORTAL_DB" ] && printf '%s\n' "$ZEUS_PORTAL_DB"
+    return 0
+  fi
+  local mp
+  mp="$(docker volume inspect zeus-portal-data \
+        --format '{{.Mountpoint}}' 2>/dev/null)" || return 0
+  [ -n "$mp" ] && [ -f "${mp}/pbx.db" ] && printf '%s\n' "${mp}/pbx.db"
+  return 0
+}
+
+# Renders [zeus-ai-accounts] into a fragment the converge tool merges last, so
+# its context replaces the placeholder in the static file.
+render_account_routing() {
+  local db out
+  db="$(portal_db)"
+  if [ -z "$db" ]; then
+    echo "zeus-pbx: no portal database — [zeus-ai-accounts] keeps the default agent" >&2
+    return 0
+  fi
+  ACCOUNTS_DIR="$(mktemp -d)"
+  trap cleanup EXIT
+  out="${ACCOUNTS_DIR}/accounts.conf"
+  if ! python3 "$AVA_ROUTING_PY" --db "$db" --out "$out"; then
+    # A plan that cannot be read is not a plan. Leave the placeholder rather
+    # than converge a half-rendered account list onto a live PBX.
+    rm -rf "$ACCOUNTS_DIR"
+    ACCOUNTS_DIR=""
+    echo "zeus-pbx: could not render accounts from ${db} — keeping the default agent" >&2
+    return 0
+  fi
+  ACCOUNTS_SRC="$out"
+}
+
 apply_target() {
   local dest
   dest="$(pbx_asterisk_dir)"
@@ -202,6 +264,7 @@ reload_pbx() {
 }
 
 render_fragments
+render_account_routing
 
 # extensions_custom.conf / ari.conf are SHARED files: once another product
 # (capstone's [dograh-inbound] dialplan, [dograh] ARI user) lives in them, a
@@ -235,7 +298,7 @@ done
 work=""
 if [ "$PBX_TARGET" = "container" ]; then
   work="$(mktemp -d)"
-  trap 'rm -rf "$work"' EXIT
+  trap cleanup EXIT
 fi
 for name in $CONVERGE_OWNED; do
   host="${work:+${work}/}${name}"
@@ -246,7 +309,13 @@ for name in $CONVERGE_OWNED; do
     host="${dest}/${name}"
   fi
   [ -f "$host" ] || : > "$host"
+  # converge applies sources in order, so the rendered accounts fragment goes
+  # last and wins for [zeus-ai-accounts].
+  extra=()
+  [ "$name" = "extensions_custom.conf" ] && [ -n "$ACCOUNTS_SRC" ] && \
+    extra=(--source "$ACCOUNTS_SRC")
   if ! python3 "$CONVERGE_PY" --target "$host" --source "${STAGE_DIR}/${name}" \
+       ${extra[@]+"${extra[@]}"} \
        --owner zeus --append from-internal-custom --check 2>/dev/null; then
     echo "drift: ${name} (shared config)" >&2
     drift=1
@@ -267,7 +336,11 @@ if [ "$drift" = 1 ] || [ "$RELOAD" = 1 ]; then
   for name in $CONVERGE_OWNED; do
     host="${work:+${work}/}${name}"
     [ "$PBX_TARGET" = "container" ] || host="${dest}/${name}"
+    extra=()
+    [ "$name" = "extensions_custom.conf" ] && [ -n "$ACCOUNTS_SRC" ] && \
+      extra=(--source "$ACCOUNTS_SRC")
     python3 "$CONVERGE_PY" --target "$host" --source "${STAGE_DIR}/${name}" \
+      ${extra[@]+"${extra[@]}"} \
       --owner zeus --append from-internal-custom
     if [ "$PBX_TARGET" = "container" ]; then
       docker compose -f "$REPO_ROOT/docker-compose.full.yml" cp \
