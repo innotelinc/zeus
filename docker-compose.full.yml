@@ -333,6 +333,18 @@ services:
       NEXT_PUBLIC_STRIPE_PUBLISHABLE_KEY: ${NEXT_PUBLIC_STRIPE_PUBLISHABLE_KEY:-}
       # Magnate (RevenueOps) — source billing platform for all projects.
       MAGNATE_PUBLIC_URL: ${MAGNATE_PUBLIC_URL:-}
+      # Add-on entitlement gate (see src/lib/addons.ts). The policy matches
+      # Capstone's, which gates the same SKUs on the same Magnate: an unset
+      # SKU slug — like an unset MAGNATE_PUBLIC_URL — leaves that gate
+      # INACTIVE, and an entitlements outage fails open, so billing trouble
+      # never un-wires a paying customer's lines.
+      ENTITLEMENTS_API_TOKEN: ${ENTITLEMENTS_API_TOKEN:-}
+      MAGNATE_AGENTS_PLAN: ${MAGNATE_AGENTS_PLAN:-}
+      MAGNATE_CAPSTONE_PLAN: ${MAGNATE_CAPSTONE_PLAN:-}
+      MAGNATE_AGENT_PLAN: ${MAGNATE_AGENT_PLAN:-}
+      # Shared secret the PBX presents when it fetches this portal's routing
+      # plan (pbx/bootstrap-zeus-pbx.sh); see scripts/pbx.env.example.
+      PBX_SYNC_TOKEN: ${PBX_SYNC_TOKEN:-}
 
       # ── Email (SMTP for voicemail/invoice/fax notifications) ──
       ADMIN_EMAIL: ${ADMIN_EMAIL:-admin@zeus.innotel.us}

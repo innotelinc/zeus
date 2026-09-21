@@ -38,9 +38,14 @@
 #   ARI_HTTP_PORT     (default 8088)        AMI_PERMIT (permit line, default:
 #                                            this host's LAN subnet — never a
 #                                            docker bridge range)
-#   ZEUS_PORTAL_DB    portal SQLite database the [zeus-ai-accounts] context is
-#                     rendered from. Default: the zeus-portal-data volume. When
-#                     neither is readable the static placeholder stands.
+#   ZEUS_PORTAL_URL   portal base URL the [zeus-ai-accounts] plan is fetched
+#                     from (default http://127.0.0.1:3001)
+#   PBX_SYNC_TOKEN    bearer token for that fetch (portal env PBX_SYNC_TOKEN).
+#                     Without it, or when the portal is unreachable, the
+#                     context is rendered from the portal's cached database.
+#   ZEUS_PORTAL_DB    that SQLite database. Default: the zeus-portal-data
+#                     volume. When neither is readable the static placeholder
+#                     stands.
 # ═══════════════════════════════════════════════════════════════════
 set -euo pipefail
 
@@ -180,14 +185,24 @@ _is_converge_owned() {
 # from the portal's accounts and the Capstone hand-off gate then follows
 # billing instead of a file someone has to remember to re-render.
 # pbx/ava_routing.py writes ZEUS_CAPSTONE_ADDON=1 only for accounts the portal
-# recorded as entitled, and treats a MISSING record as not entitled — so this
-# render can only ever be too strict, never too generous.
+# recorded as entitled, and treats a MISSING record as not entitled — so the
+# cached-database render on its own can only ever be too strict, never too
+# generous.
 #
-# The portal's SQLite database is the source. ZEUS_PORTAL_DB names it
-# explicitly; otherwise it is located through the compose volume the portal
-# writes. When neither is readable — a fresh host, a portal that has never run
-# — the static placeholder stands, which says what the renderer would have
-# said anyway: no agent recorded, no add-on granted.
+# THE PORTAL IS THE SOURCE, not its cache. GET /api/admin/voice-routing is the
+# routing authority and re-checks the add-on gate against Magnate on every
+# call, so fetching it (with PBX_SYNC_TOKEN) is what keeps this context in step
+# with billing. Reading the cache instead would freeze the plan at whatever it
+# was the last time an operator opened the screen — a lapsed subscription
+# would never un-wire, and a gate that is inactive in this deployment (see
+# src/lib/addons.ts) would never show up as entitled.
+#
+# ZEUS_PORTAL_DB names the cache explicitly; otherwise it is located through
+# the compose volume the portal writes. That path is the FALLBACK for a portal
+# that is down or has no token configured, and it stays fail-closed on a
+# missing record: without a portal there is no authority to say otherwise.
+# When neither is readable — a fresh host, a portal that has never run — the
+# static placeholder stands.
 AVA_ROUTING_PY="${SCRIPT_DIR}/ava_routing.py"
 ACCOUNTS_DIR=""
 ACCOUNTS_SRC=""
@@ -213,15 +228,34 @@ portal_db() {
 # Renders [zeus-ai-accounts] into a fragment the converge tool merges last, so
 # its context replaces the placeholder in the static file.
 render_account_routing() {
-  local db out
+  local db out plan
+  ACCOUNTS_DIR="$(mktemp -d)"
+  trap cleanup EXIT
+  out="${ACCOUNTS_DIR}/accounts.conf"
+
+  # Preferred path: ask the portal, which re-checks the gate against Magnate.
+  # A 503 from the portal (indecisive gate) is deliberately NOT recovered from
+  # here: the authority declining to answer must not be papered over with a
+  # cached answer, which is the stale-plan failure this exists to avoid. The
+  # PBX then keeps the fragment it already has.
+  if [ -n "${PBX_SYNC_TOKEN:-}" ]; then
+    plan="${ACCOUNTS_DIR}/accounts.json"
+    if curl -fsS --max-time 20 \
+         -H "Authorization: Bearer ${PBX_SYNC_TOKEN}" \
+         "${ZEUS_PORTAL_URL:-http://127.0.0.1:3001}/api/admin/voice-routing" \
+         -o "$plan" 2>/dev/null \
+       && python3 "$AVA_ROUTING_PY" --accounts-json "$plan" --out "$out" 2>/dev/null; then
+      ACCOUNTS_SRC="$out"
+      return 0
+    fi
+    echo "zeus-pbx: portal routing plan unavailable — using the cached database" >&2
+  fi
+
   db="$(portal_db)"
   if [ -z "$db" ]; then
     echo "zeus-pbx: no portal database — [zeus-ai-accounts] keeps the default agent" >&2
     return 0
   fi
-  ACCOUNTS_DIR="$(mktemp -d)"
-  trap cleanup EXIT
-  out="${ACCOUNTS_DIR}/accounts.conf"
   if ! python3 "$AVA_ROUTING_PY" --db "$db" --out "$out"; then
     # A plan that cannot be read is not a plan. Leave the placeholder rather
     # than converge a half-rendered account list onto a live PBX.
