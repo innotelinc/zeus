@@ -62,6 +62,19 @@ done
 seed_runtime() {
   mkdir -p "${RUNTIME_DIR}/project/config" "${RUNTIME_DIR}/data" "${RUNTIME_DIR}/models"
 
+  # The containers run as appuser (uid 1000): the engine writes call history
+  # and agents.db under /app/data, and the admin UI writes the config and
+  # users.json under /app/project. Trees created by root here make both fail
+  # at runtime with "unable to open database file", so hand them over while
+  # they are still empty. Existing contents keep their ownership — that is
+  # live state.
+  if [ "$(id -u)" = "0" ]; then
+    chown -R "${AVA_CONTAINER_UID:-1000}:${AVA_CONTAINER_UID:-1000}" \
+      "${RUNTIME_DIR}/data" "${RUNTIME_DIR}/models" 2>/dev/null || true
+    chown "${AVA_CONTAINER_UID:-1000}:${AVA_CONTAINER_UID:-1000}" \
+      "${RUNTIME_DIR}/project" "${RUNTIME_DIR}/project/config" 2>/dev/null || true
+  fi
+
   local cfg="${RUNTIME_DIR}/project/config/ai-agent.yaml"
   if [ ! -f "$cfg" ] || [ "$FORCE" = "1" ]; then
     [ -f "$TEMPLATE" ] || fail "tracked template missing: ${TEMPLATE}"
