@@ -154,9 +154,14 @@ CONVERGE_PY="${SCRIPT_DIR}/asterisk_converge.py"
 #       must survive), zeus contexts replace, [from-internal-custom] append-shared.
 #   ari.conf — the real ARI config Asterisk reads; zeus's [<user>] section
 #       converges in while [general] and other products' ARI users pass through.
-#       (ari.conf on these FreePBX builds is a plain file with NO #include of
-#       a *_custom.conf, so ari_custom.conf would never be read.)
-CONVERGE_OWNED="extensions_custom.conf ari.conf"
+#       Note: on the FreePBX builds this stack ships, ari.conf is a SYMLINK
+#       into the arimanager module and ari_additional.conf is regenerated on
+#       every Apply Config — which is why the AVA user below goes to
+#       ari_additional_custom.conf (included by ari.conf, module-owned-adjacent,
+#       and the file the shared voice plane already uses for Capstone's
+#       [dograh]). ari_custom.conf is NOT included on these builds.
+#   ari_additional_custom.conf — AVA's own ARI user (see that fragment).
+CONVERGE_OWNED="extensions_custom.conf ari.conf ari_additional_custom.conf"
 
 _is_converge_owned() {
   local name="$1" owned
