@@ -195,12 +195,10 @@ services:
       # Address Asterisk is told to dial for AudioSocket. Must be an address
       # that resolves to this host FROM INSIDE the FreePBX container.
       - AVA_ENGINE_ADVERTISE_HOST=${AVA_ENGINE_ADVERTISE_HOST:-192.168.1.30}
-      # AudioSocket's port is AVA's 8090 by default, but the engine binds it
-      # on 0.0.0.0 while other products on a shared host bind it on loopback
-      # (workflow-studio does on this estate) — and a loopback listener still
-      # wins the port. AVA reads AUDIOSOCKET_PORT from the environment, so a
-      # colliding host moves it here instead of forking the YAML.
-      - AUDIOSOCKET_PORT=${AVA_AUDIOSOCKET_PORT:-8090}
+      # NOTE: AudioSocket's port is NOT set here. The engine applies
+      # AUDIOSOCKET_PORT with setdefault, so the YAML's audiosocket.port wins
+      # either way — set it in config/ava/ai-agent.yaml (currently 8097,
+      # because another product on this host holds 8090 on loopback).
       - HEALTH_BIND_HOST=0.0.0.0
       - HEALTH_BIND_PORT=${AVA_HEALTH_PORT:-15000}
       - ELEVENLABS_API_KEY=${ELEVENLABS_API_KEY:-}

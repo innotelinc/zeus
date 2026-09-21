@@ -45,7 +45,13 @@ audiosocket:
   # LAN address (192.168.1.30:8088), so the engine must advertise the
   # same address — 127.0.0.1 would resolve inside the PBX container.
   advertise_host: "${AVA_ENGINE_ADVERTISE_HOST:-192.168.1.30}"
-  port: 8090
+  # 8097, not AVA's default 8090: another product on this host (workflow-studio)
+  # publishes 8090 on loopback, and a loopback listener still wins the port —
+  # the engine failed to start its media transport with "address already in
+  # use". The AUDIOSOCKET_PORT environment variable does NOT move it: the
+  # engine's loader applies it with setdefault, so a value here always wins.
+  # Move this line, not the env var, when a host's ports collide.
+  port: 8097
   format: "ulaw"            # 8 kHz — no resampling on the telephony leg
 
 # ── Pipelines ────────────────────────────────────────────────────
