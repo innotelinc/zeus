@@ -7,6 +7,17 @@
  * Capstone dograh agent routing, which Capstone verifies itself against the
  * same entitlements API before writing inbound routes.
  *
+ * Failure vocabulary mirrors Capstone's `dashboard-backend/app/entitlements.py`
+ * exactly, because both products gate the same SKUs on the same Magnate:
+ *
+ *   404 plan_not_found  → entitled FALSE. An authoritative "no" — Magnate is
+ *                         reachable and does not know this plan.
+ *   401                 → entitled NULL, source "unauthorized". A config error.
+ *                         Neither yes nor no: the caller must not read it as
+ *                         "not entitled", or a bad token would silently
+ *                         un-wire every route.
+ *   anything else bad   → entitled NULL. Not an authoritative "no" either.
+ *
  * Env:
  *   MAGNATE_PUBLIC_URL      — shared Magnate storefront (billing portal).
  *                             Empty → standalone mode, no entitlement checks.
@@ -110,6 +121,30 @@ export async function magnateEntitlement(
       status: null,
       expiresAt: null,
       source: "unauthorized",
+    };
+  }
+
+  // 404 plan_not_found is Magnate answering — and the answer is "no such plan".
+  // Same treatment as Capstone's client; read before the JSON shape check,
+  // because a 404 body carries `reason` but no `entitled` field.
+  if (resp.status === 404) {
+    let reason = "plan_not_found";
+    try {
+      const body = (await resp.json()) as { reason?: unknown };
+      if (typeof body?.reason === "string" && body.reason) reason = body.reason;
+    } catch {
+      // Body was not JSON; the status alone is the answer.
+    }
+    return {
+      entitled: false,
+      reason,
+      plan: null,
+      slug: plan,
+      user: opts.user ?? null,
+      phone: opts.phone ?? null,
+      status: null,
+      expiresAt: null,
+      source: "magnate",
     };
   }
 

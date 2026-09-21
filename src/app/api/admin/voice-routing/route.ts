@@ -1,16 +1,34 @@
 import { NextResponse } from "next/server";
 import { getCurrentUser } from "@/lib/auth";
 import db from "@/lib/db";
-import { addonStatus } from "@/lib/addons";
-import type { User } from "@/lib/types";
+import { routingGate } from "@/lib/addons";
 
 export const dynamic = "force-dynamic";
 
-function requireAdmin(user: User | null): NextResponse | null {
-  if (!user || user.role !== "admin") {
-    return NextResponse.json({ error: "Admin access required" }, { status: 403 });
-  }
-  return null;
+/**
+ * Machine-to-machine token for the PBX-side renderer.
+ *
+ * `pbx/bootstrap-zeus-pbx.sh` (and the `zeus-pbx-sync` timer) fetch this route
+ * to get the routing plan, exactly as the docstring below documents. That call
+ * is machine-to-machine, so it cannot carry an operator's session cookie:
+ * when `PBX_SYNC_TOKEN` is set, the same value in `Authorization: Bearer` is
+ * accepted — the convention `/api/agent/transfer-resolve` uses for dograh.
+ * Unset (the default) leaves the route admin-session-only.
+ */
+const SYNC_TOKEN = (process.env.PBX_SYNC_TOKEN ?? "").trim();
+
+function authorizedSync(req: Request): boolean {
+  if (!SYNC_TOKEN) return false;
+  const header = req.headers.get("authorization") ?? "";
+  if (!header.startsWith("Bearer ")) return false;
+  return header.slice("Bearer ".length).trim() === SYNC_TOKEN;
+}
+
+async function authorized(req: Request): Promise<boolean> {
+  if (authorizedSync(req)) return true;
+  const user = await getCurrentUser();
+  if (!user || user.role !== "admin") return false;
+  return true;
 }
 
 interface AccountRow {
@@ -35,14 +53,20 @@ interface AccountRow {
  *
  * The Capstone flag is re-checked against Magnate here — this route is the
  * routing authority, and the PBX refuses the hand-off for anything it does
- * not mark. The check refreshes the account_addons cache in passing; a
- * failure to reach Magnate leaves the account OFF (addonEnabled fails
- * closed), so an outage cannot hand an unpaid account the product.
+ * not mark. The check refreshes the account_addons cache in passing.
+ *
+ * The gate follows Capstone's policy (see `src/lib/addons.ts`): only an
+ * authoritative "no" turns the hand-off off, so an unconfigured SKU or a
+ * billing outage does not un-wire paying customers' lines. The one case this
+ * route will not answer is an INDEcisive gate (a rejected Magnate token):
+ * rather than publish a plan that reads as "not entitled" for every account,
+ * it returns 503 and publishes nothing, so the PBX keeps its last good
+ * fragment. Capstone's sync aborts on the same condition.
  */
-export async function GET() {
-  const user = await getCurrentUser();
-  const forbidden = requireAdmin(user);
-  if (forbidden) return forbidden;
+export async function GET(req: Request) {
+  if (!(await authorized(req))) {
+    return NextResponse.json({ error: "Admin access required" }, { status: 403 });
+  }
 
   const rows = db
     .prepare(
@@ -68,19 +92,38 @@ export async function GET() {
   );
 
   const accounts = [];
-  // "Not entitled" and "could not check" both leave the hand-off off, but
-  // they are different operator problems — a lapsed subscription versus a
-  // billing outage — so they are reported separately.
+  // "Not entitled" and "could not check" are different operator problems — a
+  // lapsed subscription versus a billing config error — so they are reported
+  // separately, and only the former is a routing verdict.
   const unverified: Array<{ did: string; reason: string }> = [];
+  let gateMode = "entitled";
+  let gateReason = "ok";
 
   for (const row of rows) {
-    const status = await addonStatus("capstone", { user: row.email });
-    const entitled = status.state === "enabled";
+    const gate = await routingGate("capstone", { user: row.email });
+    if (gate.indecisive) {
+      // Refuse the whole plan: a per-account 0 here would un-wire every line on
+      // what may be nothing worse than a stale token.
+      return NextResponse.json(
+        {
+          error: "entitlement_gate_indecisive",
+          mode: gate.mode,
+          reason: gate.reason,
+          did: row.did,
+          message:
+            "Magnate rejected the entitlements check — refusing to publish a " +
+            "routing plan. Fix ENTITLEMENTS_API_TOKEN and retry.",
+        },
+        { status: 503 },
+      );
+    }
 
-    if (!entitled) unverified.push({ did: row.did, reason: status.reason });
+    gateMode = gate.mode;
+    gateReason = gate.reason;
+    if (!gate.entitled) unverified.push({ did: row.did, reason: gate.reason });
 
     try {
-      cacheStatement.run(row.user_id, "capstone", entitled ? 1 : 0);
+      cacheStatement.run(row.user_id, "capstone", gate.entitled ? 1 : 0);
     } catch {
       // Best-effort cache; the rendered plan below is the authority.
     }
@@ -88,7 +131,7 @@ export async function GET() {
     accounts.push({
       did: row.did,
       agent: row.agent_slug ?? undefined,
-      capstone_addon: entitled,
+      capstone_addon: gate.entitled,
       provider: row.provider ?? undefined,
       audio_profile: row.audio_profile ?? undefined,
     });
@@ -96,6 +139,7 @@ export async function GET() {
 
   return NextResponse.json({
     generated_at: new Date().toISOString(),
+    gate: { mode: gateMode, reason: gateReason },
     accounts,
     capstone_not_enabled: unverified,
   });

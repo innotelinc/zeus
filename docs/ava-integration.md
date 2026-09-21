@@ -120,21 +120,43 @@ operator — a caller is never dropped silently.
 ### The two answers gating must give
 
 `src/lib/addons.ts` deliberately exposes two functions, because conflating them
-is how paid features leak:
+is how paid features leak.
 
-* **`addonEnabled()` — routing.** Granted only on an explicit
-  `entitled === true`. Billing unreachable, or standalone mode with no billing
-  at all, is **not** granted. An outage must not hand an unpaid account the
-  product; the PBX enforces the same rule independently.
-* **`addonStatus()` — UI.** Returns `enabled` / `disabled` / **`unknown`**, so
-  the dashboard can say "we couldn't check" instead of telling a customer their
-  add-on is off when nobody could reach billing. Nav entries and screens hide
-  on anything but `enabled` — a dead link is worse than no link.
+**The policy is Capstone's policy.** Capstone gates the *same* SKUs on the
+*same* Magnate instance, and the two products disagreeing about what an answer
+means is what left every DID unwired while Capstone believed the numbers were
+paid for. Both now read one vocabulary — Capstone's — where **only an
+authoritative "no" denies**:
+
+| Magnate / config         | mode           | routing  |
+|--------------------------|----------------|----------|
+| `MAGNATE_PUBLIC_URL` unset | `standalone` | enabled  |
+| URL set, SKU plan unset  | `disabled`     | enabled  |
+| unreachable / bad body   | `open`         | enabled  |
+| `entitled: true`         | `entitled`     | enabled  |
+| `entitled: false`, or 404 | `not_entitled` | **denied** |
+| 401                      | `unauthorized` | withheld |
+
+* **`routingGate()` — routing.** The writers' entry point. Denies on
+  `not_entitled` only; reports `unauthorized` as *indecisive* so the caller
+  withholds the plan entirely instead of publishing one that would un-wire
+  every route on a bad token (Capstone's sync aborts on the same condition).
+* **`addonEnabled()` — a plain boolean** for callers that cannot withhold.
+  Also denies on `unauthorized`.
+* **`addonStatus()` — UI.** Returns `enabled` / `disabled` / **`unknown`**. Only
+  a config error is `unknown`; the three fail-open modes render as `enabled`
+  with a `reason` naming which one it was, so the screen matches routing while
+  staying auditable. Nav entries and screens hide on anything but `enabled`.
+
+Because only an explicit slug turns a gate on, an unconfigured SKU means the
+gate is **inactive**, not closed. Set `MAGNATE_AGENTS_PLAN` and
+`MAGNATE_CAPSTONE_PLAN` (`MAGNATE_AGENT_PLAN` is honoured for the Capstone SKU —
+the name Capstone's own sync uses) to actually gate a SKU.
 
 `capstone` requires `agents`: Capstone is reached *from* an AVA agent, so it is
-unreachable without it. Both the API routes and the routing export write the
-decision through to `account_addons`, a cache that can only ever be *behind*
-billing — a missing row means not entitled.
+unreachable without it. The API routes and the routing export write the
+decision through to `account_addons`; the PBX renders from the portal API, not
+from that cache, so the cache is an audit trail rather than the source.
 
 ---
 
@@ -206,9 +228,13 @@ docker exec zeus-freepbx asterisk -rx "dialplan show zeus-ai-handoff"
 
 Two checks that catch the failures this integration is most exposed to:
 
-* **Entitlement fail-closed.** Remove an account's Capstone add-on, re-render,
-  and confirm the rendered block carries `ZEUS_CAPSTONE_ADDON=0` — a hand-off
-  attempt then reaches `refused`, not Capstone.
+* **Entitlement denies only on a real "no".** With no SKU configured the render
+  must carry `ZEUS_CAPSTONE_ADDON=1` (gate inactive — matching Capstone). Then
+  set `MAGNATE_CAPSTONE_PLAN` to a slug Magnate reports as `entitled: false`
+  (or 404), re-render, and confirm it flips to `ZEUS_CAPSTONE_ADDON=0` — a
+  hand-off attempt then reaches `refused`, not Capstone. A wrong
+  `ENTITLEMENTS_API_TOKEN` must make the portal answer **503** and the PBX keep
+  its last good fragment, never a plan full of zeros.
 * **Model liveness.** After any gateway change, re-probe the pinned model
   before assuming calls still work: a listed-but-absent model answers 400 and
   a slow free route answers 502 *after 30 s*, both of which look like "the
