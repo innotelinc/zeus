@@ -116,7 +116,17 @@ AMI_PERMIT_LINE="permit = ${AMI_PERMIT}"
 #       pbx/setup-cloudonix-trunk.sh renders both from CLOUDONIX_* and keeps
 #       their #include lines alive. Check them with that script's own --check
 #       instead of staging them here (two owners would fight over the file).
-ENTRYPOINT_OWNED="rtp_custom.conf pjsip_custom_cloudonix.conf extensions_custom_cloudonix.conf"
+#   manager_custom.conf — the AMI users. Not ours on a running stack:
+#       docker-entrypoint-full.sh rewrites the secrets, re-adds the
+#       [ucp_events] user FreePBX's UCP needs, normalises every permit to
+#       loopback + the LAN subnet, and converges UCPMGRPASS onto the real
+#       secret — on every boot. FreePBX's `ucp` module and the estate's own
+#       [pbxportal] user live in that file too, and this repo renders neither,
+#       so a wholesale copy silently deleted both. (On bare metal the owner is
+#       scripts/setup.sh, the same split as rtp_custom.conf above.) Staging it
+#       here made the two writers flap: apply, then the next container boot
+#       puts it back.
+ENTRYPOINT_OWNED="rtp_custom.conf pjsip_custom_cloudonix.conf extensions_custom_cloudonix.conf manager_custom.conf"
 
 _is_entrypoint_owned() {
   local name="$1" owned
