@@ -143,9 +143,174 @@ services:
     networks:
       - pbx-net
 
+  # ═══════════════════════════════════════════════════════════════════
+  # AVA — first-response AI voice agent (the `voice` profile)
+  #
+  # Answers every inbound DID: greeting, IVR, business functions,
+  # blind/attended transfers, and the handoff into Capstone's interview
+  # agent. See docs/ava-integration.md for why AVA fronts the calls and
+  # Capstone (dograh) stays behind the handoff.
+  #
+  #   1. bash scripts/fetch-ava.sh          # clone AVA at the pinned commit
+  #   2. docker compose --profile voice up -d
+  #
+  # Profile-gated on purpose: these services build AVA from ./vendor/ava,
+  # so a portal-only host (no AVA checkout) must still be able to run a
+  # plain `docker compose up`.
+  # ═══════════════════════════════════════════════════════════════════
+
+  # The engine that answers calls. Host networking is required rather than
+  # cosmetic: Asterisk lives inside the FreePBX container and must dial the
+  # engine back for AudioSocket media, and ARI is bound to the host's LAN
+  # address (192.168.1.30:8088). Neither leg is expressible with published
+  # ports.
+  ai-engine:
+    profiles: ["voice"]
+    build:
+      context: ${AVA_SRC:-./vendor/ava}
+      dockerfile: Dockerfile
+      args:
+        ASTERISK_GID: ${ASTERISK_GID:-995}
+    image: zeus-ava-engine:${AVA_VERSION:-v7.6.1}
+    container_name: zeus-ava-engine
+    restart: unless-stopped
+    network_mode: host
+    environment:
+      # ARI. The user is AVA's own (pbx/asterisk/ari.conf renders it from
+      # AVA_ARI_USER/AVA_ARI_SECRET) — the portal's ARI user is separate.
+      - ASTERISK_HOST=${AVA_ASTERISK_HOST:-192.168.1.30}
+      - ASTERISK_ARI_PORT=${AVA_ASTERISK_ARI_PORT:-8088}
+      - ASTERISK_ARI_USERNAME=${AVA_ARI_USER:-zeus-ava}
+      - ASTERISK_ARI_PASSWORD=${AVA_ARI_SECRET:-}
+      # Reasoning goes to the estate's canonical gateway, never to a
+      # cloud API directly.
+      - OMNIROUTE_API_KEY=${OMNIROUTE_API_KEY:-}
+      - AVA_LLM_BASE_URL=${AVA_LLM_BASE_URL:-http://192.168.1.46:20129/v1}
+      - AVA_LLM_MODEL=${AVA_LLM_MODEL:-gemini/gemini-3.1-flash-lite}
+      # On-box speech (local_ai_server) — the pipeline's STT/TTS.
+      - LOCAL_WS_URL=${LOCAL_WS_URL:-ws://127.0.0.1:8765}
+      - LOCAL_WS_CHUNK_MS=${LOCAL_WS_CHUNK_MS:-320}
+      - LOCAL_WS_CONNECT_TIMEOUT=${LOCAL_WS_CONNECT_TIMEOUT:-2.0}
+      - LOCAL_WS_RESPONSE_TIMEOUT=${LOCAL_WS_RESPONSE_TIMEOUT:-5.0}
+      # Address Asterisk is told to dial for AudioSocket. Must be an address
+      # that resolves to this host FROM INSIDE the FreePBX container.
+      - AVA_ENGINE_ADVERTISE_HOST=${AVA_ENGINE_ADVERTISE_HOST:-192.168.1.30}
+      - HEALTH_BIND_HOST=0.0.0.0
+      - HEALTH_BIND_PORT=${AVA_HEALTH_PORT:-15000}
+      - ELEVENLABS_API_KEY=${ELEVENLABS_API_KEY:-}
+      - TZ=${TZ:-America/New_York}
+      - PYTHONUNBUFFERED=1
+    volumes:
+      # Runtime config, seeded from the tracked template by fetch-ava.sh and
+      # then editable by the admin UI. Kept out of the repo so an operator
+      # edit does not show up as a diff against config/ava/ai-agent.yaml.
+      - ./data/ava/project/config/ai-agent.yaml:/app/config/ai-agent.yaml:ro
+      # agents.db lives here and is shared with the admin UI (it is the
+      # routing source of truth: AVA v7.4+ is agent-only and fails closed).
+      - ./data/ava/data:/app/data
+      - ./data/ava/models:/app/models
+      - ava-media:/mnt/asterisk_media
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:${AVA_HEALTH_PORT:-15000}/metrics >/dev/null || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
+
+  # AVA's operator API + console. The Zeus portal proxies it server-side
+  # (src/lib/ava.ts) and owns the account-level gating, so this port is
+  # published on loopback only: exposing the engine's admin API on the LAN
+  # would put agent prompts and call transcripts on the wire.
+  ai-engine-admin:
+    profiles: ["voice"]
+    build:
+      context: ${AVA_SRC:-./vendor/ava}
+      dockerfile: admin_ui/Dockerfile
+    image: zeus-ava-admin:${AVA_VERSION:-v7.6.1}
+    container_name: zeus-ava-admin
+    restart: unless-stopped
+    environment:
+      - PROJECT_ROOT=/app/project
+      # Signs the admin session tokens the portal obtains on login. AVA's own
+      # default is a PUBLISHED dev placeholder, so this must be set — but it is
+      # required, not enforced with ${VAR:?}: compose interpolates the whole
+      # file regardless of the active profile, and a `:?` here would make even
+      # `docker compose up` (the portal-only deployment) fail before it starts.
+      # scripts/fetch-ava.sh refuses to prepare a voice deployment without it,
+      # which is the documented path.
+      - JWT_SECRET=${AVA_ADMIN_JWT_SECRET:-}
+      - UVICORN_HOST=0.0.0.0
+      - UVICORN_PORT=8000
+      - TZ=${TZ:-America/New_York}
+      - ASTERISK_HOST=${AVA_ASTERISK_HOST:-192.168.1.30}
+      - ASTERISK_ARI_USERNAME=${AVA_ARI_USER:-zeus-ava}
+      - ASTERISK_ARI_PASSWORD=${AVA_ARI_SECRET:-}
+      - OMNIROUTE_API_KEY=${OMNIROUTE_API_KEY:-}
+    volumes:
+      # PROJECT_ROOT: config/ai-agent.yaml + config/users.json + .env.
+      # Writable — this is where the admin UI persists agent and config edits.
+      - ./data/ava/project:/app/project
+      - ./data/ava/data:/app/data
+      - ./data/ava/models:/app/models
+      # NOTE: AVA's shipped compose also mounts /var/run/docker.sock so its
+      # console can start/stop containers. That is root-equivalent host
+      # access, so it is deliberately NOT mounted here; the Zeus portal is
+      # the operator console. Compose an opt-in override if you want it.
+    ports:
+      - "127.0.0.1:${AVA_ADMIN_PORT:-8770}:8000"
+    depends_on:
+      - ai-engine
+
+  # On-box STT/TTS/LLM for the zeus_hybrid pipeline (Vosk/Piper by default;
+  # Faster-Whisper/Kokoro when the host has a GPU). Slow to start — models
+  # load at boot — but it is what keeps caller audio on the premises.
+  local-ai-server:
+    profiles: ["voice"]
+    build:
+      context: ${AVA_SRC:-./vendor/ava}/local_ai_server
+      dockerfile: Dockerfile
+      args:
+        - INCLUDE_VOSK=${INCLUDE_VOSK:-true}
+        - INCLUDE_SHERPA=${INCLUDE_SHERPA:-true}
+        - INCLUDE_FASTER_WHISPER=${INCLUDE_FASTER_WHISPER:-false}
+        - INCLUDE_WHISPER_CPP=${INCLUDE_WHISPER_CPP:-false}
+        - INCLUDE_PIPER=${INCLUDE_PIPER:-true}
+        - INCLUDE_KOKORO=${INCLUDE_KOKORO:-true}
+        - INCLUDE_LLAMA=${INCLUDE_LLAMA:-true}
+    image: zeus-ava-local-ai:${AVA_VERSION:-v7.6.1}
+    container_name: zeus-ava-local-ai
+    restart: unless-stopped
+    network_mode: host
+    environment:
+      - LOCAL_STT_BACKEND=${LOCAL_STT_BACKEND:-vosk}
+      - LOCAL_TTS_BACKEND=${LOCAL_TTS_BACKEND:-piper}
+      - LOCAL_WS_HOST=0.0.0.0
+      - LOCAL_WS_PORT=${LOCAL_WS_PORT:-8765}
+      - LOCAL_WS_AUTH_TOKEN=${LOCAL_WS_AUTH_TOKEN:-}
+      - TZ=${TZ:-America/New_York}
+      - PYTHONUNBUFFERED=1
+    volumes:
+      - ./data/ava/models:/app/models
+      - ./data/ava/data:/app/data
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import socket;socket.create_connection(('127.0.0.1',${LOCAL_WS_PORT:-8765}),3)\" || exit 1"]
+      interval: 60s
+      timeout: 10s
+      retries: 5
+      start_period: 120s
+
   # ── OmniRoute: single AI model gateway for the entire stack ──────────
   # All subsystems (Capstone, Rizzaura, Atlas, AthenIQ) point here.
+  #
+  # Profile-gated: the CANONICAL gateway for the estate runs on 192.168.1.46
+  # (published through the oauth2-proxy door on :20129), and every consumer
+  # here — the portal, AVA, Capstone — points at that one. Starting this
+  # service would create a second, empty gateway on :20128 that answers
+  # anonymously and holds none of the provider connections, which is exactly
+  # the drift that made "the gateway" ambiguous. Enable deliberately with
+  # `docker compose --profile gateway up -d omniroute`.
   omniroute:
+    profiles: ["gateway"]
     image: ${OMNIROUTE_IMAGE:-diegosouzapw/omniroute:latest}
     container_name: zeus-omniroute
     restart: unless-stopped
@@ -167,6 +332,8 @@ services:
 volumes:
   pbx-data:
     name: zeus-portal-data
+  # AudioSocket/ExternalMedia scratch space shared with the PBX container.
+  ava-media:
   omniroute-data:
 
 networks:

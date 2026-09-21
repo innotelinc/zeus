@@ -16,8 +16,11 @@ import {
   LogoutIcon,
   UserIcon,
   HeartPulseIcon,
+  SparklesIcon,
+  FileTextIcon,
 } from "@/components/icons";
 import type { User, FreePBXExtension } from "@/lib/types";
+import type { AddonSku, AddonUiState } from "@/lib/addons";
 import { planLabel } from "@/lib/client-api";
 import { ToastProvider } from "@/components/ToastProvider";
 import { ThemeProvider, useTheme } from "@/components/ThemeProvider";
@@ -33,16 +36,33 @@ interface Props {
   extensions: FreePBXExtension[];
   /** White-label brand name (reseller domain override) — null = platform brand. */
   brand?: string | null;
+  /**
+   * Add-on state per voice SKU, resolved server-side by the dashboard layout.
+   * A nav entry appears only when its add-on is enabled — the screens behind
+   * them (Voice, Capstone) gate themselves too, so hiding the link and
+   * refusing the route come from the same decision.
+   */
+  voiceAddons?: Partial<Record<AddonSku, AddonUiState>>;
   children: React.ReactNode;
 }
 
-const navItems = [
+interface NavItem {
+  href: string;
+  label: string;
+  icon: ({ size }: { size?: number }) => React.ReactElement;
+  /** Only shown when this add-on is enabled. */
+  addon?: AddonSku;
+}
+
+const navItems: NavItem[] = [
   { href: "/dashboard", label: "Phone Numbers", icon: PhoneIcon },
   { href: "/dashboard/messages", label: "Messages", icon: MessageIcon },
   { href: "/dashboard/contacts", label: "Contacts", icon: UserIcon },
   { href: "/dashboard/fax", label: "Fax", icon: FaxIcon },
   { href: "/dashboard/voicemail", label: "Voicemail", icon: VoicemailIcon },
   { href: "/dashboard/history", label: "Call History", icon: HistoryIcon },
+  { href: "/dashboard/voice", label: "Voice Agent", icon: SparklesIcon, addon: "agents" },
+  { href: "/dashboard/capstone", label: "Interviews", icon: FileTextIcon, addon: "capstone" },
   { href: "/dashboard/billing", label: "Billing", icon: CreditCardIcon },
   { href: "/dashboard/settings", label: "Settings", icon: CogIcon },
   { href: "/dashboard/health", label: "Health", icon: HeartPulseIcon },
@@ -83,8 +103,15 @@ function ThemeToggle() {
   );
 }
 
-export function DashboardShell({ user, extensions, brand, children }: Props) {
+export function DashboardShell({ user, extensions, brand, voiceAddons, children }: Props) {
   const pathname = usePathname();
+
+  // Add-on-gated entries are dropped when the add-on is not enabled. An
+  // "unknown" state (billing unreachable) also hides them: the screen behind
+  // would refuse to render anyway, and a dead link is worse than no link.
+  const visibleNav = navItems.filter(
+    (item) => !item.addon || voiceAddons?.[item.addon] === "enabled",
+  );
   const [mobileOpen, setMobileOpen] = useState(false);
   const [amiConnected, setAmiConnected] = useState<boolean | null>(null);
   const [activeCalls, setActiveCalls] = useState(0);
@@ -183,7 +210,7 @@ export function DashboardShell({ user, extensions, brand, children }: Props) {
         {/* Desktop sidebar */}
         <aside className="hidden w-56 shrink-0 sm:block">
           <nav className="sticky top-24 space-y-1">
-            {navItems.map((item) => {
+            {visibleNav.map((item) => {
               const active = isActive(item.href);
               return (
                 <Link
@@ -224,7 +251,7 @@ export function DashboardShell({ user, extensions, brand, children }: Props) {
         {mobileOpen && (
           <div className="fixed inset-0 top-16 z-30 bg-ink-950/95 backdrop-blur-sm sm:hidden">
             <nav className="flex flex-col gap-1 p-5">
-              {navItems.map((item) => {
+              {visibleNav.map((item) => {
                 const active = isActive(item.href);
                 return (
                   <Link

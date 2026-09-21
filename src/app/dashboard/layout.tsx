@@ -2,6 +2,7 @@ import type { Metadata } from "next";
 import { headers } from "next/headers";
 import { requireDashboardUser } from "@/lib/dashboard-auth";
 import { brandNameFor } from "@/lib/resellers";
+import { addonStatuses } from "@/lib/addons";
 import db from "@/lib/db";
 import { DashboardShell } from "@/components/dashboard/DashboardShell";
 import type { FreePBXExtension } from "@/lib/types";
@@ -26,8 +27,22 @@ export default async function DashboardLayout({
     .prepare("SELECT * FROM freepbx_extensions WHERE user_id = ? ORDER BY created_at DESC")
     .all(user.id) as FreePBXExtension[];
 
+  // Resolved here, server-side, so the Voice and Capstone entries appear only
+  // for accounts that actually hold the add-ons — and from the same helper
+  // the routing path uses, so the nav can never advertise a screen whose
+  // routing is refused.
+  const statuses = await addonStatuses({ user: user.email });
+  const voiceAddons = Object.fromEntries(
+    statuses.map((status) => [status.sku, status.state]),
+  );
+
   return (
-    <DashboardShell user={user} extensions={extensions} brand={brand}>
+    <DashboardShell
+      user={user}
+      extensions={extensions}
+      brand={brand}
+      voiceAddons={voiceAddons}
+    >
       {children}
     </DashboardShell>
   );

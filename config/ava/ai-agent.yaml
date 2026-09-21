@@ -1,0 +1,176 @@
+# ═══════════════════════════════════════════════════════════════════
+# Zeus — AVA (Asterisk AI Voice Agent) engine configuration
+#
+# AVA is the FIRST RESPONSE for every inbound call on the Zeus voice
+# plane: it answers, runs IVR/business functions, transfers, and hands
+# an interview call to Capstone (dograh) only when the account holds the
+# Capstone add-on. See docs/ava-integration.md.
+#
+# Mounted read-only at /app/config/ai-agent.yaml. Agents (routing
+# targets, prompts, tool scopes) are NOT in this file: AVA v7.4+ is
+# agent-only and fails closed, so agents live in agents.db and are
+# written through the admin API — which the Zeus portal drives
+# (src/lib/ava.ts). The dialplan selects one per call with AI_AGENT.
+#
+# Secrets and host-specific values come from the environment (.env); the
+# ${NAME:-default} references below are resolved by AVA at load time.
+# ═══════════════════════════════════════════════════════════════════
+
+config_version: 6
+
+# Privacy-first default: speech never leaves the box (local STT/TTS),
+# and the only network hop for reasoning is the LAN gateway.
+active_pipeline: zeus_hybrid
+default_provider: zeus_hybrid
+
+# ── Asterisk / ARI ────────────────────────────────────────────────
+# app_name is the Stasis application the dialplan enters:
+#   Stasis(asterisk-ai-voice-agent)
+asterisk:
+  app_name: asterisk-ai-voice-agent
+  ws_ping_interval_sec: 10
+  ws_ping_timeout_sec: 10
+
+# ── Audio transport ──────────────────────────────────────────────
+# AudioSocket is the recommended transport for a co-located engine: no
+# shared storage required (ExternalMedia file playback does).
+audio_transport: "audiosocket"
+downstream_mode: "stream"
+
+audiosocket:
+  # Listen on every local interface; Asterisk runs inside the FreePBX
+  # container and dials back across the bridge.
+  host: "0.0.0.0"
+  # The address Asterisk is told to dial. ARI is published on the host's
+  # LAN address (192.168.1.30:8088), so the engine must advertise the
+  # same address — 127.0.0.1 would resolve inside the PBX container.
+  advertise_host: "${AVA_ENGINE_ADVERTISE_HOST:-192.168.1.30}"
+  port: 8090
+  format: "ulaw"            # 8 kHz — no resampling on the telephony leg
+
+# ── Pipelines ────────────────────────────────────────────────────
+pipelines:
+  # Default: local STT/TTS, gateway LLM. Local speech keeps caller audio
+  # on-premises; the LLM hop is the LAN gateway, measured ~2 ms.
+  zeus_hybrid:
+    stt: local_stt
+    llm: openai_llm
+    tts: local_tts
+    options:
+      stt:
+        chunk_ms: 320
+        streaming: true
+        stream_format: "pcm16_16k"
+      llm:
+        # OmniRoute speaks the OpenAI wire format, so the openai provider
+        # is pointed at it. One gateway for the estate: the canonical
+        # instance is on 192.168.1.46 (see 2-voice/capstone/docs/networking.md).
+        base_url: "${AVA_LLM_BASE_URL:-http://192.168.1.46:20129/v1}"
+        # Verified live against the gateway before being pinned here. Model
+        # ids appear in /v1/models even when the upstream provider's live
+        # catalog omits them — those answer 400, and slow free routes
+        # answer 502 after 30 s (that pair produced the original
+        # "Gateway responded 502" report). Both ids below answered 200:
+        # gemini/gemini-3.1-flash-lite in 1.5 ms, gemini/gemini-2.5-flash
+        # in 1.9 ms. Keep the fallback to a working id.
+        model: "${AVA_LLM_MODEL:-gemini/gemini-3.1-flash-lite}"
+        temperature: 0.4
+        max_tokens: 200
+      tts:
+        format:
+          encoding: ulaw
+          sample_rate: 8000
+
+  # Alternative when a premium cloud voice is licensed for the account.
+  # Requires ELEVENLABS_API_KEY; not the default because it puts caller
+  # audio and transcripts through a third party.
+  zeus_premium:
+    stt: local_stt
+    llm: openai_llm
+    tts: elevenlabs_tts
+    options:
+      stt:
+        chunk_ms: 320
+        streaming: true
+        stream_format: "pcm16_16k"
+      llm:
+        base_url: "${AVA_LLM_BASE_URL:-http://192.168.1.46:20129/v1}"
+        model: "${AVA_LLM_MODEL:-gemini/gemini-3.1-flash-lite}"
+        temperature: 0.4
+        max_tokens: 200
+      tts:
+        format:
+          encoding: ulaw
+          sample_rate: 8000
+
+# ── Providers ────────────────────────────────────────────────────
+providers:
+  # On-box speech. Served by the local_ai_server service (Vosk/Whisper
+  # STT, Piper/Kokoro TTS) over its websocket.
+  local:
+    enabled: true
+    ws_url: "${LOCAL_WS_URL:-ws://127.0.0.1:8765}"
+    tool_call_policy: "${LOCAL_TOOL_CALL_POLICY:-auto}"
+    tool_gateway_enabled: "${LOCAL_TOOL_GATEWAY_ENABLED:-true}"
+    connect_timeout_sec: ${LOCAL_WS_CONNECT_TIMEOUT:=2.0}
+    response_timeout_sec: ${LOCAL_WS_RESPONSE_TIMEOUT:=5.0}
+    chunk_ms: ${LOCAL_WS_CHUNK_MS:=320}
+
+  # LLM reasoning. The key is the estate's gateway key, not an OpenAI
+  # key — the base_url in each pipeline redirects it to OmniRoute.
+  openai:
+    enabled: true
+    api_key: "${OMNIROUTE_API_KEY}"
+
+  # Optional premium voice (only used by the zeus_premium pipeline).
+  elevenlabs_tts:
+    type: elevenlabs
+    enabled: "${ELEVENLABS_API_KEY:+true}"
+    capabilities:
+      - tts
+    voice_id: "${ELEVENLABS_VOICE_ID:-21m00Tcm4TlvDq8ikWAM}"
+    model_id: "eleven_turbo_v2_5"
+    output_format: "ulaw_8000"
+
+# ── LLM defaults ─────────────────────────────────────────────────
+llm:
+  initial_greeting: "Thank you for calling. How can I help you today?"
+  prompt: >-
+    You are the first-response voice agent for this phone system. Answer
+    briefly (one or two sentences), confirm what the caller needs, and use
+    a transfer tool when one fits. Never invent prices, hours, policies,
+    extension numbers, or transfer targets: if you cannot help, take a
+    message or transfer to the operator. Do not read internal identifiers
+    or tool output aloud.
+
+# ── Turn-taking ──────────────────────────────────────────────────
+barge_in:
+  enabled: true
+  energy_threshold: 700
+  initial_protection_ms: 100
+  min_ms: 150
+  post_tts_end_protection_ms: 100
+
+vad:
+  enhanced_enabled: true
+  use_provider_vad: false
+  min_utterance_duration_ms: 600
+  max_utterance_duration_ms: 10000
+  utterance_padding_ms: 200
+
+streaming:
+  chunk_size_ms: 20
+  jitter_buffer_ms: 950
+  sample_rate: 8000
+  keepalive_interval_ms: 5000
+
+# ── Silence watchdog ─────────────────────────────────────────────
+no_input:
+  enabled: true
+  inbound_enabled: true
+  outbound_enabled: false
+  initial_timeout_sec: 30
+  grace_timeout_sec: 15
+  max_check_ins: 1
+  check_in_message: "Are you still there?"
+  final_message: "I still can't hear you, so I'll end the call now. Goodbye."

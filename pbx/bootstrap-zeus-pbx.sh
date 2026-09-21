@@ -32,6 +32,9 @@
 # Reads from pbx.env (scripts/pbx.env.example) or the environment:
 #   FREEPBX_AMI_USER  (default pbxportal)   FREEPBX_AMI_SECRET
 #   FREEPBX_ARI_USER  (default pbxportal)   FREEPBX_ARI_SECRET
+#   AVA_ARI_USER      (default zeus-ava)    AVA_ARI_SECRET (generated if blank
+#                                            — persist it; the AVA voice engine
+#                                            authenticates with this pair)
 #   ARI_HTTP_PORT     (default 8088)        AMI_PERMIT (permit line, default:
 #                                            this host's LAN subnet — never a
 #                                            docker bridge range)
@@ -65,6 +68,17 @@ fi
 PBX_TARGET="${PBX_TARGET:-local}"
 FREEPBX_AMI_USER="${FREEPBX_AMI_USER:-pbxportal}"
 FREEPBX_ARI_USER="${FREEPBX_ARI_USER:-pbxportal}"
+# AVA (first-response voice agent) gets its own ARI user: it owns the
+# asterisk-ai-voice-agent Stasis application, while the portal user only
+# originates/hangs up. Generate one when the operator leaves it blank so a
+# fresh PBX is AVA-ready without hand-editing pbx.env — and keep the engine
+# and the PBX reading the SAME value (compose passes AVA_ARI_* through).
+AVA_ARI_USER="${AVA_ARI_USER:-zeus-ava}"
+if [ -z "${AVA_ARI_SECRET:-}" ]; then
+  AVA_ARI_SECRET="$(openssl rand -hex 16)"
+  echo "  ! AVA_ARI_SECRET not set — generated one for this run; persist it in" >&2
+  echo "    pbx.env or the AVA engine will fail ARI authentication after a restart" >&2
+fi
 ARI_HTTP_PORT="${ARI_HTTP_PORT:-8088}"
 : "${FREEPBX_AMI_SECRET:?FREEPBX_AMI_SECRET is required (see scripts/pbx.env.example)}"
 : "${FREEPBX_ARI_SECRET:?FREEPBX_ARI_SECRET is required (see scripts/pbx.env.example)}"
@@ -115,6 +129,8 @@ render_fragments() {
       -e "s/__AMI_SECRET__/${FREEPBX_AMI_SECRET}/g" \
       -e "s/__ARI_USER__/${FREEPBX_ARI_USER}/g" \
       -e "s/__ARI_SECRET__/${FREEPBX_ARI_SECRET}/g" \
+      -e "s/__AVA_ARI_USER__/${AVA_ARI_USER}/g" \
+      -e "s/__AVA_ARI_SECRET__/${AVA_ARI_SECRET}/g" \
       -e "s/__ARI_HTTP_PORT__/${ARI_HTTP_PORT}/g" \
       -e "s|__AMI_PERMIT__|${AMI_PERMIT_LINE}|g" \
       "$frag" > "${STAGE_DIR}/$(basename "$frag")"
