@@ -110,7 +110,11 @@ operator — a caller is never dropped silently.
 | `pbx/asterisk/extensions_custom.conf` | the static dialplan: router, first response, hand-off destinations, refusal |
 | `pbx/asterisk/ari.conf` | AVA's own ARI user, separate from the portal's |
 | `pbx/ava_routing.py` | renders `[zeus-ai-accounts]` from the accounts; **the add-on gate** |
+| `pbx/ava_ari_check.py` | the engine and `ari.conf` must carry one ARI secret; checked by the PBX sync and the deploy script |
+| `scripts/deploy-ava-voice.sh` | the bring-up, in order, with the preflight that refuses to start on a broken credential |
 | `scripts/fetch-ava.sh` | pinned AVA checkout (`5d8f888`, v7.6.1) + runtime seeding + the provenance stamp below |
+| `scripts/ava-admin-password.sh` | rotates AVA's one-time admin password and records it in `.env` |
+| `scripts/env_file.py` | reads/upserts one key in `.env` without disturbing the rest of the file |
 | `src/lib/ava.ts` | server-side AVA admin API client (login, typed failure states) |
 | `src/lib/addons.ts` | add-on gating for UI **and** routing (see below) |
 | `src/app/api/voice/*` | agents, calls, live status, agent mapping |
@@ -163,6 +167,15 @@ from that cache, so the cache is an audit trail rather than the source.
 ## 3. Deploy
 
 ```bash
+# 0. one command, after .env is filled in (below): it preflights, seeds, fetches
+#    the speech models, renders the dialplan, starts the profile and rotates
+#    AVA's admin password. Run it on the PBX host (.30) — the profile is
+#    host-networked, and the script refuses to guess which box that is.
+bash scripts/deploy-ava-voice.sh --check     # verify only, changes nothing
+bash scripts/deploy-ava-voice.sh
+
+# The steps it runs, if you would rather do them by hand:
+
 # 1. add the voice settings to .env (see .env.example: AVA_*, LOCAL_*, OMNIROUTE_API_KEY)
 #    AVA_ADMIN_JWT_SECRET (openssl rand -hex 32) and AVA_ARI_SECRET (openssl rand -hex 16) are required.
 
@@ -180,10 +193,19 @@ bash scripts/fetch-ava.sh
 #      grep AVA_ARI_SECRET .env scripts/pbx.env
 pbx/bootstrap-zeus-pbx.sh
 
-# 4. the voice plane
+# 4. speech models — the server starts without them, logs two "model not found"
+#    lines, and every call then has no speech to work with
+bash scripts/fetch-ava-models.sh
+
+# 5. the voice plane
 docker compose --profile voice up -d
 
-# 5. point the DIDs at AVA (see below) and check
+# 6. AVA mints a one-time admin password on first start and 403s every endpoint
+#    until it is changed; this rotates it and writes the result to .env, which
+#    is where the portal reads it
+bash scripts/ava-admin-password.sh
+
+# 7. point the DIDs at AVA (see below) and check
 docker compose logs -f ai-engine      # expect "Successfully connected to ARI"
 ```
 
@@ -245,10 +267,12 @@ defaults `AI_AGENT` to `receptionist` for a DID with no mapping.
 ## 4. Verify
 
 ```bash
-python3 -m unittest discover -s pbx/tests -v        # routing + gate + converge
-python3 -m unittest discover -s scripts/tests -v    # seeding + runtime-config provenance
+python3 -m unittest discover -s pbx/tests -v        # routing + gate + converge + ARI agreement
+python3 -m unittest discover -s scripts/tests -v    # seeding, provenance, env-file writes
 npm test                                            # portal tests
+bash scripts/deploy-ava-voice.sh --check            # host, credentials, ARI agreement, models
 bash scripts/fetch-ava.sh --check                   # pin, seeded config, provenance
+bash scripts/ava-admin-password.sh --check          # is a first-run rotation still pending?
 docker compose --profile voice config --services    # as above
 
 # AVA actually attached
