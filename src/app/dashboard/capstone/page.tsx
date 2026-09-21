@@ -3,6 +3,7 @@ import { requireDashboardUser } from "@/lib/dashboard-auth";
 import { addonStatus } from "@/lib/addons";
 import db from "@/lib/db";
 import AddonGate from "@/components/dashboard/AddonGate";
+import HandoffSection from "@/components/dashboard/HandoffSection";
 import { FileTextIcon } from "@/components/icons";
 
 export const dynamic = "force-dynamic";
@@ -86,6 +87,10 @@ export default async function CapstonePage() {
           </ul>
         )}
       </section>
+
+      {/* History loads in the browser: confirming a hand-off needs the
+          engine's full call records, which would stall the page. */}
+      <HandoffSection />
     </div>
   );
 }
