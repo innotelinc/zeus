@@ -999,6 +999,48 @@ patch_api_module() {
   fi
 }
 
+# ── Core module: trunk id picker + PJSIP write ──────────────────────────────
+# Two bugs in the core module, in the class that saves trunks through the GUI:
+#
+#  1. Core::addTrunk picks a new trunk's id by scanning the sorted existing ids
+#     against a counter starting at 1. This stack has a trunk with id 0 (the
+#     `custom` VoIP.ms trunk), so the scan breaks on its first iteration and
+#     every new trunk is handed id 1 — whatever already holds it.
+#  2. PJSip::addTrunk is a complete settings write (one INSERT per keyword) but
+#     never clears what is already stored under that id, and the caller only
+#     deletes for the technology recorded in `trunks.tech`. A trunk whose
+#     stored technology disagrees with the rows actually present (the usual
+#     result of switching tech) therefore collides on every save.
+#
+# Together they surface as "SQLSTATE[23000]: Duplicate entry '1-maxchans' for
+# key 'PRIMARY'" and make trunks unsaveable. Both live in files FreePBX ships,
+# not in this repo, so they are re-applied on every boot: an image refresh, or
+# a `fwconsole ma install core` that restores the shipped module, would revert
+# them. The patcher is idempotent and refuses to touch a file it does not
+# recognise rather than guessing. Fail open — a PBX that boots with the bug is
+# better than one that does not boot.
+patch_core_trunk_write() {
+  local patcher=/usr/local/bin/patch-freepbx-trunk-next-id.py
+  if [ ! -f "$patcher" ]; then
+    echo ">>> [core] patcher not in image — skipping (trunk saves may fail)"
+    return 0
+  fi
+  if ! command -v python3 >/dev/null 2>&1; then
+    echo ">>> [core] no python3 — skipping (trunk saves may fail)"
+    return 0
+  fi
+  local out rc
+  out=$(timeout 60 python3 "$patcher" 2>&1); rc=$?
+  # Exit 1 means the module did not look like the version this patch was
+  # written for; 2 means it could not read/back up the file. Both are worth
+  # shouting about but neither may block the boot.
+  printf '%s\n' "$out" | sed 's/^/>>> [core] /'
+  if [ "$rc" -ne 0 ]; then
+    echo ">>> [core] WARNING: trunk patch NOT applied (rc=$rc) — trunk saves may fail"
+  fi
+  return 0
+}
+
 if [ "$START_WEB_UI" = "1" ]; then
   echo ">>> Asterisk is ready — starting web UI..."
 
@@ -1091,6 +1133,9 @@ WSSEOF
   # image-baked patches — re-apply them so the portal's GraphQL API
   # (extensions/voicemail provisioning) keeps working.
   patch_api_module
+  # Same reasoning for core: a module reinstall restores the shipped trunk
+  # code, which makes every trunk save fail with a duplicate-key error.
+  patch_core_trunk_write
   # ── fwconsole chown on init ────────────────────────────────
   # File ownership across the freepbx-www volume drifts whenever the
   # volume outlives the container (image upgrades, module reinstalls,
