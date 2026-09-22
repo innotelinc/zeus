@@ -205,7 +205,16 @@ if [ "$SCOPE" = all ] || [ "$SCOPE" = pbx ]; then
     # instead of reaching an agent — the same caller-visible failure as the
     # routes being wrong, from a different cause, and neither is visible in
     # the files the last section just compared.
-    if docker exec "$FBX" asterisk -rx 'dialplan show zeus-ai-router' 2>/dev/null | grep -q 'zeus-ai-accounts'; then
+    # Captured first, then matched — never `docker exec … | grep -q`. `grep -q`
+    # exits on the first match and closes the pipe, the writer still has output
+    # buffered, and the SIGPIPE it gets back becomes the pipeline's status under
+    # `set -o pipefail`: a *matched* check reported as a failure. Measured here:
+    # the three-priority router context always won that race and the thirteen-
+    # extension accounts context usually lost it, so the same check passed by
+    # hand, passed under `bash -x`, and failed in the run.
+    router_dp="$(docker exec "$FBX" asterisk -rx 'dialplan show zeus-ai-router' 2>/dev/null || true)"
+    accounts_dp="$(docker exec "$FBX" asterisk -rx 'dialplan show zeus-ai-accounts' 2>/dev/null || true)"
+    if grep -q 'zeus-ai-accounts' <<<"$router_dp"; then
       pass "the AVA router is loaded and dispatches into zeus-ai-accounts"
     else
       fail "the AVA router is not in the live dialplan (apply the fragments, then reload)"
@@ -214,7 +223,7 @@ if [ "$SCOPE" = all ] || [ "$SCOPE" = pbx ]; then
     # as an `exten => ` line (that is the .conf syntax). Grepping for the conf
     # syntax reported a loaded context as missing — and it is the context with a
     # per-DID entry in it that matters, so that is what this asserts.
-    if docker exec "$FBX" asterisk -rx 'dialplan show zeus-ai-accounts' 2>/dev/null | grep -qE "^  '[0-9]+" ; then
+    if grep -qE "^  '[0-9]+" <<<"$accounts_dp"; then
       pass "the per-DID accounts context is loaded"
     else
       fail "zeus-ai-accounts has no per-DID entry in the live dialplan"
