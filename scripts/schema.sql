@@ -168,6 +168,23 @@ CREATE TABLE IF NOT EXISTS voice_agents (
   updated_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
 
+-- WHICH Capstone workflow this account's interview line reaches. The add-on
+-- flag says an account bought Capstone; this says which interview it is, and
+-- it is what pbx/ava_routing.py renders as ZEUS_CAPSTONE_TARGET. Per DID
+-- rather than per account because one account may hold several numbers with
+-- different jobs (a support line and an interview line). A row here without a
+-- capstone_addons entitlement is inert: the renderer writes the target only
+-- beside the entitlement, so a lapsed subscription cannot keep naming a
+-- workflow.
+CREATE TABLE IF NOT EXISTS voice_bindings (
+  user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  did TEXT NOT NULL,
+  capstone_binding TEXT,
+  created_at TEXT NOT NULL DEFAULT (datetime('now')),
+  updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+  PRIMARY KEY (user_id, did)
+);
+
 -- Last entitlement decision the portal observed for an account's voice
 -- add-ons. A CACHE of a Magnate decision, not the authority: the routing
 -- renderer treats a missing row as NOT entitled (fail closed), so this cache

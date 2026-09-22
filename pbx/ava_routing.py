@@ -19,12 +19,24 @@ as the rest of the dialplan, so nothing else in the file is disturbed:
     python3 pbx/asterisk_converge.py --target <extensions_custom.conf> \\
         --source /tmp/accounts.conf --owner zeus
 
+It also stamps the call envelope (D2) — ``AI_CALL_ID``, ``AI_ACCOUNT`` and the
+caller's number — once, at ingress, because both agents need the same facts and
+neither should have to ask the other what the call is.
+
 Fail-closed rules, in order of importance:
 
   * An account with no add-on record does NOT get the Capstone handoff. The
     routing block writes ``ZEUS_CAPSTONE_ADDON`` only when the account is
     entitled, and ``[zeus-ai-handoff]`` refuses extension 824 without it — so
     an agent prompt cannot hand a call to a product the account has not bought.
+  * The Capstone *target* is rendered only beside that entitlement. A binding
+    left behind by a lapsed subscription is dropped rather than published: the
+    row that says WHICH workflow an interview reaches must not outlive the row
+    that says the account may reach one at all.
+  * ``ZEUS_CAPSTONE_TARGET`` is always written — with the account's binding, or
+    empty. An entry that simply omitted it would leave whatever the channel was
+    already carrying, and a channel that arrived here from a transfer is how the
+    add-on flag got the same treatment.
   * An account with no agent recorded still gets a route: it falls through to
     the operator rather than being answered by a guessed agent, because AVA
     routing is agent-only and starts the wrong conversation if we guess.
@@ -131,6 +143,18 @@ def plan_from_db(db_path: str) -> dict:
                 if row["agent_slug"]:
                     agents[row["user_id"]] = row["agent_slug"]
 
+        # WHICH Capstone workflow each DID reaches. Keyed by the raw DID as
+        # stored, because it is matched against phone_numbers.did from the same
+        # database — normalizing one side here would only add a way for the two
+        # to disagree.
+        bindings: dict[tuple[str, str], str] = {}
+        if "voice_bindings" in tables:
+            for row in con.execute(
+                "SELECT user_id, did, capstone_binding FROM voice_bindings"
+            ).fetchall():
+                if row["capstone_binding"]:
+                    bindings[(row["user_id"], row["did"])] = row["capstone_binding"]
+
         accounts = []
         for row in con.execute(
             "SELECT user_id, did FROM phone_numbers WHERE status = 'active' "
@@ -140,8 +164,13 @@ def plan_from_db(db_path: str) -> dict:
             accounts.append(
                 {
                     "did": row["did"],
+                    # The portal's own account id, for the call envelope.
+                    "account": row["user_id"],
                     "agent": agents.get(row["user_id"]),
                     "capstone_addon": bool(user_addons.get("capstone")),
+                    "capstone_target": bindings.get(
+                        (row["user_id"], row["did"])
+                    ),
                 }
             )
         return {"accounts": accounts}
@@ -176,7 +205,25 @@ def validate(plan: dict) -> list[dict]:
             "agent": str(agent),
             # Fail closed: anything other than an explicit truthy value is off.
             "capstone_addon": raw.get("capstone_addon") is True,
+            # None unless the plan names one, so the renderer has one shape to
+            # branch on rather than "absent" and "empty" meaning two things.
+            "capstone_target": None,
         }
+
+        account = raw.get("account")
+        if account:
+            if not SAFE_TOKEN_RE.match(str(account)):
+                raise PlanError(f"DID {did}: unsafe account id {account!r}")
+            record["account"] = str(account)
+
+        # The value lands inside DIALPLAN_EXISTS(dograh-inbound,${...},1), so it
+        # must not be able to close that call: the same charset the provider and
+        # audio-profile overrides are held to.
+        target = raw.get("capstone_target")
+        if target:
+            if not SAFE_TOKEN_RE.match(str(target)):
+                raise PlanError(f"DID {did}: unsafe Capstone target {target!r}")
+            record["capstone_target"] = str(target)
 
         provider = raw.get("provider")
         if provider:
@@ -204,11 +251,26 @@ def render(accounts: list[dict]) -> str:
         "; here by ${FROM_DID}; ZEUS_CAPSTONE_ADDON gates the Capstone handoff",
         "; in [zeus-ai-handoff], and is written ONLY for entitled accounts.",
         "; Accounts with no agent fall through to the operator (exten below).",
+        ";",
+        "; The call envelope is stamped here, once, at ingress: AI_CALL_ID is the",
+        "; trace id the whole call carries (so a hand-off is one call, not two).",
+        "; AI_ACCOUNT names the portal account, and AI_CALLER_* the caller. Both",
+        "; agents read these rather than asking each other.",
+        ";",
+        "; ZEUS_CAPSTONE_TARGET names WHICH Capstone workflow an entitled",
+        "; account's interview reaches. It is always written — bound or empty —",
+        "; because an entry that omitted it would leave whatever the channel was",
+        "; already carrying, and a binding must not outlive its entitlement.",
     ]
 
     for acct in accounts:
         did = acct["did"]
         lines.append(f"exten => {did},1,NoOp(Zeus AI account route for ${{FROM_DID}})")
+        lines.append(" same => n,Set(AI_CALL_ID=${UNIQUEID})")
+        if "account" in acct:
+            lines.append(f" same => n,Set(AI_ACCOUNT={acct['account']})")
+        lines.append(" same => n,Set(AI_CALLER_NUM=${CALLERID(num)})")
+        lines.append(" same => n,Set(AI_CALLER_NAME=${CALLERID(name)})")
         if "provider" in acct:
             lines.append(f" same => n,Set(AI_PROVIDER={acct['provider']})")
         if "audio_profile" in acct:
@@ -221,6 +283,15 @@ def render(accounts: list[dict]) -> str:
             # stale value from a transferred call, and the handoff gate reads
             # it as a string.
             lines.append(" same => n,Set(ZEUS_CAPSTONE_ADDON=0)")
+        if acct["capstone_addon"] and acct.get("capstone_target"):
+            lines.append(
+                f" same => n,Set(ZEUS_CAPSTONE_TARGET={acct['capstone_target']})"
+            )
+        else:
+            # Empty on purpose: [zeus-ai-interview] refuses on an empty target
+            # rather than falling back to a guess, so clearing it is what makes
+            # "this account has no interview workflow" mean the operator.
+            lines.append(" same => n,Set(ZEUS_CAPSTONE_TARGET=)")
         lines.append(" same => n,Goto(zeus-ai-first-response,s,1)")
 
     # Unmatched DIDs (an account with no active number, or a DID added in
@@ -228,8 +299,12 @@ def render(accounts: list[dict]) -> str:
     lines += [
         "; Fallback for a DID with no account on this platform.",
         f"exten => {DEFAULT_AGENT},1,NoOp(Zeus AI router fallback for ${{FROM_DID}})",
+        " same => n,Set(AI_CALL_ID=${UNIQUEID})",
+        " same => n,Set(AI_CALLER_NUM=${CALLERID(num)})",
+        " same => n,Set(AI_CALLER_NAME=${CALLERID(name)})",
         f" same => n,Set(AI_AGENT={DEFAULT_AGENT})",
         " same => n,Set(ZEUS_CAPSTONE_ADDON=0)",
+        " same => n,Set(ZEUS_CAPSTONE_TARGET=)",
         " same => n,Goto(zeus-ai-first-response,s,1)",
     ]
     return "\n".join(lines) + "\n"

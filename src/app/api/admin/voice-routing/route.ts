@@ -38,6 +38,7 @@ interface AccountRow {
   agent_slug: string | null;
   audio_profile: string | null;
   provider: string | null;
+  capstone_binding: string | null;
 }
 
 /**
@@ -54,6 +55,12 @@ interface AccountRow {
  * The Capstone flag is re-checked against Magnate here — this route is the
  * routing authority, and the PBX refuses the hand-off for anything it does
  * not mark. The check refreshes the account_addons cache in passing.
+ *
+ * `capstone_target` is the other half and comes from `voice_bindings`: the
+ * flag says the account may reach Capstone, the binding says WHICH interview
+ * workflow its line reaches. It is published only beside a true entitlement —
+ * the renderer drops it otherwise, and not sending it keeps the plan's own
+ * shape honest rather than relying on a downstream rule to be the only guard.
  *
  * The gate follows Capstone's policy (see `src/lib/addons.ts`): only an
  * authoritative "no" turns the hand-off off, so an unconfigured SKU or a
@@ -75,10 +82,13 @@ export async function GET(req: Request) {
               pn.did    AS did,
               va.agent_slug    AS agent_slug,
               va.audio_profile AS audio_profile,
-              va.provider      AS provider
+              va.provider      AS provider,
+              vb.capstone_binding AS capstone_binding
          FROM phone_numbers pn
          JOIN users u ON u.id = pn.user_id
          LEFT JOIN voice_agents va ON va.user_id = pn.user_id
+         LEFT JOIN voice_bindings vb
+                ON vb.user_id = pn.user_id AND vb.did = pn.did
         WHERE pn.status = 'active'
         ORDER BY pn.did`,
     )
@@ -132,6 +142,9 @@ export async function GET(req: Request) {
       did: row.did,
       agent: row.agent_slug ?? undefined,
       capstone_addon: gate.entitled,
+      capstone_target: gate.entitled
+        ? (row.capstone_binding ?? undefined)
+        : undefined,
       provider: row.provider ?? undefined,
       audio_profile: row.audio_profile ?? undefined,
     });

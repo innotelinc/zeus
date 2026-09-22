@@ -791,6 +791,45 @@
   <li>Fix the §2.1 data defect on the live PBX: reconcile <code>7745057135</code> / <code>8005</code> /
     <em>Job Interview</em> so the label, the extension and the binding agree.</li>
   </ul>
+  <p><strong>As built (2026-09-22):</strong> the phase is opened from the data end on purpose. The
+  rendered fragment is converged onto a live PBX by a 15-minute timer, so what
+  ships first is the part that cannot change how a call is handled.</p>
+  <p><code>voice_bindings</code> (<code>scripts/migrations/010_add_voice_bindings.sql</code>, mirrored in
+  <code>scripts/schema.sql</code>, applied by <code>src/lib/db.ts</code> on boot) is keyed per
+  <strong>(user_id, did)</strong> rather than per account: one account can hold a support line
+  and an interview line, and <em>which interview</em> is a property of the number. It is
+  deliberately not a column on <code>account_addons</code> — that table records a Magnate
+  decision (may this account reach Capstone at all), this one records the
+  customer's own choice (which interview answers it). The rule between them is the
+  point: the target is rendered <strong>only beside a true entitlement</strong>, so a binding
+  left behind by a cancelled subscription is inert rather than a way back in.
+  <code>/api/admin/voice-routing</code> publishes it on the same terms and only for entitled
+  accounts, so the plan does not depend on a downstream rule being the only guard.</p>
+  <p><code>pbx/ava_routing.py</code> renders two things it did not before. The D2 envelope —
+  <code>AI_CALL_ID=${UNIQUEID}</code>, <code>AI_ACCOUNT</code>, <code>AI_CALLER_NUM</code>, <code>AI_CALLER_NAME</code> —
+  stamped once per entry <em>and</em> on the fallback, because an unmatched DID is still
+  a call and a call with no trace id is one the two products cannot reconcile.
+  And <code>ZEUS_CAPSTONE_TARGET</code>, written on every entry whether or not the account
+  has a binding: an entry that omitted it would leave whatever the channel already
+  carried, which is the reasoning that made <code>ZEUS_CAPSTONE_ADDON</code> an explicit <code>0</code>.
+  Empty is the fail-closed default, and the context that reads it refuses on empty
+  rather than falling back to a guess. A target that could close
+  <code>DIALPLAN_EXISTS(...)</code> is refused at validation, beside the provider and
+  audio-profile overrides.</p>
+  <p><strong>The dialplan half is deliberately not in this change.</strong> The spec replaces the
+  constant <code>824 → dograh-inbound,8000</code> with <code>[zeus-ai-interview]</code> and
+  <code>[zeus-ai-return]</code>; the transition form of that keeps the old constant as the
+  <em>no target</em> path — which is what the rollback note asks for — but it also means
+  the phase's exit ("each interview DID reaches the correct workflow") cannot be
+  met until bindings exist on <code>.30</code>. It is its own step because it changes the
+  shared <code>extensions_custom.conf</code> that the sync timer converges every 15 minutes,
+  and a live-file change earns a before/after pair here rather than riding along
+  with an inert one.</p>
+  <p><strong>Still live and unmet in this phase:</strong> <code>voice_bindings</code> rows on the portal, the
+  <code>[zeus-ai-interview]</code>/<code>[zeus-ai-return]</code> contexts, <code>AI_CONTEXT_TOKEN</code> and
+  <code>/api/voice/context/{token}</code> (the token needs a portal mint <em>and</em> a TTL decision,
+  so it is not a dialplan-only change), and the §2.1 reconciliation of
+  <code>7745057135</code> / <code>8005</code> / <em>Job Interview</em> on the box.</p>
   <p><strong>Exit:</strong> each interview DID reaches the <em>correct</em> workflow; an unknown target
   refuses to the operator; a concluded interview returns to AVA or a human with
   its context intact.</p>
