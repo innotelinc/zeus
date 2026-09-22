@@ -72,13 +72,31 @@ pipelines:
         # is pointed at it. One gateway for the estate: the canonical
         # instance is on 192.168.1.46 (see 2-voice/capstone/docs/networking.md).
         base_url: "${AVA_LLM_BASE_URL:-http://192.168.1.46:20129/v1}"
-        # Verified live against the gateway before being pinned here. Model
-        # ids appear in /v1/models even when the upstream provider's live
-        # catalog omits them — those answer 400, and slow free routes
-        # answer 502 after 30 s (that pair produced the original
-        # "Gateway responded 502" report). Both ids below answered 200:
-        # gemini/gemini-3.1-flash-lite in 1.5 ms, gemini/gemini-2.5-flash
-        # in 1.9 ms. Keep the fallback to a working id.
+        # MEASURED with a real completion, not with /v1/models. The listing is
+        # not a check: it answers 200 in milliseconds for ids that then take
+        # 20 s, return an empty `content`, or 429 — and the earlier "verified
+        # live … 1.5 ms" note on this line was exactly that mistake.
+        #
+        # The model was never the fault. Every route this gateway serves emits
+        # reasoning tokens BEFORE the content, so the ceiling below is what
+        # decides whether a reply survives it: at 200 there was ~190 tokens of
+        # reasoning and about eight tokens of content left, and the agent spoke
+        # half a sentence and stopped ("We are open from 9 a.") — which is what
+        # a caller reports as the call cutting out. At 800 the same model
+        # returns a complete sentence with finish_reason "stop".
+        #
+        # This id is pinned because it kept answering with content in every
+        # measurement. `gemini-3-flash-preview` is faster when its pool is up
+        # (1.9 s) but answered 429 "credentials cooling down" and, on a later
+        # run, with no content at all — for a phone system, unreliable is worse
+        # than slow. Neither is fast: 3-7 s to first token, against the ~1 s a
+        # conversation wants.
+        #
+        # The latency fix is on the gateway, not here: the engine has no way to
+        # send `reasoning_effort` (vendor/ava has no such option), and with it
+        # the same model answers in 3.4 s with zero reasoning tokens and clean
+        # content. Set it for this route in OmniRoute — see
+        # docs/ava-integration.md, "Model selection is a trap worth recording".
         #
         # Named `chat_model`, not `model`, on purpose. The adapter's
         # validate_connectivity drops `model` when it does not start with
@@ -89,7 +107,19 @@ pipelines:
         # `chat_model` is read ahead of `model` and skips that substitution.
         chat_model: "${AVA_LLM_MODEL:-gemini/gemini-3.1-flash-lite}"
         temperature: 0.4
-        max_tokens: 200
+        # The ceiling must cover the reasoning tokens this gateway emits before
+        # the content (174-564 measured), or the reply is truncated to a
+        # fragment. 800 leaves room for the reasoning plus a whole answer.
+        max_tokens: 800
+        # The adapter's serial/streaming budget.
+        # provider_config.response_timeout_sec defaults to 5 s, which the
+        # measured 1.9-3.0 s answer + variance sits right on top of: a turn
+        # that crossed it died mid-call and the caller hung up into silence
+        # rather than hearing a slightly late answer. 15 s is slack for the
+        # gateway, not a target — a turn that needs it has already failed the
+        # conversation, and `scripts/ava-model-check.py` is how that is seen.
+        timeout_sec: 15
+        response_timeout_sec: 15
       tts:
         format:
           encoding: ulaw
@@ -109,10 +139,13 @@ pipelines:
         stream_format: "pcm16_16k"
       llm:
         base_url: "${AVA_LLM_BASE_URL:-http://192.168.1.46:20129/v1}"
-        # `chat_model` for the same reason as zeus_hybrid above.
+        # `chat_model`, `max_tokens` and the budget for the same measured
+        # reasons as zeus_hybrid above.
         chat_model: "${AVA_LLM_MODEL:-gemini/gemini-3.1-flash-lite}"
         temperature: 0.4
-        max_tokens: 200
+        max_tokens: 800
+        timeout_sec: 15
+        response_timeout_sec: 15
       tts:
         format:
           encoding: ulaw
