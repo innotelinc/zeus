@@ -106,8 +106,26 @@ if [ "$SCOPE" = all ] || [ "$SCOPE" = pbx ]; then
     skip "FreePBX URL"
   fi
 
-  AMI_HOST="${ASTERISK_AMI_HOST:-127.0.0.1}"
+  # Which *address* AMI and ARI answer on is a deployment decision, not a
+  # constant: this estate publishes both on the host's LAN address, because the
+  # portal and the engine reach the PBX over it — so probing `127.0.0.1`
+  # reported a healthy PBX as down. Ask Docker where it actually published them
+  # (the same source the RTP check below uses), and keep the env override for
+  # the case where the ports are reached from somewhere else.
+  pbx_port_addr() {
+    local port="$1" addr
+    addr="$(docker port "${D7_PBX:-zeus-freepbx}" "$port" 2>/dev/null | head -1)" || true
+    addr="${addr##*-> }"  # "0.0.0.0:5038" or the listing's "5038/tcp -> 0.0.0.0:5038"
+    addr="${addr%% *}"
+    case "$addr" in
+      ''|0.0.0.0:*|"[::]:"*) printf '127.0.0.1' ;;
+      *:*) printf '%s' "${addr%:*}" ;;
+      *) printf '127.0.0.1' ;;
+    esac
+  }
+
   AMI_PORT="${ASTERISK_AMI_PORT:-5038}"
+  AMI_HOST="${ASTERISK_AMI_HOST:-$(pbx_port_addr "${AMI_PORT}/tcp")}"
   if (exec 3<>"/dev/tcp/${AMI_HOST}/${AMI_PORT}") 2>/dev/null; then
     exec 3>&- 3<&-
     pass "AMI port open ($AMI_HOST:$AMI_PORT)"
@@ -116,18 +134,22 @@ if [ "$SCOPE" = all ] || [ "$SCOPE" = pbx ]; then
   fi
 
   ARI_PORT="${ARI_HTTP_PORT:-8088}"
-  if (exec 3<>"/dev/tcp/${AMI_HOST}/${ARI_PORT}") 2>/dev/null; then
+  ARI_HOST="${ASTERISK_AMI_HOST:-$(pbx_port_addr "${ARI_PORT}/tcp")}"
+  if (exec 3<>"/dev/tcp/${ARI_HOST}/${ARI_PORT}") 2>/dev/null; then
     exec 3>&- 3<&-
-    pass "ARI/HTTP port open ($AMI_HOST:$ARI_PORT)"
+    pass "ARI/HTTP port open ($ARI_HOST:$ARI_PORT)"
   else
-    fail "ARI/HTTP port closed ($AMI_HOST:$ARI_PORT)"
+    fail "ARI/HTTP port closed ($ARI_HOST:$ARI_PORT)"
   fi
 
   if [ -f scripts/pbx.env ] || [ -n "${FREEPBX_AMI_SECRET:-}" ]; then
-    if pbx/bootstrap-zeus-pbx.sh --check >/dev/null 2>&1; then
-      pass "PBX fragments in sync"
+    # `--check` covers the fragments *and* the DID routes, so a bare "out of
+    # sync" here would send the operator to the fragments for a row that needs
+    # the GUI. The run's own drift lines are what name which it was.
+    if drift_out="$(pbx/bootstrap-zeus-pbx.sh --check 2>&1)"; then
+      pass "PBX fragments and DID routes in sync"
     else
-      fail "PBX fragments out of sync (run pbx/bootstrap-zeus-pbx.sh)"
+      fail "PBX out of sync — $(printf '%s\n' "$drift_out" | grep -E '^(drift|zeus-pbx: out of sync)' | head -3 | tr '\n' ' ')"
     fi
   else
     skip "PBX fragment drift (scripts/pbx.env not present)"
@@ -188,10 +210,14 @@ if [ "$SCOPE" = all ] || [ "$SCOPE" = pbx ]; then
     else
       fail "the AVA router is not in the live dialplan (apply the fragments, then reload)"
     fi
-    if docker exec "$FBX" asterisk -rx 'dialplan show zeus-ai-accounts' 2>/dev/null | grep -q 'exten =>'; then
+    # `dialplan show` prints an extension as `  '<exten>' =>  1. <app>(…)`, not
+    # as an `exten => ` line (that is the .conf syntax). Grepping for the conf
+    # syntax reported a loaded context as missing — and it is the context with a
+    # per-DID entry in it that matters, so that is what this asserts.
+    if docker exec "$FBX" asterisk -rx 'dialplan show zeus-ai-accounts' 2>/dev/null | grep -qE "^  '[0-9]+" ; then
       pass "the per-DID accounts context is loaded"
     else
-      fail "zeus-ai-accounts is not in the live dialplan"
+      fail "zeus-ai-accounts has no per-DID entry in the live dialplan"
     fi
     # The route *rows* are a judgement about which DIDs reach the router, and
     # that needs the plan — the portal's own answer, or the cached database
@@ -199,11 +225,17 @@ if [ "$SCOPE" = all ] || [ "$SCOPE" = pbx ]; then
     # judge rather than implying the ingress is fine.
     ingress_db="$(docker volume inspect zeus-portal-data --format '{{.Mountpoint}}' 2>/dev/null || true)"
     if [ -n "$ingress_db" ] && [ -f "$ingress_db/pbx.db" ] && [ -f pbx/ava_routes.py ]; then
-      if python3 pbx/ava_routes.py --db "$ingress_db/pbx.db" --check >/dev/null 2>&1; then
-        pass "every platform DID's inbound route reaches the AVA router"
-      else
-        fail "DID inbound routes are off zeus-ai-router,s,1 (python3 pbx/ava_routes.py --db <portal.db> --check)"
-      fi
+      routes_rc=0
+      python3 pbx/ava_routes.py --db "$ingress_db/pbx.db" --check >/dev/null 2>&1 || routes_rc=$?
+      case "$routes_rc" in
+        0) pass "every platform DID's inbound route reaches the AVA router" ;;
+        # 3 is "nothing this tool may write": the plan names a DID FreePBX has no
+        # route for, which is a row a person adds. Reporting it as routes being
+        # *off* the router would name the wrong repair — those DIDs are not
+        # pointed elsewhere, they are unwired, and only the GUI can fix it.
+        3) fail "a platform DID the plan names has no inbound route in FreePBX — add it by hand (python3 pbx/ava_routes.py --db <portal.db> --check names it)" ;;
+        *) fail "DID inbound routes are off zeus-ai-router,s,1 (python3 pbx/ava_routes.py --db <portal.db> --check)" ;;
+      esac
     else
       skip "DID inbound routes (no portal database readable here — run pbx/ava_routes.py --check with a plan)"
     fi
