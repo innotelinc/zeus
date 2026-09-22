@@ -18,11 +18,24 @@ This tool is that owner. It reads the platform's accounts (the same plan
 block can never disagree), compares each account's inbound route against the
 router destination, and reports or applies the difference.
 
-**It converges rows that exist; it never invents them.** A DID with no inbound
-route at all is reported and refused — creating an ``incoming`` row means
-guessing FreePBX's other columns, and a half-written row on a live phone system
-is worse than a named gap a human fills in two clicks. The same refusal covers
-a DID with two rows: which one wins would be row order, not intent.
+**By default it converges rows that exist; it never invents them.** A DID with
+no inbound route at all is reported and refused — a hand-written ``incoming``
+row means guessing its other fifteen columns, and that guess on a live phone
+system is worse than a named gap a human fills in two clicks. The same refusal
+covers a DID with two rows: which one wins would be row order, not intent.
+
+A default apply — and therefore the timer — never creates a row. There is one
+explicit exception, because the same GUI step is what leaves a *new* DID
+unrouted in the first place:
+
+    # create the plan's DIDs that have no route at all, through FreePBX's own
+    # API rather than an INSERT of ours. This is the GUI's own create path
+    # (`FreePBX::Core()->addDID`), so the columns are the framework's to fill.
+    python3 pbx/ava_routes.py --accounts-json /tmp/plan.json \
+        --apply --create-missing --revert-out /root/zeus-route-revert.sql
+
+The opt-in matters: `--create-missing` writes a row this tool had no evidence
+for, so it belongs in a deliberate one-off run, never in a periodic one.
 
 **It only ever touches DIDs the plan names.** Everything else in the table —
 the operator's ring group number, a partner's, a pattern route like ``_2XX`` —
@@ -45,6 +58,9 @@ Reading and writing:
     docker exec -i zeus-freepbx mysql -u root asterisk \
         < /root/zeus-route-revert.sql        # the way back, written first
 
+A created row's way back is a DELETE, written by `--create-missing` into the
+same script, so one file undoes both halves of a mixed run.
+
     # off-host: a route table dumped by p0-snapshot (routes/incoming.tsv is
     # `SELECT *`; re-dump with the query below for this tool)
     docker exec zeus-freepbx mysql -N -B -u root asterisk \
@@ -66,6 +82,7 @@ rest of the convergence already does it.
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import re
 import subprocess
@@ -145,6 +162,53 @@ class Change:
 def _sql(value: str) -> str:
     """Escape a value for a single-quoted SQL literal."""
     return str(value).replace("\\", "\\\\").replace("'", "''")
+
+
+@dataclass(frozen=True)
+class Creation:
+    """An inbound route this tool created, for a DID that had none at all.
+
+    Only ``--create-missing`` produces one. Its way back is a delete rather than
+    a restore: there was no row to restore.
+    """
+
+    did: str
+
+    def revert_sql(self) -> str:
+        # Keyed the way FreePBX's own create writes it (cidnum ''), so the undo
+        # matches the row addDID inserted and nothing else.
+        return (
+            f"DELETE FROM `incoming` WHERE `extension`='{_sql(self.did)}' "
+            "AND `cidnum`='';"
+        )
+
+
+# The create runs FreePBX's own create path inside the PBX container rather than
+# an INSERT from here: `addDID` validates the pair, calls its own
+# `addDIDDefaults`, and fires the module hooks the GUI would — the fifteen
+# columns this tool does not model are the framework's to fill, and a guess at
+# them is what the refusal exists to avoid. `__ROUTER__` is substituted from
+# ROUTER below so the created destination and the converged one cannot drift.
+CREATE_SCRIPT = """<?php
+require '/etc/freepbx.conf';
+$dids = json_decode(getenv('ZEUS_AVA_DIDS') ?: '[]', true);
+$core = FreePBX::Core();
+$out = array();
+foreach ($dids as $did) {
+    if (!empty($core->getDID($did, ''))) {
+        $out[] = array('did' => $did, 'result' => 'exists');
+        continue;
+    }
+    $ok = $core->addDID(array(
+        'extension'   => $did,
+        'cidnum'      => '',
+        'destination' => '__ROUTER__',
+        'description' => 'Zeus AI router (ava_routes)',
+    ));
+    $out[] = array('did' => $did, 'result' => $ok ? 'created' : 'failed');
+}
+echo json_encode($out), PHP_EOL;
+"""
 
 
 @dataclass
@@ -265,13 +329,22 @@ def build_report(dids: list[str], rows: list[RouteRow]) -> Report:
     )
 
 
-def render_revert(changes: list[Change], container: str) -> str:
-    """The way back, written before anything changes."""
+def render_revert(
+    changes: list[Change], container: str, creations: tuple[Creation, ...] | list[Creation] = ()
+) -> str:
+    """The way back, written before anything changes.
+
+    Covers both halves of a `--create-missing` run: the rows this tool rewrites
+    are restored to what it found, and the rows it created are deleted.
+    """
     import datetime
 
     stamp = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    what = f"{len(changes)} change(s)"
+    if creations:
+        what += f" and {len(creations)} creation(s)"
     lines = [
-        f"-- zeus ava_routes revert — written {stamp}, before {len(changes)} change(s).",
+        f"-- zeus ava_routes revert — written {stamp}, before {what}.",
         "-- Restores the inbound routes exactly as ava_routes.py found them.",
         f"--   docker exec -i {container} mysql -u root asterisk < <this file>",
         "--   docker exec " + container + " fwconsole reload",
@@ -279,6 +352,7 @@ def render_revert(changes: list[Change], container: str) -> str:
         "START TRANSACTION;",
     ]
     lines += [c.revert_sql() for c in changes]
+    lines += [c.revert_sql() for c in creations]
     lines += ["COMMIT;", ""]
     return "\n".join(lines)
 
@@ -335,6 +409,43 @@ def read_live_routes(container: str) -> str:
     return proc.stdout
 
 
+def create_missing(container: str, dids: list[str]) -> list[str]:
+    """Create an inbound route for each DID in `dids`, via FreePBX's own API.
+
+    Returns the DIDs actually created. A DID that turns out to have a row after
+    all is reported as ``exists`` and not counted — the tool re-reads before it
+    writes, so a concurrent GUI edit becomes a no-op rather than a duplicate.
+    Raises `RouteError` if the API did not answer or refused a row.
+    """
+    proc = _run(
+        [
+            "docker", "exec", "-i",
+            "-e", f"ZEUS_AVA_DIDS={json.dumps(dids)}",
+            container, "php",
+        ],
+        # `.replace`, not `.format`: the script is PHP, so its braces are
+        # control flow and a format spec would try to read them.
+        stdin=CREATE_SCRIPT.replace('__ROUTER__', ROUTER),
+    )
+    if proc.returncode != 0:
+        detail = proc.stderr.strip().splitlines()
+        raise RouteError(
+            f"FreePBX's API did not answer in {container}: "
+            f"{detail[-1] if detail else proc.returncode}"
+        )
+    lines = [ln for ln in proc.stdout.strip().splitlines() if ln.strip()]
+    try:
+        results = json.loads(lines[-1])
+    except (ValueError, IndexError) as exc:
+        raise RouteError(f"could not read the create result from {container}: {exc}")
+    failed = [row.get("did", "?") for row in results if row.get("result") == "failed"]
+    if failed:
+        raise RouteError(
+            "FreePBX did not create a route for: " + ", ".join(failed)
+        )
+    return [row["did"] for row in results if row.get("result") == "created"]
+
+
 def apply_sql(container: str, sql: str) -> None:
     proc = _run(
         ["docker", "exec", "-i", container, "mysql", "-u", "root", "asterisk"],
@@ -364,8 +475,9 @@ def _describe(report: Report, stream) -> None:
         print(f"  drift      {change.did}: {'; '.join(why)}", file=stream)
     for did in report.missing:
         print(
-            f"  refuse     {did}: no inbound route in FreePBX — this tool will "
-            "not create one (add the route for this DID by hand, then re-run)",
+            f"  refuse     {did}: no inbound route in FreePBX — add the route for "
+            "this DID by hand, or pass --create-missing to have FreePBX's own "
+            "API create it",
             file=stream,
         )
     for did in report.duplicates:
@@ -406,8 +518,27 @@ def main(argv: list[str] | None = None) -> int:
         "--sql-out",
         help="write the apply as SQL here instead of executing it (offline apply)",
     )
+    parser.add_argument(
+        "--create-missing",
+        action="store_true",
+        help="create a route for each plan DID that has none, through FreePBX's "
+             "own API (live PBX only, needs --apply; the timer never passes it)",
+    )
     parser.add_argument("--quiet", action="store_true", help="only the summary line")
     args = parser.parse_args(argv)
+
+    # `--create-missing` is a deliberate, interactive act: it writes rows the
+    # route table had no evidence for. Two guards keep it that way — an apply,
+    # because a check must write nothing, and a live PBX, because a created row
+    # is not expressible as the `--routes-tsv`/`--sql-out` SQL an offline run
+    # emits (the row's other columns are FreePBX's to fill).
+    if args.create_missing and not args.apply:
+        parser.error("--create-missing needs --apply (it writes to the PBX)")
+    if args.create_missing and (args.routes_tsv or args.sql_out):
+        parser.error(
+            "--create-missing needs a live PBX: creating a route means calling "
+            "FreePBX's API, which an offline --routes-tsv/--sql-out run cannot do"
+        )
 
     try:
         plan = (
@@ -491,11 +622,13 @@ def main(argv: list[str] | None = None) -> int:
         return 0
 
     # --apply
-    if not report.changes and not report.refused:
+    creations = [Creation(did) for did in report.missing] if args.create_missing else []
+    created_dids: list[str] = []
+    if not report.changes and not creations and not report.refused:
         print(f"ava_routes: already in sync ({len(report.ok)} DID(s))")
         return 0
 
-    if report.changes:
+    if report.changes or creations:
         if args.sql_out:
             with open(args.sql_out, "w", encoding="utf-8") as fh:
                 fh.write(render_sql(report.changes))
@@ -503,8 +636,10 @@ def main(argv: list[str] | None = None) -> int:
         else:
             # The undo is written FIRST and its failure is fatal: an apply with
             # no way back is the thing P0's snapshot discipline exists to
-            # prevent, and a half-created revert file is not a way back.
-            revert = render_revert(report.changes, container)
+            # prevent, and a half-created revert file is not a way back. It
+            # covers the creations as well as the rewrites, so a run that fails
+            # between the two halves is still undoable as one thing.
+            revert = render_revert(report.changes, container, creations)
             try:
                 with open(args.revert_out, "w", encoding="utf-8") as fh:
                     fh.write(revert)
@@ -516,21 +651,53 @@ def main(argv: list[str] | None = None) -> int:
                 )
                 return 1
             print(f"ava_routes: revert script -> {args.revert_out}")
-            try:
-                apply_sql(container, render_sql(report.changes))
-            except RouteError as exc:
-                print(f"ava_routes: {exc}", file=sys.stderr)
-                print(f"ava_routes: undo with {args.revert_out}", file=sys.stderr)
-                return 1
-            print(
-                f"ava_routes: applied {len(report.changes)} route(s); "
-                f"run `docker exec {container} fwconsole reload`"
-            )
+            if report.changes:
+                try:
+                    apply_sql(container, render_sql(report.changes))
+                except RouteError as exc:
+                    print(f"ava_routes: {exc}", file=sys.stderr)
+                    print(f"ava_routes: undo with {args.revert_out}", file=sys.stderr)
+                    return 1
+                print(
+                    f"ava_routes: applied {len(report.changes)} route(s); "
+                    f"run `docker exec {container} fwconsole reload`"
+                )
+            if creations:
+                try:
+                    created_dids = create_missing(
+                        container, [c.did for c in creations]
+                    )
+                except RouteError as exc:
+                    print(f"ava_routes: {exc}", file=sys.stderr)
+                    print(f"ava_routes: undo with {args.revert_out}", file=sys.stderr)
+                    return 1
+                for did in created_dids:
+                    print(f"ava_routes: created route {did} -> {ROUTER}")
+                appeared = sorted(
+                    c.did for c in creations if c.did not in created_dids
+                )
+                if appeared:
+                    # addDID refuses an extension/cidnum pair that already
+                    # exists, so a route that appeared mid-run lands here. It is
+                    # not a failure — the route exists — but it is not this
+                    # tool's creation either.
+                    print(
+                        "ava_routes: no route created for "
+                        + ", ".join(appeared)
+                        + " (a row already existed for it)",
+                        file=sys.stderr,
+                    )
+                print(
+                    f"ava_routes: created {len(created_dids)} route(s); "
+                    f"run `docker exec {container} fwconsole reload`"
+                )
 
-    if report.refused:
+    refused = [d for d in report.missing if d not in created_dids] + report.duplicates
+    if refused:
         print(
-            "ava_routes: the routes above need a human (this tool converges "
-            "existing rows only) — re-run --check after fixing them",
+            "ava_routes: the routes above need a human (by default this tool "
+            "converges existing rows only; --create-missing has FreePBX's own "
+            "API add the ones that are absent) — re-run --check after fixing them",
             file=sys.stderr,
         )
         return 1

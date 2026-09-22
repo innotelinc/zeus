@@ -37,6 +37,15 @@ def _routes(tmpdir: str, lines: list[str]) -> str:
     return path
 
 
+class _Proc:
+    """Just enough of subprocess.CompletedProcess for the stubs below."""
+
+    def __init__(self, stdout: str = "", stderr: str = "", returncode: int = 0):
+        self.stdout = stdout
+        self.stderr = stderr
+        self.returncode = returncode
+
+
 class ParseRoutesTest(unittest.TestCase):
     def test_reads_the_three_columns(self):
         rows = art.parse_routes("7745057135\tfrom-did-direct,8005,1\tJob Interview\n")
@@ -286,6 +295,148 @@ class CliTest(unittest.TestCase):
                 ),
                 2,
             )
+
+
+class CreationTest(unittest.TestCase):
+    """`--create-missing`: the one way this tool adds a row, and only on request.
+
+    The default refusal stands — a missing route is a `3` (a human), not a `1`
+    (an apply) — because a timer must never invent a phone route. The opt-in
+    exists so the same GUI step that leaves a new DID unrouted does not have to
+    be the thing that wires it; it goes through FreePBX's own `addDID`, which
+    fills the fifteen columns this tool does not model.
+    """
+
+    def test_revert_of_a_creation_is_a_delete_keyed_the_way_adddid_wrote_it(self):
+        sql = art.Creation("7745057135").revert_sql()
+        self.assertIn("DELETE FROM `incoming`", sql)
+        self.assertIn("`extension`='7745057135'", sql)
+        self.assertIn("`cidnum`=''", sql)
+
+    def test_the_create_uses_the_framework_not_an_insert_of_ours(self):
+        calls = []
+
+        def fake(args, stdin=None):
+            calls.append((args, stdin))
+            return _Proc(
+                stdout='[{"did":"7745057135","result":"created"},'
+                '{"did":"4132643964","result":"exists"}]\n'
+            )
+
+        real = art._run
+        try:
+            art._run = fake
+            created = art.create_missing("zeus-freepbx", ["7745057135", "4132643964"])
+        finally:
+            art._run = real
+        # A row that existed all along is not reported as this tool's creation.
+        self.assertEqual(created, ["7745057135"])
+        argv, script = calls[0]
+        self.assertIn("php", argv)
+        self.assertIn("zeus-freepbx", argv)
+        # The create path is FreePBX's own, and the destination is the constant.
+        self.assertIn("addDID", script)
+        self.assertIn(art.ROUTER, script)
+        self.assertNotIn("INSERT INTO", script)
+
+    def test_a_row_the_api_did_not_create_is_an_error_not_a_silent_pass(self):
+        real = art._run
+        try:
+            art._run = lambda args, stdin=None: _Proc(
+                stdout='[{"did":"7745057135","result":"failed"}]\n'
+            )
+            with self.assertRaises(art.RouteError) as ctx:
+                art.create_missing("zeus-freepbx", ["7745057135"])
+        finally:
+            art._run = real
+        self.assertIn("7745057135", str(ctx.exception))
+
+    def test_an_api_that_does_not_answer_is_an_error(self):
+        real = art._run
+        try:
+            art._run = lambda args, stdin=None: _Proc(
+                stderr="PHP Fatal error: Uncaught Error\n", returncode=255
+            )
+            with self.assertRaises(art.RouteError) as ctx:
+                art.create_missing("zeus-freepbx", ["7745057135"])
+        finally:
+            art._run = real
+        self.assertIn("PHP Fatal error", str(ctx.exception))
+
+    def test_revert_script_deletes_what_the_run_created(self):
+        changes = art.build_report(
+            ["7745057135"], art.parse_routes("7745057135\tfrom-did-direct,8005,1\tJob\n")
+        ).changes
+        script = art.render_revert(
+            changes, "zeus-freepbx", [art.Creation("4132643964")]
+        )
+        self.assertIn("DELETE FROM `incoming`", script)
+        self.assertIn("1 creation(s)", script)
+
+    def test_create_missing_needs_apply(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            plan = _plan(tmp, ["7745057135"])
+            with self.assertRaises(SystemExit):
+                art.main(["--accounts-json", plan, "--check", "--create-missing"])
+
+    def test_create_missing_is_refused_offline(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            plan, routes = _plan(tmp, ["7745057135"]), _routes(tmp, [])
+            with self.assertRaises(SystemExit):
+                art.main(
+                    [
+                        "--accounts-json", plan, "--routes-tsv", routes,
+                        "--apply", "--sql-out", os.path.join(tmp, "a.sql"),
+                        "--create-missing",
+                    ]
+                )
+
+
+class CreateMissingCliTest(unittest.TestCase):
+    """The apply path with the flag, driven through stubs instead of a PBX."""
+
+    def _run_main(self, argv: list[str]):
+        real = (art.resolve_container, art.read_live_routes, art.apply_sql, art.create_missing)
+        created: list[str] = []
+        try:
+            art.resolve_container = lambda *a, **k: "zeus-freepbx"
+            art.read_live_routes = lambda c: ""
+            art.apply_sql = lambda c, sql: None
+
+            def fake_create(c, dids):
+                created.extend(dids)
+                return list(dids)
+
+            art.create_missing = fake_create
+            return art.main(argv), created
+        finally:
+            art.resolve_container, art.read_live_routes, art.apply_sql, art.create_missing = real
+
+    def test_apply_creates_the_route_and_goes_green(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            plan = _plan(tmp, ["7745057135"])
+            revert = os.path.join(tmp, "revert.sql")
+            rc, created = self._run_main(
+                ["--accounts-json", plan, "--apply", "--create-missing",
+                 "--revert-out", revert, "--quiet"]
+            )
+            self.assertEqual(rc, 0)
+            self.assertEqual(created, ["7745057135"])
+            with open(revert, encoding="utf-8") as fh:
+                self.assertIn("DELETE FROM `incoming`", fh.read())
+
+    def test_without_the_flag_a_missing_route_is_still_a_human_s_to_add(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            plan = _plan(tmp, ["7745057135"])
+            revert = os.path.join(tmp, "revert.sql")
+            rc, created = self._run_main(
+                ["--accounts-json", plan, "--apply",
+                 "--revert-out", revert, "--quiet"]
+            )
+            self.assertEqual(rc, 1)
+            self.assertEqual(created, [])
+            # Nothing was created, so the undo has nothing to delete either.
+            self.assertFalse(os.path.exists(revert))
 
 
 class LiveTargetTest(unittest.TestCase):
