@@ -60,7 +60,7 @@ ENV_FILE="${AVA_ENV_FILE:-${REPO_ROOT}/.env}"
 RUNTIME_DIR="${AVA_RUNTIME_DIR:-${REPO_ROOT}/data/ava}"
 
 # ── 1. credentials ──────────────────────────────────────────────────────────
-info "1/6 credentials in ${ENV_FILE#${REPO_ROOT}/}"
+info "1/6 credentials in ${ENV_FILE#"${REPO_ROOT}"/}"
 [ -f "$ENV_FILE" ] || fail "no ${ENV_FILE} — copy .env.example and fill in the AVA_* block"
 missing=()
 for key in AVA_ADMIN_JWT_SECRET AVA_ARI_SECRET OMNIROUTE_API_KEY; do

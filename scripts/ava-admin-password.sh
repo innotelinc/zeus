@@ -214,12 +214,12 @@ BACKUP="${ENV_FILE}.bak-$(date +%Y%m%d-%H%M%S)"
 cp -p "$ENV_FILE" "$BACKUP"
 printf '%s' "$NEW_PASSWORD" | python3 "$ENV_HELPER" set "$ENV_FILE" AVA_ADMIN_PASSWORD \
   || fail "rotated, but writing ${ENV_FILE} failed (backup: ${BACKUP}) — set AVA_ADMIN_PASSWORD manually"
-pass "wrote AVA_ADMIN_PASSWORD to ${ENV_FILE#${REPO_ROOT}/} (backup: ${BACKUP##*/})"
+pass "wrote AVA_ADMIN_PASSWORD to ${ENV_FILE#"${REPO_ROOT}"/} (backup: ${BACKUP##*/})"
 
 # AVA's own instruction on that file: change it at first login, then delete it.
 if [ -f "$FIRST_RUN_FILE" ]; then
   rm -f "$FIRST_RUN_FILE"
-  pass "removed ${FIRST_RUN_FILE#${REPO_ROOT}/} (the one-time password is spent)"
+  pass "removed ${FIRST_RUN_FILE#"${REPO_ROOT}"/} (the one-time password is spent)"
 fi
 
 info "next: restart the portal so it picks up the new value, then reload /dashboard/voice"
