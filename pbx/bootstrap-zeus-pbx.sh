@@ -307,6 +307,80 @@ reload_pbx() {
   fi
 }
 
+# ── the FreePBX `core` module repair ───────────────────────────────────
+# Trunks become unsaveable with "Duplicate entry '1-maxchans' for key
+# 'PRIMARY'" unless two bugs in the core module are fixed; see
+# docs/freepbx-trunk-repair.md. The files belong to FreePBX, so the fix is a
+# patcher (pbx/patch-freepbx-trunk-next-id.py) rather than repo PHP — and it
+# has to survive things this script cannot see. `Dockerfile.full` ships the
+# patcher and `docker-entrypoint-full.sh` re-applies it every boot, but a
+# DEPLOYED image that predates that copy contains no patcher at all: its
+# entrypoint skips the repair and the bug stays live with nothing to re-apply
+# it, while the hand-applied fix is only as durable as the /var/www/html
+# volume it sits in. Running it from here closes that gap from the host, with
+# no image rebuild.
+#
+# Fail open, like the entrypoint: a PBX that boots with the bug beats a PBX
+# that does not come up. Drift is reported (and fails --check) but never
+# aborts an apply.
+CORE_PATCHER="${SCRIPT_DIR}/patch-freepbx-trunk-next-id.py"
+CORE_MODULES_DIR="${CORE_MODULES_DIR:-/var/www/html/admin/modules/core}"
+CORE_PATCH_BACKUP_DIR="${CORE_PATCH_BACKUP_DIR:-/root/trunk-repair}"
+
+# Which container holds FreePBX, if any. Explicit override first, then this
+# stack's own PBX by name, then the compose service the container target uses.
+core_patch_container() {
+  # An explicit choice WINS and is not a candidate among the defaults: naming
+  # a container that is not running must not silently patch a different PBX
+  # (this stack and capstone can each hold one), so a typo surfaces as "no PBX
+  # found" instead of editing the wrong box.
+  if [ -n "${PBX_CONTAINER:-}" ]; then
+    if docker ps --format '{{.Names}}' 2>/dev/null | grep -qx "$PBX_CONTAINER"; then
+      printf '%s\n' "$PBX_CONTAINER"
+      return 0
+    fi
+    echo "zeus-pbx: PBX_CONTAINER=$PBX_CONTAINER is not running" >&2
+    return 1
+  fi
+  local c
+  for c in zeus-freepbx freepbx; do
+    if docker ps --format '{{.Names}}' 2>/dev/null | grep -qx "$c"; then
+      printf '%s\n' "$c"
+      return 0
+    fi
+  done
+  return 1
+}
+
+# Runs the patcher wherever the module actually lives. On a containerised
+# stack it copies itself in, runs, and pulls the backups back to the host
+# (the container's own filesystem does not survive the image refresh that
+# makes a backup worth having); on bare metal it edits the files directly.
+run_core_patcher() {
+  local c
+  if c="$(core_patch_container)"; then
+    python3 "$CORE_PATCHER" --container "$c" ${1:+"$1"} \
+      --host-backup-dir "$CORE_PATCH_BACKUP_DIR"
+  elif [ -d "$CORE_MODULES_DIR" ]; then
+    python3 "$CORE_PATCHER" ${1:+"$1"} --backup-dir "$CORE_PATCH_BACKUP_DIR"
+  else
+    # Nothing to patch yet (a fresh host, or the PBX is not up): not drift.
+    echo "zeus-pbx: no PBX found to patch — skipping the core module repair" >&2
+    return 0
+  fi
+}
+
+check_core_patch() {
+  local out rc
+  out="$(run_core_patcher --check 2>&1)"; rc=$?
+  printf '%s\n' "$out" | sed 's/^/zeus-pbx: /' >&2
+  if [ "$rc" -ne 0 ]; then
+    echo "drift: core module (trunk save returns Duplicate entry)" >&2
+    return 1
+  fi
+  return 0
+}
+
 render_fragments
 render_account_routing
 
@@ -367,6 +441,7 @@ for name in $CONVERGE_OWNED; do
 done
 
 if [ "$CHECK" = 1 ]; then
+  check_core_patch || drift=1
   if [ "$drift" = 1 ]; then
     echo "zeus-pbx: out of sync (run pbx/bootstrap-zeus-pbx.sh to apply)" >&2
     exit 1
@@ -377,6 +452,12 @@ fi
 
 if [ "$drift" = 1 ] || [ "$RELOAD" = 1 ]; then
   apply_target
+  # The core module repair is independent of the fragments above, and is
+  # re-asserted on every apply so a refreshed image or `fwconsole ma install
+  # core` cannot leave the trunk bug behind.
+  if ! run_core_patcher; then
+    echo "zeus-pbx: WARNING: core module repair not applied — trunk saves may fail" >&2
+  fi
   for name in $CONVERGE_OWNED; do
     host="${work:+${work}/}${name}"
     [ "$PBX_TARGET" = "container" ] || host="${dest}/${name}"
