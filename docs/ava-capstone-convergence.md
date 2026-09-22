@@ -519,6 +519,27 @@ the router is drift, that two on it are in sync, and that a number the plan does
 not name (`7745057136`, the ring group) is left alone. Writing routes from a dump
 cannot be right, so `ZEUS_ROUTES_TSV` is check-only.
 
+**Found after that measurement (2026-09-22; not yet measured on `.30`):** the
+routes were converged, but the destination they name was never registered. A
+FreePBX inbound route points at a *destination* the framework's registry knows,
+not at a bare dialplan target, and `zeus-ai-router,s,1` existed only as a string
+in `incoming.destination` — so every route this phase rewrote was a **bad
+destination**: the calls answered, so nothing on the caller's side showed it,
+while the GUI could not name what the DID dials and Apply Config read the route
+as invalid. `pbx/ava_routes.py` owns the registry entry now, for the same reason
+it owns the rows: it is the route rows that name it. A live apply writes the
+module's own `kvstore_<Customappsreg>` row (`Admin → Custom Destinations` — the
+shape capstone's `pbx/bootstrap_dograh_route.py` writes for `[dograh-inbound]`,
+with `destret` empty) **before** the routes that name it, `--check` reports an
+unregistered destination as a `1` so the timer converges it, and the undo is a
+`DELETE` in the revert script the run was already writing first. A PBX with no
+`customappsreg` module is a `3`: a person installs it, and a timer tick would
+only reload a live phone system to change nothing. The one asymmetry is
+deliberate — this is the tool's *own constant target*, not the operator's route
+data, which is why a default apply may write it and never creates a route row.
+`./scripts/smoke-test.sh pbx` now names both causes on its `1` case rather than
+reporting route drift alone.
+
 **Measured on `.30` (2026-09-22):** the pre-state was taken first
 (`pbx/p0-snapshot.sh`), then the routes converged — three DIDs rewritten onto
 `zeus-ai-router,s,1` with the undo written before the write, then `fwconsole
@@ -539,7 +560,8 @@ not asserted here.
 **Exit:** every DID answered by AVA, gate proven both ways, `7745057136` left on
 its ring group.
 
-**Rollback:** restore the route SQL from the snapshot.
+**Rollback:** restore the route SQL from the snapshot; the same revert script
+deletes a Custom Destination this phase registered.
 
 ### P2 — Capstone as a per-account skill, with hand-back
 
