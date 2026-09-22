@@ -33,10 +33,17 @@ if "$BOOTSTRAP" --check >/dev/null 2>&1; then
   exit 0
 fi
 
-if "$BOOTSTRAP" >/dev/null 2>&1; then
+if out="$("$BOOTSTRAP" 2>&1)"; then
   echo "zeus-pbx-sync: re-applied fragments (${PBX_TARGET})"
   exit 0
 fi
 
-echo "zeus-pbx-sync: pbx unreachable or apply failed (retrying next timer)" >&2
+# Non-zero here is not necessarily an outage. The apply also refuses when it
+# finds nothing it may write: a platform DID with no inbound route at all is a
+# row only a person can add in FreePBX, and an apply cannot clear it however
+# often it runs. Both cases keep the unit green — a slow boot is not a failure —
+# but neither may be silent, so the apply's own output goes to the journal, where
+# a timer's operator actually looks.
+printf '%s\n' "$out" | sed 's/^zeus-pbx: /  /' >&2
+echo "zeus-pbx-sync: not applied — a DID route needs a human, or the PBX is unreachable (see above)" >&2
 exit 0

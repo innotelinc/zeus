@@ -252,6 +252,69 @@ class Routes(Rehearsal):
         self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
         self.assertIn("left alone 7745057136", proc.stderr)
 
+    def test_a_route_only_drift_reaches_the_apply_path(self):
+        """The case the timer's wrapper hits, and the one an apply can miss.
+
+        The fragments can be in sync while a DID points elsewhere. A wrapper run
+        is `--check`, then the apply when that fails — so an apply that judged
+        only the fragments answered "already in sync" and converged nothing,
+        and since the fix is a route row it would never have cleared itself.
+        """
+        self.env["ZEUS_PORTAL_DB"] = self.portal_db("17745057135")
+        self.run_bootstrap()  # fragments now in sync
+        self.env["ZEUS_ROUTES_TSV"] = self.routes_tsv(
+            [("7745057135", "from-did-direct,8005,1")]
+        )
+        proc = self.run_bootstrap()
+        out = proc.stdout + proc.stderr
+        self.assertEqual(proc.returncode, 0, out)
+        # the script's own summary, not asterisk-converge's per-file wording
+        self.assertNotIn("zeus-pbx: already in sync", out)
+        self.assertIn("applied (local)", out)
+
+    def test_a_did_with_no_route_does_not_send_an_apply(self):
+        """A gap only a person can close is not a reason to write anything.
+
+        The tool reports it as 3 rather than 1 for exactly this caller: an apply
+        for it rewrites no row and still reloads a live phone system, so a
+        15-minute timer would do that forever — while `--check` keeps failing
+        either way, so the gap is never quiet.
+        """
+        self.env["ZEUS_PORTAL_DB"] = self.portal_db("17745057135")
+        self.run_bootstrap()
+        before = self.hashes()
+        self.env["ZEUS_ROUTES_TSV"] = self.routes_tsv(
+            [("8000", "dograh-inbound,8000,1")]  # the plan names no row for it
+        )
+        proc = self.run_bootstrap()
+        out = proc.stdout + proc.stderr
+        self.assertEqual(proc.returncode, 1, out)
+        self.assertIn("need a human", out)
+        self.assertNotIn("applied (local)", out)
+        self.assertEqual(self.hashes(), before)
+
+    def test_the_check_keeps_failing_on_that_gap(self):
+        self.env["ZEUS_PORTAL_DB"] = self.portal_db("17745057135")
+        self.run_bootstrap()
+        self.env["ZEUS_ROUTES_TSV"] = self.routes_tsv([("8000", "dograh-inbound,8000,1")])
+        proc = self.run_bootstrap("--check")
+        out = proc.stdout + proc.stderr
+        self.assertEqual(proc.returncode, 1, out)
+        self.assertIn("needs an inbound route added in FreePBX", out)
+
+    def test_a_gap_does_not_stop_a_route_that_can_be_converged(self):
+        """The live state on `.30`: three DIDs a tool can move, four a person must."""
+        self.env["ZEUS_PORTAL_DB"] = self.portal_db("17745057135", "4132643964")
+        self.run_bootstrap()
+        self.env["ZEUS_ROUTES_TSV"] = self.routes_tsv(
+            [("7745057135", "from-did-direct,8005,1")]
+        )
+        proc = self.run_bootstrap()
+        out = proc.stdout + proc.stderr
+        self.assertEqual(proc.returncode, 0, out)
+        self.assertIn("applied (local)", out)
+        self.assertIn("refuse", out)
+
     def test_no_plan_means_the_routes_are_not_judged(self):
         """A missing plan is not a healthy ingress and must not read as one.
 
@@ -282,7 +345,20 @@ class RoutesAreWiredIntoTheRun(unittest.TestCase):
         self.assertIn("converge_routes\n  reload_pbx", self.text)
 
     def test_the_check_feeds_the_drift_flag(self):
-        self.assertIn("converge_routes || drift=1", self.text)
+        self.assertIn("judge_routes || drift=1", self.text)
+
+    def test_the_apply_path_judges_the_routes_too(self):
+        # Not only under --check: the wrapper applies after a failed check, so an
+        # apply that judged nothing would report "already in sync" on a PBX whose
+        # DIDs all point elsewhere.
+        self.assertIn("judge_routes || ROUTES_RC=$?", self.text)
+
+    def test_a_route_gap_is_not_folded_into_the_apply_decision(self):
+        """3 means "a person", 1 means "an apply": conflating them reloads a
+        live phone system every timer tick to change no row."""
+        self.assertIn("1) drift=1 ;;\n  3) route_gap=1 ;;", self.text)
+        # and the gap case says so instead of reporting a clean run
+        self.assertIn("fragments in sync; DID routes need a human", self.text)
 
     def test_the_converger_is_called_by_an_absolute_path(self):
         self.assertIn('python3 "$ROUTES_PY"', self.text)

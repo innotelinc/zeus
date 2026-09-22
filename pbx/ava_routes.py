@@ -34,6 +34,11 @@ Reading and writing:
     # the live PBX, read-only. Exit 0 in sync, 1 drift, 2 cannot tell.
     python3 pbx/ava_routes.py --accounts-json /tmp/plan.json --check
 
+    # Exit codes, and why 1 and 3 are different: 1 means an apply converges it,
+    # 3 means only a person can (a DID with no inbound route at all, or two).
+    # A caller that treats them alike — "not 0, so apply" — reloads a live PBX
+    # on every timer tick to change nothing, because a 3 never clears by itself.
+
     # apply, after taking the phase's pre-state (pbx/p0-snapshot.sh)
     python3 pbx/ava_routes.py --accounts-json /tmp/plan.json --apply \
         --revert-out /root/zeus-route-revert.sql
@@ -378,8 +383,9 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         description="Converge the platform DIDs' inbound routes onto the AVA router.",
         epilog=(
-            "Exit: 0 in sync (or applied) — 1 drift, or a row this tool refuses "
-            "to touch — 2 cannot tell (no PBX reachable / table unreadable)."
+            "Exit: 0 in sync (or applied) — 1 routes this tool can converge — "
+            "2 cannot tell (no PBX reachable / table unreadable) — 3 nothing to "
+            "converge, but a row that needs a human (--check only)."
         ),
     )
     src = parser.add_mutually_exclusive_group(required=True)
@@ -465,13 +471,22 @@ def main(argv: list[str] | None = None) -> int:
     _describe(report, out)
 
     if args.check:
-        if report.changes or report.refused:
-            print(
-                f"ava_routes: {len(report.changes)} route(s) off {ROUTER}, "
-                f"{len(report.refused)} row(s) this tool will not touch",
-                file=sys.stderr,
-            )
+        summary = (
+            f"ava_routes: {len(report.changes)} route(s) off {ROUTER}, "
+            f"{len(report.refused)} row(s) this tool will not touch"
+        )
+        if report.changes:
+            print(summary, file=sys.stderr)
             return 1
+        if report.refused:
+            # A refusal is not the same finding as a drift, and the caller has
+            # to act differently: a drift is converged by an apply, a refusal is
+            # converged by a person adding the route in FreePBX — no number of
+            # re-runs will change it. Reporting it as plain drift is how an
+            # always-failing check becomes an apply-and-reload every 15 minutes
+            # on a live phone system that changes no row.
+            print(summary, file=sys.stderr)
+            return 3
         print(f"ava_routes: in sync ({len(report.ok)} DID(s) on {ROUTER})")
         return 0
 

@@ -184,6 +184,30 @@ class CliTest(unittest.TestCase):
             with open(routes, encoding="utf-8") as fh:
                 self.assertEqual(fh.read(), before)
 
+    def test_a_did_with_no_route_is_three_not_one(self):
+        """1 means an apply converges it; 3 means only a person can.
+
+        The caller acts on the difference: treating 3 as 1 makes the timer apply
+        and reload a live phone system every 15 minutes to change no row, because
+        a missing inbound route never clears itself.
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            plan, routes = self._fixture(tmp, [])  # neither DID has a row
+            rc = art.main(
+                ["--accounts-json", plan, "--routes-tsv", routes, "--check", "--quiet"]
+            )
+            self.assertEqual(rc, 3)
+
+    def test_a_convergeable_route_is_one_even_with_a_refusal_present(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            plan, routes = self._fixture(
+                tmp, ["7745057135\tfrom-did-direct,8005,1\tJob Interview"]
+            )
+            rc = art.main(
+                ["--accounts-json", plan, "--routes-tsv", routes, "--check", "--quiet"]
+            )
+            self.assertEqual(rc, 1)
+
     def test_check_passes_when_both_dids_are_on_the_router(self):
         with tempfile.TemporaryDirectory() as tmp:
             plan, routes = self._fixture(

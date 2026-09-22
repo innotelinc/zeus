@@ -213,6 +213,13 @@ Then the failure is outside AVA:
   1 (by design) when the ARI secret disagrees — fix §3 rather than forcing it.
   This is the script `zeus-pbx-sync.timer` runs every 15 minutes, so a red
   `zeus-pbx-sync.service` in `systemctl --failed` is this check and not the PBX.
+  The wrapper also reports `not applied` when the apply found nothing it may
+  write, and then prints the apply's own output: read it before assuming the PBX
+  is unreachable. The usual cause is a platform DID with **no inbound route in
+  FreePBX at all**, which no number of re-runs can fix —
+  `python3 pbx/ava_routes.py --db … --check` names the DID, and adding its
+  inbound route (destination `zeus-ai-router,s,1`) in the GUI is the fix. Exit 3
+  from that tool is this case; exit 1 is a route a re-run *will* converge.
 
 ## Before you escalate
 

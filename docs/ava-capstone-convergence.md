@@ -481,7 +481,25 @@ pattern — as *left alone*, so that is evidence rather than an assumption.
 The wiring is in `pbx/bootstrap-zeus-pbx.sh`, on both paths: `--check` fails on
 route drift, and an apply converges the routes **before** `fwconsole reload` —
 they are rows FreePBX builds its dialplan from, so the change is invisible until
-the dialplan is rebuilt. `./scripts/smoke-test.sh pbx` asserts the same ingress
+the dialplan is rebuilt.
+
+Judging the routes and applying them are separate functions there
+(`judge_routes` / `converge_routes`), which is a defect the first wiring had:
+the apply decision looked only at the *fragments*, and the timer's wrapper runs
+`--check` and then the apply when that fails. A PBX whose fragments are in sync
+and whose every DID points elsewhere therefore answered "already in sync" on
+every tick — and since the fix is a route row, that state would never have
+cleared itself. Measured on the live box at P1: fragments in sync, three DIDs off
+the router. Two further things came out of the same run. `out="$(cmd)"; rc=$?`
+under `set -e` aborts the shell *before* `rc` is read, so the status the apply
+existed to report killed the run instead of reporting it (now `|| rc=$?`, in all
+three places, so a non-zero status is data rather than a failure). And a refusal
+needs its own status — `pbx/ava_routes.py` exits `3` for "nothing this tool may
+write, and a row only a human can add" versus `1` for "an apply converges this"
+— because folding the two together sends an apply, and a `fwconsole reload`, at a
+live phone system every 15 minutes forever to change no row. A `3` fails
+`--check` identically (the gap is never quiet), and the wrapper prints the
+apply's own output to the journal when it declines. `./scripts/smoke-test.sh pbx` asserts the same ingress
 from the caller's side: both contexts present in the *live* dialplan (an apply
 with no reload is the same caller-visible failure from a different cause), plus
 the route table wherever the portal database is readable on that host.

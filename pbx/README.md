@@ -16,7 +16,7 @@ operational shape.
 | `setup-cloudonix-trunk.sh` | Peer a Cloudonix domain with this PBX (`pjsip_custom_cloudonix.conf` + `extensions_custom_cloudonix.conf`), **script-owned** — `bootstrap-zeus-pbx.sh` skips both files, and `docker-entrypoint-full.sh` calls this on boot. `--check` drift mode |
 | `bootstrap-zeus-pbx.sh` | Render + apply the fragments idempotently; `--check` drift mode |
 | `asterisk_converge.py` | Per-section merge for the **shared** `extensions_custom.conf` / `ari.conf` (ownership markers) |
-| `ava_routes.py` | Converge each platform DID's FreePBX inbound route onto `zeus-ai-router,s,1`, from the same plan that renders `[zeus-ai-accounts]` — see [One ingress](#one-ingress-every-platform-did-reaches-the-router). `--check` / `--apply`, `--routes-tsv` to judge off-host |
+| `ava_routes.py` | Converge each platform DID's FreePBX inbound route onto `zeus-ai-router,s,1`, from the same plan that renders `[zeus-ai-accounts]` — see [One ingress](#one-ingress-every-platform-did-reaches-the-router). `--check` / `--apply`, `--routes-tsv` to judge off-host. Exit 1 = an apply converges it, 3 = only a person can |
 | `ava_ari_check.py` | Does the engine and the PBX share one ARI secret? `--require-engine-env` is the mode the compose preflight runs — see [Voice plane gates](#voice-plane-gates-and-d7-assertions) |
 | `d7_assert.py` | The three D7 claims about the live stack (call recorded, both ARI apps registered, one gateway serving the configured model). `--call` places a self-contained probe call. Exit 2 = nothing could be evaluated |
 | `p0-snapshot.sh` | Records the live pre-state (containers, PBX files with hashes, routes, units, CDR watermark) before a change, in the `/root/revert-to-1510/` shape |
@@ -521,7 +521,29 @@ python3 pbx/ava_routes.py --db … --routes-tsv routes/incoming.tsv --check
 `bootstrap-zeus-pbx.sh` calls it on **both** paths: `--check` reports route drift
 and fails the run, and an apply converges the routes **before** `fwconsole
 reload` — they are rows FreePBX builds its dialplan from, so a change is live
-only once the dialplan is rebuilt. What the tool will not do, deliberately:
+only once the dialplan is rebuilt. Judging and applying are separate steps on
+purpose (`judge_routes` / `converge_routes` in the bootstrap), because the timer
+runs *check, then apply when that fails*: an apply that judged only the fragments
+would answer "already in sync" on a PBX whose files match and whose DIDs all
+point elsewhere, and would never have cleared itself.
+
+The tool's status is carried through whole, because three of them mean three
+different things to a caller:
+
+| status | meaning | what the caller does |
+| --- | --- | --- |
+| `0` | every platform DID reaches the router | nothing |
+| `1` | routes off it | apply — it converges them |
+| `3` | a platform DID with no route, or two | nothing an apply can do; add the route in FreePBX (the check keeps failing) |
+| `2` | no PBX reachable / table unreadable | nothing — a host running part of the group is not a drifted host |
+
+A `3` deliberately does **not** send the bootstrap down its apply path: an apply
+for it rewrites no row and still reloads a live phone system, so a 15-minute
+timer would do exactly that forever. It is not quiet either — `--check` fails on
+it (with a message naming the FreePBX step rather than the apply), and the
+wrapper puts the apply's own output in the journal when it refuses.
+
+What the tool will not do, deliberately:
 
 - **It never invents a route.** A DID with no inbound route at all (or two) is
   refused by name, for a human to fix in two clicks: creating an `incoming` row
