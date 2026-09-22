@@ -140,6 +140,9 @@ export async function GET(req: Request) {
 
     accounts.push({
       did: row.did,
+      // The portal's own account id, rendered as AI_ACCOUNT: the call envelope
+      // names the account, and FreePBX's DID is not a way to look one up.
+      account: row.user_id,
       agent: row.agent_slug ?? undefined,
       capstone_addon: gate.entitled,
       capstone_target: gate.entitled
