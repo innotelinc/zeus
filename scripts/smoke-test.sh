@@ -13,6 +13,10 @@
 #             • ARI HTTP port open (ARI_HTTP_PORT, default 8088)
 #             • PBX fragments in sync (pbx/bootstrap-zeus-pbx.sh --check)
 #             • RTP plane: published block == Asterisk effective range
+#             • One ingress (P1): [zeus-ai-router] and [zeus-ai-accounts] are in
+#               the live dialplan, and — where this host holds the portal
+#               database — every platform DID's inbound route reaches the
+#               router (pbx/ava_routes.py --check)
 #   Fax       • AvantFax reachable (AVANTFAX_URL) and its MariaDB has strict
 #               mode off (AvantFAX writes '' into DATE/TIMESTAMP columns, which
 #               strict mode rejects with error 1292 → HTTP 500 after login)
@@ -21,10 +25,19 @@
 # Optional sections are skipped (with a note) when their env vars are unset,
 # so the smoke runs in a bare dev checkout too.
 #
+#   Voice     • the D7 assertions (pbx/d7_assert.py): both agents registered
+#               with the PBX, the CDR backend wired — and, with D7_CALL=1, a
+#               test call that proves it writes — and the gateway offering the
+#               model the engine is configured to use
+#
 # Usage (run from the repo root):
 #   ./scripts/smoke-test.sh            # everything
 #   ./scripts/smoke-test.sh portal     # portal only
 #   ./scripts/smoke-test.sh pbx        # pbx only
+#   ./scripts/smoke-test.sh voice      # voice plane (D7 assertions)
+#
+# Env: D7_CALL=1 places the CDR test call (a Local channel at 12@default — no
+#      trunk, no phone, no agent). D7_PBX names the FreePBX container.
 #
 # Exit code: 0 = all checks passed, 1 = one or more failures.
 # ═══════════════════════════════════════════════════════════════════
@@ -162,8 +175,70 @@ if [ "$SCOPE" = all ] || [ "$SCOPE" = pbx ]; then
     else
       fail "Asterisk effective RTP range is ${eff_start:-unknown}-${eff_end:-unknown}; expected within ${rtp_start}-${rtp_end} (settings DB drifted?)"
     fi
+
+    # ── One ingress (P1) ─────────────────────────────────────────
+    # Every platform DID is meant to reach [zeus-ai-router], which dispatches
+    # per DID into [zeus-ai-accounts]. A PBX with the fragments *written* and
+    # not *loaded* (an apply with no reload) answers "unknown extension"
+    # instead of reaching an agent — the same caller-visible failure as the
+    # routes being wrong, from a different cause, and neither is visible in
+    # the files the last section just compared.
+    if docker exec "$FBX" asterisk -rx 'dialplan show zeus-ai-router' 2>/dev/null | grep -q 'zeus-ai-accounts'; then
+      pass "the AVA router is loaded and dispatches into zeus-ai-accounts"
+    else
+      fail "the AVA router is not in the live dialplan (apply the fragments, then reload)"
+    fi
+    if docker exec "$FBX" asterisk -rx 'dialplan show zeus-ai-accounts' 2>/dev/null | grep -q 'exten =>'; then
+      pass "the per-DID accounts context is loaded"
+    else
+      fail "zeus-ai-accounts is not in the live dialplan"
+    fi
+    # The route *rows* are a judgement about which DIDs reach the router, and
+    # that needs the plan — the portal's own answer, or the cached database
+    # this host holds. Where neither is readable the run says what it did not
+    # judge rather than implying the ingress is fine.
+    ingress_db="$(docker volume inspect zeus-portal-data --format '{{.Mountpoint}}' 2>/dev/null || true)"
+    if [ -n "$ingress_db" ] && [ -f "$ingress_db/pbx.db" ] && [ -f pbx/ava_routes.py ]; then
+      if python3 pbx/ava_routes.py --db "$ingress_db/pbx.db" --check >/dev/null 2>&1; then
+        pass "every platform DID's inbound route reaches the AVA router"
+      else
+        fail "DID inbound routes are off zeus-ai-router,s,1 (python3 pbx/ava_routes.py --db <portal.db> --check)"
+      fi
+    else
+      skip "DID inbound routes (no portal database readable here — run pbx/ava_routes.py --check with a plan)"
+    fi
   else
     skip "PBX RTP plane (container $FBX not running)"
+  fi
+fi
+
+# ─── Voice plane (D7 assertions) ─────────────────────────────────
+# D7 is three claims — the call is recorded, both agents are registered, and
+# reasoning comes from the one gateway — and every one of them has been false on
+# this estate without anything failing loudly: CDR wrote nothing for nine days
+# while the PBX looked healthy, an unregistered engine is indistinguishable from
+# an idle one, and a gateway that 502s a model returns an HTML page the engine
+# can only report as a call that did not work.
+#
+# They are asserted by a script rather than inline because the parsing is where
+# this goes wrong: "DSN asteriskcdrdb has 0 active connections" and "the gateway
+# answered 200 but does not offer the configured model" are the two shapes that
+# a naive check calls healthy.
+if [ "$SCOPE" = all ] || [ "$SCOPE" = voice ]; then
+  if [ -f pbx/d7_assert.py ]; then
+    d7_args=(--live)
+    [ -n "${D7_CALL:-}" ] && d7_args+=(--call)
+    [ -n "${D7_PBX:-}" ] && d7_args+=(--pbx "$D7_PBX")
+    d7_out="$(python3 pbx/d7_assert.py "${d7_args[@]}" 2>&1)"
+    d7_rc=$?
+    printf '%s\n' "$d7_out" | sed 's/^/       /'
+    case "$d7_rc" in
+      0) pass "D7 assertions hold (ARI apps, CDR backend, gateway model probe)" ;;
+      2) skip "D7 assertions (no PBX container, or no .env, on this host)" ;;
+      *) fail "D7 assertions do not hold — see the [!!] lines above" ;;
+    esac
+  else
+    skip "D7 assertions (pbx/d7_assert.py not present)"
   fi
 fi
 

@@ -422,6 +422,35 @@ later can be trusted. P0 also makes the two silent failure modes loud.
   damage still excluded/owned by the entrypoint (`manager_custom.conf`,
   `http_custom.conf`), verified with `--check` before and after.
 
+**As built (2026-09-21/22):** the snapshot is `pbx/p0-snapshot.sh` (read-only,
+names every probe it could not run in its `MANIFEST`); the trunk repair is
+`pbx/patch-freepbx-trunk-next-id.py`, in the image entrypoint *and* re-asserted
+by every apply; the ARI assertion is the `voice-preflight` one-shot that
+`ai-engine` waits on, with `--require-engine-env` for the case where a missing
+`.env` is itself the defect; the D7 claims are `pbx/d7_assert.py`, also
+reachable as `./scripts/smoke-test.sh voice`. The sync's first run is safe
+because `manager_custom.conf` moved to the entrypoint-owned set and
+`http_custom.conf` stopped overriding FreePBX's own `enablestatic`. The unit now
+runs `scripts/zeus-pbx-sync.sh`, so the credential gate stands *in front of* the
+apply rather than beside it (`scripts/tests/test_pbx_sync_unit.py` pins that).
+The detections and the commands are in [`pbx/README.md`](../pbx/README.md) §
+Voice plane gates and D7 assertions.
+
+The `--check` before/after pair also became *rehearsable* off-host, which is the
+half of P0's exit that does not need `.30`:
+`python3 -m unittest discover -s pbx/tests -p 'test_bootstrap_zeus_pbx.py'`
+applies to a scratch Asterisk directory and asserts that the second apply changes
+no byte, that the following `--check` agrees, and that `--check` writes nothing.
+That last one is a P0 defect found while writing it: on a target with no
+converge-owned file yet, `--check` created an empty `ari_additional_custom.conf`
+while reporting it as drift — a pre-state that changes itself, in front of both
+the check and P0's snapshot.
+
+**Still a live action on `.30`:** re-enable `zeus-pbx-sync.timer` and take the
+`--check` before/after pair. It is the one P0 item the tree cannot close — the
+host takes no key from here — and the first timer run is the thing P0's
+reconciler work exists to make uneventful.
+
 **Exit:** sync runs clean on a 15-minute cycle with a byte-identical PBX;
 `--check` passes; assertions visible.
 
@@ -435,6 +464,42 @@ later can be trusted. P0 also makes the two silent failure modes loud.
   matching Capstone) and `=0` when Magnate says `entitled: false`.
 - Prove: each DID answers as its AVA agent, and a hand-off attempt from an
   unentitled account lands on `refused`/operator, never Capstone.
+
+**As built (2026-09-22):** the DIDs' routes have an owner —
+`pbx/ava_routes.py`. It reads the plan `pbx/ava_routing.py` renders
+`[zeus-ai-accounts]` from, so an inbound route and the account entry it
+dispatches to cannot disagree about what a number is; it rewrites a mis-prefixed
+`extension` at the same time as the destination (a row stored as `17745057135`
+never matches a call to `7745057135`, so it is drift like any other); and it
+writes its undo script *before* it writes anything. Two rules it carries: it
+converges rows that exist (a DID with no inbound route — or two — is refused **by
+name** rather than invented, because guessing FreePBX's other columns a row at a
+time is worse than a named gap), and it only ever touches DIDs the plan names,
+reporting the rest of the table — the ring group, a partner's number, a `_2XX`
+pattern — as *left alone*, so that is evidence rather than an assumption.
+
+The wiring is in `pbx/bootstrap-zeus-pbx.sh`, on both paths: `--check` fails on
+route drift, and an apply converges the routes **before** `fwconsole reload` —
+they are rows FreePBX builds its dialplan from, so the change is invisible until
+the dialplan is rebuilt. `./scripts/smoke-test.sh pbx` asserts the same ingress
+from the caller's side: both contexts present in the *live* dialplan (an apply
+with no reload is the same caller-visible failure from a different cause), plus
+the route table wherever the portal database is readable on that host.
+
+The judgement is also rehearsable with no PBX at all — the half of P1's exit that
+does not need `.30`:
+`python3 -m unittest discover -s pbx/tests -p 'test_bootstrap_zeus_pbx.py'`
+builds a throwaway portal database and a route table and asserts that a DID off
+the router is drift, that two on it are in sync, and that a number the plan does
+not name (`7745057136`, the ring group) is left alone. Writing routes from a dump
+cannot be right, so `ZEUS_ROUTES_TSV` is check-only.
+
+**Still a live action on `.30`:** take the phase's pre-state
+(`pbx/p0-snapshot.sh`), then apply. The route write, its revert script and the
+reload are the phase's own change; `zeus-pbx-sync.timer` keeps them converged
+from then on. The DIDs and the ring group are the operator's data rather than
+this repo's, so P1's *effect* — each DID answering as its AVA agent, the gate
+proven both ways — is measured there, not asserted here.
 
 **Exit:** every DID answered by AVA, gate proven both ways, `7745057136` left on
 its ring group.

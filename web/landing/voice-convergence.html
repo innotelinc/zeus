@@ -674,6 +674,32 @@
     damage still excluded/owned by the entrypoint (<code>manager_custom.conf</code>,
     <code>http_custom.conf</code>), verified with <code>--check</code> before and after.</li>
   </ul>
+  <p><strong>As built (2026-09-21/22):</strong> the snapshot is <code>pbx/p0-snapshot.sh</code> (read-only,
+  names every probe it could not run in its <code>MANIFEST</code>); the trunk repair is
+  <code>pbx/patch-freepbx-trunk-next-id.py</code>, in the image entrypoint <em>and</em> re-asserted
+  by every apply; the ARI assertion is the <code>voice-preflight</code> one-shot that
+  <code>ai-engine</code> waits on, with <code>--require-engine-env</code> for the case where a missing
+  <code>.env</code> is itself the defect; the D7 claims are <code>pbx/d7_assert.py</code>, also
+  reachable as <code>./scripts/smoke-test.sh voice</code>. The sync's first run is safe
+  because <code>manager_custom.conf</code> moved to the entrypoint-owned set and
+  <code>http_custom.conf</code> stopped overriding FreePBX's own <code>enablestatic</code>. The unit now
+  runs <code>scripts/zeus-pbx-sync.sh</code>, so the credential gate stands <em>in front of</em> the
+  apply rather than beside it (<code>scripts/tests/test_pbx_sync_unit.py</code> pins that).
+  The detections and the commands are in <a href="../pbx/README.md"><code>pbx/README.md</code></a> §
+  Voice plane gates and D7 assertions.</p>
+  <p>The <code>--check</code> before/after pair also became <em>rehearsable</em> off-host, which is the
+  half of P0's exit that does not need <code>.30</code>:
+  <code>python3 -m unittest discover -s pbx/tests -p 'test_bootstrap_zeus_pbx.py'</code>
+  applies to a scratch Asterisk directory and asserts that the second apply changes
+  no byte, that the following <code>--check</code> agrees, and that <code>--check</code> writes nothing.
+  That last one is a P0 defect found while writing it: on a target with no
+  converge-owned file yet, <code>--check</code> created an empty <code>ari_additional_custom.conf</code>
+  while reporting it as drift — a pre-state that changes itself, in front of both
+  the check and P0's snapshot.</p>
+  <p><strong>Still a live action on <code>.30</code>:</strong> re-enable <code>zeus-pbx-sync.timer</code> and take the
+  <code>--check</code> before/after pair. It is the one P0 item the tree cannot close — the
+  host takes no key from here — and the first timer run is the thing P0's
+  reconciler work exists to make uneventful.</p>
   <p><strong>Exit:</strong> sync runs clean on a 15-minute cycle with a byte-identical PBX;
   <code>--check</code> passes; assertions visible.</p>
   <p><strong>Rollback:</strong> stop the timer; restore the P0 snapshot.</p>
@@ -686,6 +712,38 @@
   <li>Prove: each DID answers as its AVA agent, and a hand-off attempt from an
     unentitled account lands on <code>refused</code>/operator, never Capstone.</li>
   </ul>
+  <p><strong>As built (2026-09-22):</strong> the DIDs' routes have an owner —
+  <code>pbx/ava_routes.py</code>. It reads the plan <code>pbx/ava_routing.py</code> renders
+  <code>[zeus-ai-accounts]</code> from, so an inbound route and the account entry it
+  dispatches to cannot disagree about what a number is; it rewrites a mis-prefixed
+  <code>extension</code> at the same time as the destination (a row stored as <code>17745057135</code>
+  never matches a call to <code>7745057135</code>, so it is drift like any other); and it
+  writes its undo script <em>before</em> it writes anything. Two rules it carries: it
+  converges rows that exist (a DID with no inbound route — or two — is refused <strong>by
+  name</strong> rather than invented, because guessing FreePBX's other columns a row at a
+  time is worse than a named gap), and it only ever touches DIDs the plan names,
+  reporting the rest of the table — the ring group, a partner's number, a <code>_2XX</code>
+  pattern — as <em>left alone</em>, so that is evidence rather than an assumption.</p>
+  <p>The wiring is in <code>pbx/bootstrap-zeus-pbx.sh</code>, on both paths: <code>--check</code> fails on
+  route drift, and an apply converges the routes <strong>before</strong> <code>fwconsole reload</code> —
+  they are rows FreePBX builds its dialplan from, so the change is invisible until
+  the dialplan is rebuilt. <code>./scripts/smoke-test.sh pbx</code> asserts the same ingress
+  from the caller's side: both contexts present in the <em>live</em> dialplan (an apply
+  with no reload is the same caller-visible failure from a different cause), plus
+  the route table wherever the portal database is readable on that host.</p>
+  <p>The judgement is also rehearsable with no PBX at all — the half of P1's exit that
+  does not need <code>.30</code>:
+  <code>python3 -m unittest discover -s pbx/tests -p 'test_bootstrap_zeus_pbx.py'</code>
+  builds a throwaway portal database and a route table and asserts that a DID off
+  the router is drift, that two on it are in sync, and that a number the plan does
+  not name (<code>7745057136</code>, the ring group) is left alone. Writing routes from a dump
+  cannot be right, so <code>ZEUS_ROUTES_TSV</code> is check-only.</p>
+  <p><strong>Still a live action on <code>.30</code>:</strong> take the phase's pre-state
+  (<code>pbx/p0-snapshot.sh</code>), then apply. The route write, its revert script and the
+  reload are the phase's own change; <code>zeus-pbx-sync.timer</code> keeps them converged
+  from then on. The DIDs and the ring group are the operator's data rather than
+  this repo's, so P1's <em>effect</em> — each DID answering as its AVA agent, the gate
+  proven both ways — is measured there, not asserted here.</p>
   <p><strong>Exit:</strong> every DID answered by AVA, gate proven both ways, <code>7745057136</code> left on
   its ring group.</p>
   <p><strong>Rollback:</strong> restore the route SQL from the snapshot.</p>

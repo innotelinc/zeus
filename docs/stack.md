@@ -86,7 +86,9 @@ Dograh ARI connects to Zeus/FreePBX):**
   (drift re-apply every 15 min); installed by `scripts/setup-portal.sh` from
   the templates.
 - `scripts/smoke-test.sh` — live-stack smoke (portal, NPM hosts, PBX/AMI/ARI,
-  AvantFax, VoIP.ms); `scripts/zeus-pbx-sync.sh` journal-friendly wrapper.
+  AvantFax, VoIP.ms); `scripts/zeus-pbx-sync.sh` journal-friendly wrapper —
+  the unit's own entry point, so the ARI credential gate runs before every
+  timer-driven apply.
 - `compose.observability.yml` — **optional SigNoz profile** (OTel → SigNoz,
   Capstone's topology with `zeus-` prefixed names so the stacks can coexist):
   postgres metastore + ClickHouse Keeper/25.4 + unified `signoz` binary on

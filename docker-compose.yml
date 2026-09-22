@@ -175,6 +175,56 @@ services:
   # engine back for AudioSocket media, and ARI is bound to the host's LAN
   # address (192.168.1.30:8088). Neither leg is expressible with published
   # ports.
+  # ── Voice profile preflight: the ARI credential must agree before the ──
+  # ── engine is allowed to start. ──
+  # The engine authenticates to Asterisk with AVA_ARI_SECRET, which is written
+  # by two unrelated things — pbx/bootstrap-zeus-pbx.sh renders it into ari.conf
+  # from scripts/pbx.env, and this (the .env) hands it to the container. Nothing
+  # reconciles them, and the bootstrap GENERATES a fresh secret whenever pbx.env
+  # is blank, so a bare `--profile voice up` can start an engine whose password
+  # Asterisk will never accept. The only symptom is calls that are never
+  # answered — no error names the credential, because to Asterisk a wrong
+  # password is just a failed login.
+  #
+  # So the gate is a one-shot container that runs before the engine and must
+  # exit 0 for it to start (depends_on … service_completed_successfully).
+  # --require-engine-env is the point of running it here: this container only
+  # exists because somebody asked for the voice profile, so "there is no .env"
+  # and "AVA_ARI_SECRET is blank" are the same defect as a mismatch, not
+  # reasons to stand down (which is what the deploy-script check does, and
+  # correctly: that one also runs on portal-only hosts).
+  #
+  # It borrows the engine's image — the one image the voice profile provably
+  # has, so the gate adds no base image to pull and no build of its own — and
+  # overrides its entrypoint. Failed gate: `docker compose logs voice-preflight`
+  # names which file and which key, and what to do about it.
+  voice-preflight:
+    profiles: ["voice"]
+    image: zeus-ava-engine:${AVA_VERSION:-v7.6.1}
+    container_name: zeus-ava-preflight
+    # One-shot: it is a gate, not a service. On failure compose stops with
+    # exit 1 and the engine is left at "Created" rather than starting.
+    restart: "no"
+    # ROOT, and this is not incidental. Both files are curated by root: `.env`
+    # is mode 0600 and scripts/pbx.env is what the bootstrap writes. The engine
+    # image runs as appuser (uid 1000) — inheriting that here made the gate
+    # fail on a perfectly consistent host with "Permission denied", because it
+    # is not the container that is wrong, the uid is. It reads two files it is
+    # handed and exits; it needs no privilege for anything else. The check
+    # reports a genuine permission problem in its own words rather than
+    # mistaking it for a missing file (see Unreadable in pbx/ava_ari_check.py).
+    user: "0:0"
+    entrypoint: ["python3", "/pbx/ava_ari_check.py", "--require-engine-env", "--engine-env", "/voice-env/engine.env", "--pbx-env", "/voice-env/pbx.env"]
+    volumes:
+      # Read-only: this decides whether to start the engine, it never edits
+      # anyone's configuration to make itself pass.
+      - ./pbx:/pbx:ro
+      # Renamed on the way in so the paths in the failure message are the
+      # container's, and so neither file can be read at its repo location and
+      # shadowed by a stale copy.
+      - ./.env:/voice-env/engine.env:ro
+      - ./scripts/pbx.env:/voice-env/pbx.env:ro
+
   ai-engine:
     profiles: ["voice"]
     build:
@@ -186,6 +236,11 @@ services:
     container_name: zeus-ava-engine
     restart: unless-stopped
     network_mode: host
+    # The gate above: a mismatched or missing ARI secret stops the engine
+    # before it starts retrying a login Asterisk will refuse.
+    depends_on:
+      voice-preflight:
+        condition: service_completed_successfully
     environment:
       # ARI. The user is AVA's own (pbx/asterisk/ari.conf renders it from
       # AVA_ARI_USER/AVA_ARI_SECRET) — the portal's ARI user is separate.

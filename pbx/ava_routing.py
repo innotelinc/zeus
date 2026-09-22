@@ -52,7 +52,7 @@ class PlanError(ValueError):
     """A routing plan that must not be rendered."""
 
 
-def _normalize_did(raw: object) -> str:
+def normalize_did(raw: object) -> str:
     """Return the DID as digits, or raise.
 
     DIDs reach us from a phone-number table, a CSV export of one, and
@@ -64,6 +64,12 @@ def _normalize_did(raw: object) -> str:
 
     Anything that is not 7-15 digits is refused rather than rendered into a
     dialplan pattern.
+
+    Public, and shared with ``pbx/ava_routes.py``: an inbound route must match
+    the ``[zeus-ai-accounts]`` entry it dispatches to, so the writer of the
+    routes and the writer of the accounts block need one answer to "is this the
+    same number". Two normalizations is how the estate got a DID whose route
+    and account entry disagreed.
     """
     did = "".join(ch for ch in str(raw) if ch.isdigit())
     if len(did) == 11 and did.startswith("1"):
@@ -152,7 +158,7 @@ def validate(plan: dict) -> list[dict]:
         if not isinstance(raw, dict):
             raise PlanError(f"accounts[{idx}] is not an object")
 
-        did = _normalize_did(raw.get("did"))
+        did = normalize_did(raw.get("did"))
         if did in seen:
             # Two owners for one DID would make the route depend on row order.
             raise PlanError(f"duplicate DID in plan: {did}")

@@ -221,7 +221,17 @@ the engine's STT/TTS is unavailable until it answers on `127.0.0.1:8765`.
 ### Pointing calls at AVA
 
 1. **Inbound routes → Custom Destination `zeus-ai-router,s,1`.** One route per
-   DID; no per-route variables needed.
+   DID; no per-route variables needed. This is a *converged* setting rather than
+   a GUI step — `pbx/ava_routes.py` writes it from the same plan as the account
+   block below, and `pbx/bootstrap-zeus-pbx.sh` runs it on both its check and
+   apply paths (so `zeus-pbx-sync.timer` keeps it true):
+
+   ```bash
+   python3 pbx/ava_routes.py --db <portal.db> --apply   # writes its undo first
+   ```
+
+   It converges rows that exist and never invents one, so a DID with no inbound
+   route at all is named for a human instead of guessed at.
 2. **Render the per-account block** and converge it into the live dialplan:
 
    ```bash
