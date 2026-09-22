@@ -762,12 +762,22 @@
   the router is drift, that two on it are in sync, and that a number the plan does
   not name (<code>7745057136</code>, the ring group) is left alone. Writing routes from a dump
   cannot be right, so <code>ZEUS_ROUTES_TSV</code> is check-only.</p>
-  <p><strong>Still a live action on <code>.30</code>:</strong> take the phase's pre-state
-  (<code>pbx/p0-snapshot.sh</code>), then apply. The route write, its revert script and the
-  reload are the phase's own change; <code>zeus-pbx-sync.timer</code> keeps them converged
-  from then on. The DIDs and the ring group are the operator's data rather than
-  this repo's, so P1's <em>effect</em> — each DID answering as its AVA agent, the gate
-  proven both ways — is measured there, not asserted here.</p>
+  <p><strong>Measured on <code>.30</code> (2026-09-22):</strong> the pre-state was taken first
+  (<code>pbx/p0-snapshot.sh</code>), then the routes converged — three DIDs rewritten onto
+  <code>zeus-ai-router,s,1</code> with the undo written before the write, then <code>fwconsole
+  reload</code>. Four more DIDs (the plan named them; FreePBX had no route for any of
+  them) were then created with <code>--apply --create-missing</code>, each through
+  FreePBX's own <code>addDID</code> — the rows carry the framework's defaults (<code>mohclass
+  default</code>, <code>pmmaxretries 3</code>, <code>pmminlength 10</code>) rather than anything hand-guessed,
+  and the undo script is four <code>DELETE</code>s. <code>--check</code> reports <strong>7/7 DIDs on the
+  router, in sync</strong>, the ring group and the <code>[dograh-inbound]</code> mocks are
+  untouched, <code>./scripts/smoke-test.sh pbx</code> passes every route assertion, and the
+  timer's next tick logged <code>zeus-pbx-sync: in sync</code> with no apply and no reload.
+  The route write, its revert script and the reload are the phase's own change;
+  <code>zeus-pbx-sync.timer</code> keeps them converged from then on. The DIDs and the ring
+  group are the operator's data rather than this repo's, so P1's <em>effect</em> — each
+  DID answering as its AVA agent, the gate proven both ways — is measured there,
+  not asserted here.</p>
   <p><strong>Exit:</strong> every DID answered by AVA, gate proven both ways, <code>7745057136</code> left on
   its ring group.</p>
   <p><strong>Rollback:</strong> restore the route SQL from the snapshot.</p>

@@ -519,12 +519,22 @@ the router is drift, that two on it are in sync, and that a number the plan does
 not name (`7745057136`, the ring group) is left alone. Writing routes from a dump
 cannot be right, so `ZEUS_ROUTES_TSV` is check-only.
 
-**Still a live action on `.30`:** take the phase's pre-state
-(`pbx/p0-snapshot.sh`), then apply. The route write, its revert script and the
-reload are the phase's own change; `zeus-pbx-sync.timer` keeps them converged
-from then on. The DIDs and the ring group are the operator's data rather than
-this repo's, so P1's *effect* — each DID answering as its AVA agent, the gate
-proven both ways — is measured there, not asserted here.
+**Measured on `.30` (2026-09-22):** the pre-state was taken first
+(`pbx/p0-snapshot.sh`), then the routes converged — three DIDs rewritten onto
+`zeus-ai-router,s,1` with the undo written before the write, then `fwconsole
+reload`. Four more DIDs (the plan named them; FreePBX had no route for any of
+them) were then created with `--apply --create-missing`, each through
+FreePBX's own `addDID` — the rows carry the framework's defaults (`mohclass
+default`, `pmmaxretries 3`, `pmminlength 10`) rather than anything hand-guessed,
+and the undo script is four `DELETE`s. `--check` reports **7/7 DIDs on the
+router, in sync**, the ring group and the `[dograh-inbound]` mocks are
+untouched, `./scripts/smoke-test.sh pbx` passes every route assertion, and the
+timer's next tick logged `zeus-pbx-sync: in sync` with no apply and no reload.
+The route write, its revert script and the reload are the phase's own change;
+`zeus-pbx-sync.timer` keeps them converged from then on. The DIDs and the ring
+group are the operator's data rather than this repo's, so P1's *effect* — each
+DID answering as its AVA agent, the gate proven both ways — is measured there,
+not asserted here.
 
 **Exit:** every DID answered by AVA, gate proven both ways, `7745057136` left on
 its ring group.
