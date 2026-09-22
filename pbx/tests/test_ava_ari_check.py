@@ -77,5 +77,94 @@ class VerdictTest(unittest.TestCase):
         self.assertTrue(agreed, message)
 
 
+class VoiceProfileGateTest(unittest.TestCase):
+    """--require-engine-env: the two passes that stop being passes.
+
+    The compose preflight only runs because the voice profile was selected, so
+    on that path "no engine environment" and "no ARI secret in it" are both the
+    defect this check exists to catch — not reasons to stand down.
+    """
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp()
+        self.addCleanup(lambda: __import__("shutil").rmtree(self.tmp, ignore_errors=True))
+        self.engine = os.path.join(self.tmp, ".env")
+        self.pbx = os.path.join(self.tmp, "pbx.env")
+
+    def _write(self, path, text):
+        with open(path, "w", encoding="utf-8") as fh:
+            fh.write(text)
+
+    def test_absent_engine_env_is_refused(self):
+        self._write(self.pbx, "AVA_ARI_SECRET=deadbeef\n")
+        agreed, message = check.verdict(self.engine, self.pbx, require_engine_env=True)
+        self.assertFalse(agreed)
+        self.assertIn("does not exist", message)
+        self.assertIn("never answered", message)
+
+    def test_unset_engine_secret_is_refused(self):
+        self._write(self.engine, "MAGNATE_PUBLIC_URL=\n")
+        self._write(self.pbx, "AVA_ARI_SECRET=cafebabe\n")
+        agreed, message = check.verdict(self.engine, self.pbx, require_engine_env=True)
+        self.assertFalse(agreed)
+        self.assertIn("no ARI credential for the engine to use", message)
+
+    def test_agreeing_secrets_still_pass_under_the_stricter_mode(self):
+        self._write(self.engine, "AVA_ARI_SECRET=deadbeef\n")
+        self._write(self.pbx, "AVA_ARI_SECRET=deadbeef\n")
+        agreed, message = check.verdict(self.engine, self.pbx, require_engine_env=True)
+        self.assertTrue(agreed, message)
+
+    def test_the_default_stays_permissive(self):
+        self._write(self.pbx, "AVA_ARI_SECRET=deadbeef\n")
+        agreed, _ = check.verdict(self.engine, self.pbx)
+        self.assertTrue(agreed)
+
+    def test_a_bind_mounted_absence_reads_as_absent_not_as_a_crash(self):
+        """Docker makes a directory at a bind source that does not exist.
+
+        That is how "the operator never created .env" reaches the preflight, so
+        the check must name it as a missing file rather than die on open().
+        """
+        os.makedirs(self.engine)
+        self._write(self.pbx, "AVA_ARI_SECRET=deadbeef\n")
+        agreed, message = check.verdict(self.engine, self.pbx, require_engine_env=True)
+        self.assertFalse(agreed)
+        self.assertIn("does not exist", message)
+
+    @unittest.skipIf(os.geteuid() == 0, "root can read anything, so there is no denial to test")
+    def test_an_unreadable_file_is_not_reported_as_missing(self):
+        """0600 root-owned .env + a reader that is not root = Permission denied.
+
+        Reporting that as "does not exist" would send the operator to create a
+        file they already have, which is why it raises instead.
+        """
+        self._write(self.engine, "AVA_ARI_SECRET=deadbeef\n")
+        self._write(self.pbx, "AVA_ARI_SECRET=deadbeef\n")
+        os.chmod(self.engine, 0o000)
+        self.addCleanup(os.chmod, self.engine, 0o600)
+        with self.assertRaises(check.Unreadable) as caught:
+            check.verdict(self.engine, self.pbx, require_engine_env=True)
+        self.assertIn(self.engine, str(caught.exception))
+
+    def test_the_unreadable_message_names_the_uid_as_the_cause(self):
+        """main() must not print a traceback for the docker-only failure mode."""
+        import contextlib
+        import io
+
+        self._write(self.pbx, "AVA_ARI_SECRET=deadbeef\n")
+        real_verdict = check.verdict
+        check.verdict = lambda *a, **k: (_ for _ in ()).throw(check.Unreadable("x: Permission denied"))
+        self.addCleanup(setattr, check, "verdict", real_verdict)
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err):
+            rc = check.main(["ava_ari_check.py"])
+        self.assertEqual(rc, 1)
+        message = err.getvalue()
+        self.assertIn("not a missing configuration", message)
+        self.assertIn('user: "0:0"', message)
+        self.assertNotIn("Traceback", message)
+
+
 if __name__ == "__main__":
     unittest.main()

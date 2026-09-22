@@ -186,7 +186,18 @@ from a usable one.
 Then the failure is outside AVA:
 
 * **A DID is not routed.** Inbound route → Custom Destination
-  `zeus-ai-router,s,1`, one per DID. Check `dialplan show zeus-ai-accounts`.
+  `zeus-ai-router,s,1`, one per DID. Check `dialplan show zeus-ai-accounts`,
+  then judge the route rows themselves — the same plan renders the account
+  entries and rewrites the routes, so the two cannot disagree:
+
+  ```bash
+  python3 pbx/ava_routes.py --db /var/lib/docker/volumes/zeus-portal-data/_data/pbx.db --check
+  ```
+
+  A DID it *refuses* (no inbound route at all, or two) is the one case this
+  cannot fix for you: it converges rows that exist and never invents one, so add
+  the route in FreePBX and re-run. Everything else in the table is left alone by
+  design — a ring group, a partner's number, a `_2XX` pattern.
 * **`[zeus-ai-accounts]` is stale or missing.** It is generated from the
   portal's plan, not edited by hand:
 
@@ -200,6 +211,8 @@ Then the failure is outside AVA:
 
 * **The PBX sync is refusing to apply.** `bash scripts/zeus-pbx-sync.sh` exits
   1 (by design) when the ARI secret disagrees — fix §3 rather than forcing it.
+  This is the script `zeus-pbx-sync.timer` runs every 15 minutes, so a red
+  `zeus-pbx-sync.service` in `systemctl --failed` is this check and not the PBX.
 
 ## Before you escalate
 

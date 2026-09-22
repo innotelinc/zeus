@@ -1,6 +1,7 @@
 # Zeus — reconcile PBX fragments (AMI/ARI/WSS/dialplan) with the FreePBX box
-# Runs pbx/bootstrap-zeus-pbx.sh --check and re-applies on drift, then
-# reloads the dialplan. Installed by scripts/setup-portal.sh (or manually);
+# Runs scripts/zeus-pbx-sync.sh: the wrapper gates on the engine's ARI
+# credential, asks bootstrap to --check, and re-applies on drift (reloading the
+# dialplan). Installed by scripts/setup-portal.sh (or manually);
 # WorkingDirectory is rewritten to the real repo root at install time.
 [Unit]
 Description=Zeus — sync PBX fragments into FreePBX
@@ -13,9 +14,15 @@ Wants=network-online.target
 Type=oneshot
 WorkingDirectory=/PATH/TO/ZEUS
 Environment=PBX_ENV_FILE=/PATH/TO/ZEUS/scripts/pbx.env
-# --check exits 1 when drifted; apply (idempotent) otherwise. A slow PBX
-# boot after reboot gets a generous window so the timer run doesn't fail.
-ExecStart=/usr/bin/env bash pbx/bootstrap-zeus-pbx.sh
+# The WRAPPER, not bootstrap directly. Calling pbx/bootstrap-zeus-pbx.sh here
+# would re-apply fragments without ever asking whether the engine's ARI secret
+# is the one ari.conf carries — the one disagreement whose only symptom is
+# calls that are never answered, because to Asterisk a wrong password is just a
+# failed login. The wrapper checks that first and refuses to apply over it
+# (exit 1, documented in docs/ava-runbook.md), then no-ops when the fragments
+# are already in sync. It exits 0 when the PBX is merely unreachable, so a slow
+# boot after a reboot is not a failed unit; the window below covers that boot.
+ExecStart=/usr/bin/env bash scripts/zeus-pbx-sync.sh
 TimeoutStartSec=120s
 StandardOutput=journal
 StandardError=journal

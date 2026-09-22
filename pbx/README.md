@@ -16,6 +16,11 @@ operational shape.
 | `setup-cloudonix-trunk.sh` | Peer a Cloudonix domain with this PBX (`pjsip_custom_cloudonix.conf` + `extensions_custom_cloudonix.conf`), **script-owned** — `bootstrap-zeus-pbx.sh` skips both files, and `docker-entrypoint-full.sh` calls this on boot. `--check` drift mode |
 | `bootstrap-zeus-pbx.sh` | Render + apply the fragments idempotently; `--check` drift mode |
 | `asterisk_converge.py` | Per-section merge for the **shared** `extensions_custom.conf` / `ari.conf` (ownership markers) |
+| `ava_routes.py` | Converge each platform DID's FreePBX inbound route onto `zeus-ai-router,s,1`, from the same plan that renders `[zeus-ai-accounts]` — see [One ingress](#one-ingress-every-platform-did-reaches-the-router). `--check` / `--apply`, `--routes-tsv` to judge off-host |
+| `ava_ari_check.py` | Does the engine and the PBX share one ARI secret? `--require-engine-env` is the mode the compose preflight runs — see [Voice plane gates](#voice-plane-gates-and-d7-assertions) |
+| `d7_assert.py` | The three D7 claims about the live stack (call recorded, both ARI apps registered, one gateway serving the configured model). `--call` places a self-contained probe call. Exit 2 = nothing could be evaluated |
+| `p0-snapshot.sh` | Records the live pre-state (containers, PBX files with hashes, routes, units, CDR watermark) before a change, in the `/root/revert-to-1510/` shape |
+| `patch-freepbx-trunk-next-id.py` | The `Core::addTrunk` next-id fix, with a `--container` mode the host can use without an image rebuild — see [docs/freepbx-trunk-repair.md](../docs/freepbx-trunk-repair.md) |
 | `MSTeams-DR-Wizard.sh` | MS Teams Direct Routing wizard (vendored from [Vince-0/MSTeams-FreePBX](https://github.com/Vince-0/MSTeams-FreePBX), MIT) — configures the native `external_signaling_hostname` PJSIP transport (Asterisk 20.21+/22.11+/23.5+/24+), endpoint/AOR/identify for the Microsoft SIP proxies, RSA cert wiring, `--check` audit |
 | `cerulean-msteams.sh` | Cerulean trust-plane adapter: provisions the SBC DNS record + RSA-2048 DNS-01 certificate, then chains into the wizard |
 | `tests/test_asterisk_converge.py` | Unit tests for the converge tool (`python3 -m unittest discover -s pbx/tests`) |
@@ -483,6 +488,177 @@ Config* cannot silently disable the security log. The host daemon then reads
 > authenticates as `ucp_events` with a stale password forever — measured on the
 > capstone twin at **100 % CPU with 72 restarts**. The entrypoint now converges
 > the DB value onto the real secret and bounces UCP only when it changed.
+
+## One ingress: every platform DID reaches the router
+
+P1 of [docs/ava-capstone-convergence.md](../docs/ava-capstone-convergence.md) is
+*one ingress*: AVA answers every DID the platform sells, and Capstone becomes a
+capability AVA can reach rather than the front door. That is two independent
+halves, and rendering one of them looks finished while calls still land wrong:
+
+1. **`[zeus-ai-accounts]`** — one entry per active DID, carrying `AI_AGENT`,
+   `AI_PROVIDER` and the `ZEUS_CAPSTONE_ADDON` gate. `bootstrap-zeus-pbx.sh`
+   renders it on every run from the portal's own answer
+   (`GET /api/admin/voice-routing`, which re-checks the gate against Magnate)
+   and falls back to the portal's cached database when the portal is down —
+   never the other way round, because the cache freezes the plan at whatever it
+   was when someone last opened the screen.
+2. **The inbound route per DID** — a row in FreePBX's `incoming` table. A route
+   that points somewhere else still answers a call, just as the wrong thing;
+   that is how a deployment came to have every DID unwired while both products
+   believed the numbers were routed. `pbx/ava_routes.py` owns this half.
+
+```bash
+# judge / converge the routes on the live PBX (reads the same plan the accounts
+# block is rendered from — --db or --accounts-json, exactly like ava_routing.py)
+python3 pbx/ava_routes.py --db /var/lib/docker/volumes/zeus-portal-data/_data/pbx.db --check
+python3 pbx/ava_routes.py --db … --apply --revert-out /root/zeus-route-revert.sql
+
+# off-host, against a route table dumped by pbx/p0-snapshot.sh (check-only)
+python3 pbx/ava_routes.py --db … --routes-tsv routes/incoming.tsv --check
+```
+
+`bootstrap-zeus-pbx.sh` calls it on **both** paths: `--check` reports route drift
+and fails the run, and an apply converges the routes **before** `fwconsole
+reload` — they are rows FreePBX builds its dialplan from, so a change is live
+only once the dialplan is rebuilt. What the tool will not do, deliberately:
+
+- **It never invents a route.** A DID with no inbound route at all (or two) is
+  refused by name, for a human to fix in two clicks: creating an `incoming` row
+  means guessing FreePBX's other columns, and a half-written row on a live phone
+  system is worse than a named gap. It stays visible — `--check` keeps failing
+  until the route exists.
+- **It only touches DIDs the plan names.** A ring group, a partner's number and
+  a pattern route like `_2XX` are somebody else's phone service, and the tool
+  reports them as *left alone* so that is evidence rather than an assumption.
+- **It writes the undo before it writes anything.** The revert script is
+  produced first and its failure is fatal, because an apply with no way back is
+  what P0's snapshot discipline exists to prevent.
+- **It reads the application context, never the Stasis app name.** The route
+  targets a Custom Destination (`zeus-ai-router,s,1`), so nothing in the
+  dialplan depends on Capstone's runtime-generated `Stasis(dograh_<suffix>)`.
+
+An apply that cannot finish (a refused row) warns and continues rather than
+failing the fragment apply, for the same reason the core-module repair does: the
+phone system is already answered by the fragments, and stopping there would take
+calls down over a row the operator can add. The drift check is what keeps it
+from going quiet.
+
+## Voice plane gates and D7 assertions
+
+Two things about the voice plane fail *silently* — a PBX that looks healthy while
+it drops its calls, and a check that reports success because it never ran. Both
+gates below exist for that reason, and both are runnable from the host without a
+rebuild.
+
+### `voice-preflight` — the ARI credential must agree before the engine starts
+
+The engine authenticates to Asterisk with `AVA_ARI_SECRET`, which two unrelated
+things write: `bootstrap-zeus-pbx.sh` renders it into `ari.conf` from
+`scripts/pbx.env`, and `.env` hands it to the container. Nothing reconciles them,
+and a blank `pbx.env` value is *regenerated* on every bootstrap run — so a
+`--profile voice up` can start an engine whose password Asterisk will never
+accept, and the only symptom is calls that are never answered (to Asterisk a
+wrong password is just a failed login, so nothing names the credential).
+
+`docker-compose.yml`'s `voice-preflight` is a one-shot container that asserts the
+two agree, and `ai-engine` declares
+`depends_on: voice-preflight: condition: service_completed_successfully` — the
+engine is not started unless the gate exits 0:
+
+```bash
+docker compose --profile voice up -d      # gate runs first, engine starts only if it passes
+docker compose logs voice-preflight       # on failure: which file, which key, what to do
+python3 pbx/ava_ari_check.py --require-engine-env   # the same assertion, by hand
+```
+
+Three details that are load-bearing:
+
+- **The gate runs as root (`user: "0:0"`).** `.env` is curated `0600` root-owned
+  and `pbx.env` is written by the bootstrap. The engine image's own user is
+  `appuser`, and inheriting it made the gate fail on a *consistent* host — the
+  uid was wrong, not the configuration. The check reports a permission problem
+  in its own words (`Unreadable`) rather than misreporting it as a missing file.
+- **`--require-engine-env` is what makes it a gate.** Without it, "there is no
+  `.env` here" is a pass — correct for a deploy-script check that also runs on
+  portal-only hosts, wrong for a container that only exists because somebody
+  asked for the voice profile.
+- **A missing bind source reads as absent, not as a crash.** Docker creates a
+  *directory* where a bind source does not exist, so "the operator never created
+  `.env`" arrives as `IsADirectoryError`; the check treats that as the absent file
+  it is (`_read` in `pbx/ava_ari_check.py`).
+
+The same assertion stands in front of the **apply**, not just the engine's
+start-up: `systemd/zeus-pbx-sync.service` runs `scripts/zeus-pbx-sync.sh`, which
+checks the credential first and exits 1 rather than re-applying fragments over a
+secret the PBX will refuse (see [docs/ava-runbook.md](../docs/ava-runbook.md)).
+The unit used to call `pbx/bootstrap-zeus-pbx.sh` directly, so the gate was
+documented and never ran on the path that actually writes the fragments;
+`scripts/tests/test_pbx_sync_unit.py` pins the wiring now.
+
+### `d7_assert.py` — the three claims, asserted rather than assumed
+
+```bash
+python3 pbx/d7_assert.py --live                  # ARI apps, CDR backend, gateway model
+python3 pbx/d7_assert.py --live --call           # also prove CDR actually writes
+python3 pbx/d7_assert.py --live --only gateway   # one assertion only
+./scripts/smoke-test.sh voice                    # the same, via the smoke test
+D7_CALL=1 ./scripts/smoke-test.sh voice          # …including the probe call
+```
+
+| Assertion | Why it is not a style check |
+|---|---|
+| Both Stasis apps registered (`asterisk-ai-voice-agent`, `dograh_*`) | An engine that is up but unregistered answers no calls, and looks identical to an idle one |
+| CDR backend wired **and** writing | `odbc show` proves the DSN is connected; only a call proves rows are written. CDR was dead on this estate for nine days with every other indicator green |
+| The gateway offers `AVA_LLM_MODEL` | A gateway that 502s a model returns an HTML page, so the pipeline dies on its first turn with nothing naming the cause |
+
+The probe call is `Local/12@default`: it matches FreePBX's `_X.` catch-all,
+answers, plays the voicemail goodbye prompt and hangs up. No trunk, no phone, no
+agent — a probe that could reach a real agent would not be a probe. Exit codes
+are three-valued on purpose: `0` holds, `1` is false, and `2` means *nothing was
+evaluated* (no docker, no PBX container, no `.env`), which is not evidence of
+health and is why the summary line repeats what it did not evaluate.
+
+### `p0-snapshot.sh` — record the pre-state before touching a live box
+
+```bash
+pbx/p0-snapshot.sh                        # → /root/p0-snapshot-<UTC>/ + MANIFEST
+OUT=/root/before-p1 pbx/p0-snapshot.sh    # name the phase's pre-state yourself
+PBX_CONTAINER=zeus-freepbx pbx/p0-snapshot.sh   # when autodetection is ambiguous
+```
+
+It captures containers, the PBX fragment files **with hashes**, inbound routes,
+units, runtime state and a CDR watermark, and it is read-only: it copies files
+out and runs `show` commands, never a write. Exit 0 means a snapshot was taken
+even if a probe failed — a partial record beats none, and every gap is named in
+`MANIFEST` — while exit 2 means there is no PBX to record at all.
+
+Two traps it encodes, both of which cost a measurement: CDRs are **not** in the
+`asterisk` database (FreePBX keeps them in `asteriskcdrdb`, which is what the
+ODBC DSN names), and the CDR watermark is the *(count, newest)* pair — a count
+alone cannot distinguish the probe from unrelated traffic.
+
+### Rehearsing the first sync run
+
+The apply/check pair can be rehearsed with no PBX at all, against a scratch
+Asterisk directory and a throwaway `pbx.env`. That is what to run before
+re-enabling `zeus-pbx-sync.timer` on a live box, or after any change under
+`pbx/asterisk/`:
+
+```bash
+python3 -m unittest discover -s pbx/tests -p 'test_bootstrap_zeus_pbx.py' -v
+```
+
+It pins the four things a first timer run depends on: the apply lands exactly the
+fragments this script owns, a second apply changes **no byte**, the `--check` that
+follows does agree, and `--check` writes nothing — including on a target that has
+no converge-owned file yet, where it used to leave an empty
+`ari_additional_custom.conf` behind while reporting drift. The two ownership rules
+are asserted in the rendered set rather than in the comments above it:
+`manager_custom.conf` (FreePBX's `ucp_events` and the estate's `[pbxportal]` users
+live in it) and `rtp_custom.conf` are never written from here. No container and no
+`/etc/asterisk`, and the core-module patcher is pointed at a path that does not
+exist, so the test is safe to run on the PBX host itself.
 
 ## How it fits the stack
 
