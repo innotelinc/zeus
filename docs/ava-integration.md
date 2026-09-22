@@ -4,6 +4,12 @@ This documents two things: **why AVA fronts the calls** instead of the voice
 stack Zeus already had, and **how the integration works** — routing, the
 Capstone add-on gate, the portal screens, and how to deploy and verify it.
 
+> **This is the as-built state.** The *target* design — AVA as the single front
+door with Capstone as a per-account skill, one call-context envelope across the
+hand-off, one provisioning path for PBX objects, and a hand-back to AVA or a
+human — is [`ava-capstone-convergence.md`](ava-capstone-convergence.md). Read
+that one before changing routing.
+
 ---
 
 ## 1. The decision
