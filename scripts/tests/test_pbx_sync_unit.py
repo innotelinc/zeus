@@ -85,7 +85,19 @@ class WrapperGatesBeforeItApplies(unittest.TestCase):
         """A slow PBX boot after a reboot must not fail the timer's unit."""
         tail = [line for line in self.text.splitlines() if line.strip()]
         self.assertEqual(tail[-1].strip(), "exit 0")
-        self.assertIn("unreachable or apply failed", "\n".join(tail[-3:]))
+        self.assertIn("not applied", "\n".join(tail[-4:]))
+        self.assertIn("unreachable", "\n".join(tail[-4:]))
+
+    def test_the_apply_s_output_reaches_the_journal(self):
+        """Exiting 0 must not also mean staying quiet.
+
+        The apply exits non-zero for a cause that never clears itself — a
+        platform DID with no inbound route is a person's job in FreePBX — so the
+        journal has to carry what it said, or a gap this estate knows about
+        looks exactly like a healthy sync.
+        """
+        self.assertIn('out="$("$BOOTSTRAP" 2>&1)"', self.text)
+        self.assertIn('printf \'%s\\n\' "$out"', self.text)
 
 
 if __name__ == "__main__":

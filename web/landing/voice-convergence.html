@@ -727,7 +727,24 @@
   <p>The wiring is in <code>pbx/bootstrap-zeus-pbx.sh</code>, on both paths: <code>--check</code> fails on
   route drift, and an apply converges the routes <strong>before</strong> <code>fwconsole reload</code> —
   they are rows FreePBX builds its dialplan from, so the change is invisible until
-  the dialplan is rebuilt. <code>./scripts/smoke-test.sh pbx</code> asserts the same ingress
+  the dialplan is rebuilt.</p>
+  <p>Judging the routes and applying them are separate functions there
+  (<code>judge_routes</code> / <code>converge_routes</code>), which is a defect the first wiring had:
+  the apply decision looked only at the <em>fragments</em>, and the timer's wrapper runs
+  <code>--check</code> and then the apply when that fails. A PBX whose fragments are in sync
+  and whose every DID points elsewhere therefore answered "already in sync" on
+  every tick — and since the fix is a route row, that state would never have
+  cleared itself. Measured on the live box at P1: fragments in sync, three DIDs off
+  the router. Two further things came out of the same run. <code>out="$(cmd)"; rc=$?</code>
+  under <code>set -e</code> aborts the shell <em>before</em> <code>rc</code> is read, so the status the apply
+  existed to report killed the run instead of reporting it (now <code>|| rc=$?</code>, in all
+  three places, so a non-zero status is data rather than a failure). And a refusal
+  needs its own status — <code>pbx/ava_routes.py</code> exits <code>3</code> for "nothing this tool may
+  write, and a row only a human can add" versus <code>1</code> for "an apply converges this"
+  — because folding the two together sends an apply, and a <code>fwconsole reload</code>, at a
+  live phone system every 15 minutes forever to change no row. A <code>3</code> fails
+  <code>--check</code> identically (the gap is never quiet), and the wrapper prints the
+  apply's own output to the journal when it declines. <code>./scripts/smoke-test.sh pbx</code> asserts the same ingress
   from the caller's side: both contexts present in the <em>live</em> dialplan (an apply
   with no reload is the same caller-visible failure from a different cause), plus
   the route table wherever the portal database is readable on that host.</p>

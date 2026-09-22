@@ -358,8 +358,26 @@ reload_pbx() {
 # routes from a dump is not a thing that can be right. The live route change is
 # a database write, so it happens *before* reload_pbx, which is what makes it
 # visible to the dialplan.
-converge_routes() {
+# ── judging the DID routes, and applying them ──────────────────────────
+# Judge and apply are separate functions because BOTH paths have to judge. The
+# apply path is not only reached from `--check`: the timer runs
+# `bootstrap --check`, then the apply when that fails, so an apply that judged
+# nothing would report "already in sync" on a PBX whose fragments are in sync
+# and whose DIDs all point elsewhere — the exact configured-looking failure this
+# phase exists to remove, and it would never have cleared itself.
+#
+# The tool's status is carried through whole rather than collapsed to "drift":
+#   0  every platform DID reaches the router
+#   1  routes off it that an apply converges
+#   3  nothing this tool may write, and a row only a human can add
+#   2  no PBX reachable / table unreadable — not a finding
+# 1 and 3 differ in the caller's action, not in the report: a 1 is worth an
+# apply, a 3 is not. An apply for a 3 rewrites no row and still reloads a live
+# phone system, so a timer tick would do that every 15 minutes forever; and a
+# `--check` fails on both, so the gap is never quiet.
+judge_routes() {
   local out rc args=()
+  ROUTES_RC=0
   if [ ! -f "$ROUTES_PY" ]; then
     echo "zeus-pbx: pbx/ava_routes.py is missing — DID routes not judged" >&2
     return 0
@@ -370,35 +388,52 @@ converge_routes() {
   fi
   args=("${ROUTE_SRC[@]}")
   if [ -n "${ZEUS_ROUTES_TSV:-}" ]; then
-    if [ "$CHECK" = 1 ]; then
-      args+=(--routes-tsv "$ZEUS_ROUTES_TSV")
-    else
-      echo "zeus-pbx: ZEUS_ROUTES_TSV is a check-only rehearsal input — judging the live routes instead" >&2
-    fi
+    # The dump is a rehearsal input, and a dump is always the check's: writing
+    # routes from a dump is not a thing that can be right.
+    args+=(--routes-tsv "$ZEUS_ROUTES_TSV")
   fi
+  # `|| rc=$?`, not `; rc=$?`: under `set -e` a failed command substitution in an
+  # assignment aborts the shell before the next statement, so the status this
+  # function exists to report would kill the run instead of being reported. The
+  # same shape is used below for the apply.
+  rc=0
+  out="$(python3 "$ROUTES_PY" "${args[@]}" --check 2>&1)" || rc=$?
+  printf '%s\n' "$out" | sed 's/^/zeus-pbx: /' >&2
+  ROUTES_RC=$rc
+  case "$rc" in
+    0) return 0 ;;
+    2)
+      # No PBX on this host, or a route table that could not be read: not a
+      # finding. A host running part of the group is not a drifted host.
+      echo "zeus-pbx: DID routes could not be judged (no PBX reachable) — not drift" >&2
+      return 0
+      ;;
+    3)
+      echo "drift: DID inbound routes (a platform DID has no route for this repo to converge)" >&2
+      return 3
+      ;;
+    *)
+      echo "drift: DID inbound routes (not every platform DID reaches ${ROUTER_DEST})" >&2
+      return 1
+      ;;
+  esac
+}
 
-  if [ "$CHECK" = 1 ]; then
-    out="$(python3 "$ROUTES_PY" "${args[@]}" --check 2>&1)"; rc=$?
-    printf '%s\n' "$out" | sed 's/^/zeus-pbx: /' >&2
-    case "$rc" in
-      0) return 0 ;;
-      2)
-        # No PBX on this host, or a route table that could not be read: not a
-        # finding. A host running part of the group is not a drifted host.
-        echo "zeus-pbx: DID routes could not be judged (no PBX reachable) — not drift" >&2
-        return 0
-        ;;
-      *)
-        echo "drift: DID inbound routes (not every platform DID reaches ${ROUTER_DEST})" >&2
-        return 1
-        ;;
-    esac
+converge_routes() {
+  local out rc args=()
+  if [ ! -f "$ROUTES_PY" ] || [ "${#ROUTE_SRC[@]}" -eq 0 ]; then
+    return 0
+  fi
+  args=("${ROUTE_SRC[@]}")
+  if [ -n "${ZEUS_ROUTES_TSV:-}" ]; then
+    echo "zeus-pbx: ZEUS_ROUTES_TSV is a check-only rehearsal input — judging the live routes instead" >&2
   fi
 
   # The undo is written by the tool, before it writes anything, because an
   # apply with no way back is the thing P0's snapshot discipline exists to
   # prevent.
-  out="$(python3 "$ROUTES_PY" "${args[@]}" --apply --revert-out "$ROUTE_REVERT_OUT" 2>&1)"; rc=$?
+  rc=0
+  out="$(python3 "$ROUTES_PY" "${args[@]}" --apply --revert-out "$ROUTE_REVERT_OUT" 2>&1)" || rc=$?
   printf '%s\n' "$out" | sed 's/^/zeus-pbx: /' >&2
   if [ "$rc" -ne 0 ]; then
     # Fail open, like the core repair above: a DID with no inbound route at all
@@ -475,7 +510,8 @@ run_core_patcher() {
 
 check_core_patch() {
   local out rc
-  out="$(run_core_patcher --check 2>&1)"; rc=$?
+  rc=0
+  out="$(run_core_patcher --check 2>&1)" || rc=$?
   printf '%s\n' "$out" | sed 's/^/zeus-pbx: /' >&2
   if [ "$rc" -ne 0 ]; then
     echo "drift: core module (trunk save returns Duplicate entry)" >&2
@@ -566,14 +602,33 @@ done
 
 if [ "$CHECK" = 1 ]; then
   check_core_patch || drift=1
-  converge_routes || drift=1
+  judge_routes || drift=1
   if [ "$drift" = 1 ]; then
-    echo "zeus-pbx: out of sync (run pbx/bootstrap-zeus-pbx.sh to apply)" >&2
+    if [ "$ROUTES_RC" = 3 ]; then
+      # The one out-of-sync state an apply cannot clear, so the message must not
+      # point at the apply: the route row is not this repo's to write.
+      echo "zeus-pbx: out of sync — a platform DID needs an inbound route added in FreePBX" >&2
+    else
+      echo "zeus-pbx: out of sync (run pbx/bootstrap-zeus-pbx.sh to apply)" >&2
+    fi
     exit 1
   fi
   echo "zeus-pbx: in sync"
   exit 0
 fi
+
+# Judged on this path too, and after the fragments so the report reads in the
+# order the work happens. `drift` is what an apply writes; `route_gap` is what
+# only a person can, and is deliberately NOT folded into `drift` — an apply that
+# runs for a gap rewrites nothing and still reloads a live phone system, which a
+# 15-minute timer would then do forever.
+route_gap=0
+ROUTES_RC=0
+judge_routes || ROUTES_RC=$?
+case "$ROUTES_RC" in
+  1) drift=1 ;;
+  3) route_gap=1 ;;
+esac
 
 if [ "$drift" = 1 ] || [ "$RELOAD" = 1 ]; then
   apply_target
@@ -606,5 +661,13 @@ if [ "$drift" = 1 ] || [ "$RELOAD" = 1 ]; then
   reload_pbx
   echo "zeus-pbx: applied (${PBX_TARGET})"
 else
+  if [ "$route_gap" = 1 ]; then
+    # Nothing was written and nothing will be: the remaining gap is a route row a
+    # person adds in FreePBX. Non-zero so the timer's wrapper says so in the
+    # journal rather than reporting a clean sync that never happened — the check
+    # keeps failing either way.
+    echo "zeus-pbx: fragments in sync; DID routes need a human (see above) — not applied" >&2
+    exit 1
+  fi
   echo "zeus-pbx: already in sync"
 fi
