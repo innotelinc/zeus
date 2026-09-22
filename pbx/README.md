@@ -507,6 +507,14 @@ halves, and rendering one of them looks finished while calls still land wrong:
    that points somewhere else still answers a call, just as the wrong thing;
    that is how a deployment came to have every DID unwired while both products
    believed the numbers were routed. `pbx/ava_routes.py` owns this half.
+3. **The destination those routes name** — FreePBX points a route at a
+   *destination* its registry knows, not at a bare dialplan target, so a route
+   row naming `zeus-ai-router,s,1` while nothing is registered under that name
+   is a **bad destination**: it still answers calls, so the caller cannot see
+   it, but the GUI cannot name what the DID dials and Apply Config reads it as
+   invalid. The same tool writes both halves (the `customappsreg` kvstore row,
+   exactly the shape capstone's `pbx/bootstrap_dograh_route.py` writes for
+   `[dograh-inbound]`), because it is the route rows that name it.
 
 ```bash
 # judge / converge the routes on the live PBX (reads the same plan the accounts
@@ -531,14 +539,24 @@ runs *check, then apply when that fails*: an apply that judged only the fragment
 would answer "already in sync" on a PBX whose files match and whose DIDs all
 point elsewhere, and would never have cleared itself.
 
+The destination is registered **before** the routes that name it, and it is the
+one thing an apply writes without an opt-in flag. That is deliberate: unlike a
+route row — the operator's data, which a default apply never invents — this is
+the tool's own constant target, so ensuring it is idempotent, displaces nobody's
+phone service, and undoes as one `DELETE`. Hiding it behind a flag would mean the
+timer could never clear a bad destination, and the flag would have to be
+remembered again after every rebuild of the PBX. An offline run
+(`--routes-tsv`/`--sql-out`) never registers it and says so out loud, because a
+registry is module state rather than a column of a dump.
+
 The tool's status is carried through whole, because three of them mean three
 different things to a caller:
 
 | status | meaning | what the caller does |
 | --- | --- | --- |
-| `0` | every platform DID reaches the router | nothing |
-| `1` | routes off it | apply — it converges them |
-| `3` | a platform DID with no route, or two | nothing a *default* apply can do; add the route in FreePBX, or run `--create-missing` (the check keeps failing until then) |
+| `0` | every platform DID reaches the router, and the router is a registered Custom Destination | nothing |
+| `1` | routes off it, or the destination unregistered | apply — it converges both |
+| `3` | a platform DID with no route (or two), or no Custom Destinations module to register into | nothing a *default* apply can do; add the route in FreePBX / enable the module, or run `--create-missing` (the check keeps failing until then) |
 | `2` | no PBX reachable / table unreadable | nothing — a host running part of the group is not a drifted host |
 
 A `3` deliberately does **not** send the bootstrap down its apply path: an apply
@@ -569,8 +587,9 @@ What the tool will not do, deliberately:
   produced first and its failure is fatal, because an apply with no way back is
   what P0's snapshot discipline exists to prevent.
 - **It reads the application context, never the Stasis app name.** The route
-  targets a Custom Destination (`zeus-ai-router,s,1`), so nothing in the
-  dialplan depends on Capstone's runtime-generated `Stasis(dograh_<suffix>)`.
+  targets a Custom Destination (`zeus-ai-router,s,1`) that the same tool
+  registers, so nothing in the dialplan depends on Capstone's runtime-generated
+  `Stasis(dograh_<suffix>)`.
 
 An apply that cannot finish (a refused row) warns and continues rather than
 failing the fragment apply, for the same reason the core-module repair does: the

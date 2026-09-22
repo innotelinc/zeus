@@ -243,7 +243,12 @@ if [ "$SCOPE" = all ] || [ "$SCOPE" = pbx ]; then
         # *off* the router would name the wrong repair — those DIDs are not
         # pointed elsewhere, they are unwired, and only the GUI can fix it.
         3) fail "a platform DID the plan names has no inbound route in FreePBX — add it by hand (python3 pbx/ava_routes.py --db <portal.db> --check names it)" ;;
-        *) fail "DID inbound routes are off zeus-ai-router,s,1 (python3 pbx/ava_routes.py --db <portal.db> --check)" ;;
+        # 1 also covers a route table that is in sync while the router is not
+        # registered as a Custom Destination — FreePBX's "bad destination"
+        # state, which is the same caller-invisible ingress failure: the run
+        # above names which of the two it found, so this points at it rather
+        # than guessing.
+        *) fail "DID ingress is out of sync — routes off zeus-ai-router,s,1, or the Custom Destination is not registered (python3 pbx/ava_routes.py --db <portal.db> --check)" ;;
       esac
     else
       skip "DID inbound routes (no portal database readable here — run pbx/ava_routes.py --check with a plan)"

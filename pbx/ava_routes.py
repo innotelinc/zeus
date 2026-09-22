@@ -67,6 +67,23 @@ same script, so one file undoes both halves of a mixed run.
         -e 'SELECT extension, destination, description FROM incoming;' > routes.tsv
     python3 pbx/ava_routes.py --db <portal.db> --routes-tsv routes.tsv --check
 
+**A route names a destination, and the destination has to exist.** FreePBX does
+not point an inbound route at a bare dialplan target: it points it at a
+*destination* the framework's own registry knows. `zeus-ai-router,s,1` is meant
+to be a **Custom Destination** (`Admin → Custom Destinations`), and a route row
+naming a target no module registered is flagged as a *bad destination* — the
+calls still answer, so nothing on the caller's side looks wrong, while the GUI
+cannot name what the DID dials and Apply Config reads it as invalid. Writing the
+route without the destination is therefore half a change, so a live apply writes
+both: the module's own `kvstore_<Customappsreg>` row, the same shape capstone's
+`pbx/bootstrap_dograh_route.py` writes for `[dograh-inbound]`. `--check` reports
+an unregistered destination as drift, which is what lets the timer converge it.
+Unlike a route row this is the tool's *own constant target* rather than the
+operator's data — idempotent, one line to undo, able to displace nobody's phone
+service — so it needs no opt-in flag. An offline run (`--routes-tsv`/`--sql-out`)
+does not register it and says so: the registry is FreePBX module state, not a
+file this tool can hand you SQL for.
+
 The table's ``extension`` is the DID FreePBX matches against ``${FROM_DID}``,
 and it matches the *dialed* form, so a row stored as ``17745057135`` never
 matches a call to ``7745057135``. A row that is only mis-prefixed is therefore
@@ -96,7 +113,19 @@ import ava_routing as routing  # noqa: E402
 # custom dialplan target in `incoming.destination` in this form (context,exten,
 # priority) — the same string the GUI's Custom Destination page shows, and the
 # same shape capstone's pbx/bootstrap_dograh_route.py writes for [dograh-inbound].
+# What the Custom Destinations page shows for ROUTER, and what FreePBX's
+# destination validation resolves the route against. See the destination block
+# below for why the route alone is not enough.
 ROUTER = "zeus-ai-router,s,1"
+
+# What the Custom Destinations page shows for ROUTER, and what FreePBX's
+# destination validation resolves the route against. The route alone is not
+# enough — see the destination block below.
+ROUTER_DESC = "Zeus AI router (ava_routes)"
+
+# The module's kvstore table is named after the module (`kvstore_Customappsreg`)
+# and spelled with whatever case an image installs, so it is discovered.
+CUSTOM_DEST_TABLE_LIKE = r"kvstore\_%ustomappsreg%"
 
 # FreePBX keeps inbound routes for every product and every trunk on one table.
 # `incoming` is the table; these are the columns this tool needs. A row is
@@ -181,6 +210,117 @@ class Creation:
             f"DELETE FROM `incoming` WHERE `extension`='{_sql(self.did)}' "
             "AND `cidnum`='';"
         )
+
+
+# ── the destination the routes name ─────────────────────────────────────────
+# The registry entry is what `Admin → Custom Destinations` lists and what
+# FreePBX's destination validation reads. It is written into the module's OWN
+# row rather than a table of ours, so a GUI edit and this converge are the same
+# thing, and the shape is shared with capstone's pbx/bootstrap_dograh_route.py —
+# including the empty `destret`, which keeps `fwconsole reload` from dying on a
+# 'dest' key this row has no field for.
+
+
+def custom_dest_table_sql() -> str:
+    """Find the Custom Destinations kvstore table, rather than assume its name."""
+    return (
+        "SELECT table_name FROM information_schema.tables "
+        f"WHERE table_schema='asterisk' AND table_name LIKE '{CUSTOM_DEST_TABLE_LIKE}' "
+        "LIMIT 1"
+    )
+
+
+def find_custom_dest_sql(table: str, target: str = ROUTER) -> str:
+    """The `dest-<n>` whose target is ours, lowest key first, or nothing.
+
+    `ORDER BY` is not decoration: two entries naming the same target would make
+    "which one is the destination" a matter of row order, so the same one is
+    chosen every time.
+    """
+    return (
+        f"SELECT `key` FROM `{table}` WHERE `id`='dests' AND `type`='json-arr' "
+        f"AND `val` LIKE '%{_sql(target)}%' ORDER BY CAST(`key` AS UNSIGNED) LIMIT 1"
+    )
+
+
+def next_custom_dest_id_sql(table: str) -> str:
+    return (
+        f"SELECT COALESCE(MAX(CAST(`key` AS UNSIGNED)),0)+1 FROM `{table}` "
+        "WHERE `id`='dests'"
+    )
+
+
+def custom_dest_row(
+    dest_id: str, target: str = ROUTER, description: str = ROUTER_DESC
+) -> str:
+    """The kvstore `val` for one Custom Destination (customappsreg's shape)."""
+    return json.dumps(
+        {
+            "destid": int(dest_id),
+            "target": target,
+            "description": description,
+            "notes": "",
+            # Empty on purpose. The module's dialplan hook reads this as the
+            # gosub return target, and a truthy one makes `fwconsole reload`
+            # crash with "Undefined array key 'dest'" on a row that has no such
+            # field. FreePBX 17's own GUI default, and capstone learned it on a
+            # live box.
+            "destret": "",
+        }
+    )
+
+
+def insert_custom_dest_sql(table: str, dest_id: str, row: str) -> str:
+    return (
+        f"INSERT INTO `{table}` (`key`,`val`,`type`,`id`) VALUES "
+        f"('{_sql(dest_id)}', '{_sql(row)}', 'json-arr', 'dests') "
+        "ON DUPLICATE KEY UPDATE `val`=VALUES(`val`), `type`=VALUES(`type`)"
+    )
+
+
+def bump_custom_dest_currentid_sql(table: str, next_id: int) -> str:
+    """The module's own counter, so the GUI's next "add" does not reuse our id."""
+    return (
+        f"INSERT INTO `{table}` (`key`,`val`,`type`,`id`) VALUES "
+        f"('currentid', '{int(next_id)}', NULL, 'noid') "
+        "ON DUPLICATE KEY UPDATE `val`=VALUES(`val`)"
+    )
+
+
+@dataclass(frozen=True)
+class DestCreation:
+    """The Custom Destination this run registered, for the undo script.
+
+    Its way back is a delete, and it is only ever written for a destination this
+    run *created*: one that was already there is not this tool's to remove.
+    """
+
+    table: str
+    target: str = ROUTER
+
+    def revert_sql(self) -> str:
+        # Keyed on the target the module matches on, not on the dest-<n>: the
+        # undo is written *before* the write, when the id does not exist yet.
+        return (
+            f"DELETE FROM `{self.table}` WHERE `id`='dests' AND `type`='json-arr' "
+            f"AND `val` LIKE '%{_sql(self.target)}%';"
+        )
+
+
+@dataclass(frozen=True)
+class DestState:
+    """The router's Custom Destination, as the PBX has it.
+
+    `problem` is not the same finding as `present=False`: a missing row is one an
+    apply writes, while a PBX with no Custom Destinations module to ask is one
+    only a person can add — the same 1-versus-3 distinction the route refusals
+    carry, and for the same reason (a 3 never clears by another run).
+    """
+
+    present: bool = False
+    dest_id: str = ""
+    table: str = ""
+    problem: str = ""
 
 
 # The create runs FreePBX's own create path inside the PBX container rather than
@@ -330,12 +470,17 @@ def build_report(dids: list[str], rows: list[RouteRow]) -> Report:
 
 
 def render_revert(
-    changes: list[Change], container: str, creations: tuple[Creation, ...] | list[Creation] = ()
+    changes: list[Change],
+    container: str,
+    creations: tuple[Creation, ...] | list[Creation] = (),
+    dest: DestCreation | None = None,
 ) -> str:
     """The way back, written before anything changes.
 
-    Covers both halves of a `--create-missing` run: the rows this tool rewrites
-    are restored to what it found, and the rows it created are deleted.
+    Covers every half of a mixed run: the rows this tool rewrites are restored to
+    what it found, the rows it created are deleted, and a Custom Destination it
+    registered is removed. A destination that was already there is not passed
+    here — one this run did not create is not this run's to delete.
     """
     import datetime
 
@@ -343,6 +488,8 @@ def render_revert(
     what = f"{len(changes)} change(s)"
     if creations:
         what += f" and {len(creations)} creation(s)"
+    if dest is not None:
+        what += " and the router Custom Destination"
     lines = [
         f"-- zeus ava_routes revert — written {stamp}, before {what}.",
         "-- Restores the inbound routes exactly as ava_routes.py found them.",
@@ -353,6 +500,8 @@ def render_revert(
     ]
     lines += [c.revert_sql() for c in changes]
     lines += [c.revert_sql() for c in creations]
+    if dest is not None:
+        lines.append(dest.revert_sql())
     lines += ["COMMIT;", ""]
     return "\n".join(lines)
 
@@ -407,6 +556,73 @@ def read_live_routes(container: str) -> str:
             f"{proc.stderr.strip().splitlines()[-1] if proc.stderr.strip() else proc.returncode}"
         )
     return proc.stdout
+
+
+def mysql_exec(container: str, sql: str) -> str:
+    """Run one statement in the PBX's `asterisk` database, tab-parsed (`-N -B`)."""
+    proc = _run(
+        ["docker", "exec", container, "mysql", "-N", "-B", "-u", "root",
+         "asterisk", "-e", sql]
+    )
+    if proc.returncode != 0:
+        detail = proc.stderr.strip().splitlines()
+        raise RouteError(
+            f"the PBX database did not answer in {container}: "
+            f"{detail[-1] if detail else proc.returncode}"
+        )
+    return proc.stdout
+
+
+def judge_router_dest(container: str) -> DestState:
+    """Whether ROUTER is a registered Custom Destination on this PBX.
+
+    Read-only, and it asks the module's own table rather than the dialplan: a
+    context that is loaded but unregistered is exactly the state that answers
+    calls while FreePBX flags every route to it as a bad destination.
+    """
+    table = mysql_exec(container, custom_dest_table_sql()).strip()
+    if not table:
+        return DestState(
+            problem=(
+                "this PBX has no Custom Destinations table (customappsreg) — "
+                "enable the module, or add the destination in the GUI"
+            )
+        )
+    dest_id = mysql_exec(container, find_custom_dest_sql(table)).strip()
+    return DestState(present=bool(dest_id), dest_id=dest_id, table=table)
+
+
+def register_router_dest(container: str, state: DestState) -> str:
+    """Write the router's Custom Destination, and return its `dest-<n>`.
+
+    Idempotent: it re-reads before it writes, so two runs — or a run racing a
+    GUI edit — cannot leave two entries naming the same target. Raises if the
+    PBX refused the write, so the caller's revert script is still the answer.
+    """
+    existing = mysql_exec(container, find_custom_dest_sql(state.table)).strip()
+    if existing:
+        return existing
+    next_id = mysql_exec(container, next_custom_dest_id_sql(state.table)).strip() or "1"
+    mysql_exec(
+        container,
+        insert_custom_dest_sql(state.table, next_id, custom_dest_row(next_id)),
+    )
+    # The module's own counter. Left behind, the GUI's next "add destination"
+    # would hand out this id and overwrite ours on its ON DUPLICATE KEY UPDATE.
+    current = mysql_exec(
+        container,
+        f"SELECT `val` FROM `{state.table}` WHERE `key`='currentid' AND `id`='noid'",
+    ).strip()
+    try:
+        behind = int(current) <= int(next_id)
+    except ValueError:
+        behind = True  # no counter yet, or a value we cannot read: set it
+    if behind:
+        mysql_exec(
+            container,
+            bump_custom_dest_currentid_sql(state.table, int(next_id) + 1),
+        )
+    return next_id
 
 
 def create_missing(container: str, dids: list[str]) -> list[str]:
@@ -491,13 +707,45 @@ def _describe(report: Report, stream) -> None:
         print(f"  left alone {row.extension} -> {where} (not a portal account)", file=stream)
 
 
+def _describe_dest(dest: DestState, stream, judged: bool = True) -> None:
+    """Report the Custom Destination the routes name.
+
+    `judged=False` is said out loud rather than passed over: an offline route
+    table cannot say anything about FreePBX's registry, and a silent pass would
+    read as "registered".
+    """
+    if not judged:
+        print(
+            f"  not judged {ROUTER}: the route table was read offline — the "
+            "Custom Destination is PBX module state, not a column of a dump",
+            file=stream,
+        )
+        return
+    if dest.present:
+        print(
+            f"  ok         destination {ROUTER} registered (dest-{dest.dest_id})",
+            file=stream,
+        )
+    elif dest.problem:
+        print(f"  refuse     destination {ROUTER}: {dest.problem}", file=stream)
+    else:
+        print(
+            f"  drift      {ROUTER} is not a registered Custom Destination — "
+            "FreePBX flags every route that names it as a bad destination",
+            file=stream,
+        )
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         description="Converge the platform DIDs' inbound routes onto the AVA router.",
         epilog=(
             "Exit: 0 in sync (or applied) — 1 routes this tool can converge — "
             "2 cannot tell (no PBX reachable / table unreadable) — 3 nothing to "
-            "converge, but a row that needs a human (--check only)."
+            "converge, but a row that needs a human (--check only).\n\n"
+            "A live apply also makes sure ROUTER is a registered FreePBX Custom "
+            "Destination: a route whose destination is not in the framework's "
+            "registry is a *bad destination*, and this tool writes the routes."
         ),
     )
     src = parser.add_mutually_exclusive_group(required=True)
@@ -601,15 +849,37 @@ def main(argv: list[str] | None = None) -> int:
     out = sys.stderr if args.quiet else sys.stdout
     _describe(report, out)
 
+    # The destination the routes name is judged from the PBX, because that is
+    # where it lives. An offline route table (`--routes-tsv`) says nothing about
+    # it, and that run says so rather than implying the ingress is fine.
+    dest = DestState()
+    dest_judged = bool(container)
+    if dest_judged:
+        try:
+            dest = judge_router_dest(container)
+        except RouteError as exc:
+            print(f"ava_routes: {exc}", file=sys.stderr)
+            return 2
+    _describe_dest(dest, out, judged=dest_judged)
+    # Drift is converged by this tool (an apply registers the row); a problem is
+    # a PBX missing the module, which only a person can fix — the same 1/3
+    # split the refusals above carry.
+    dest_drift = dest_judged and not dest.present and not dest.problem
+    dest_refused = dest_judged and bool(dest.problem)
+
     if args.check:
         summary = (
             f"ava_routes: {len(report.changes)} route(s) off {ROUTER}, "
             f"{len(report.refused)} row(s) this tool will not touch"
         )
-        if report.changes:
+        if dest_drift:
+            summary += f", {ROUTER} is not a registered Custom Destination"
+        if dest_refused:
+            summary += f", the Custom Destination: {dest.problem}"
+        if report.changes or dest_drift:
             print(summary, file=sys.stderr)
             return 1
-        if report.refused:
+        if report.refused or dest_refused:
             # A refusal is not the same finding as a drift, and the caller has
             # to act differently: a drift is converged by an apply, a refusal is
             # converged by a person adding the route in FreePBX — no number of
@@ -624,22 +894,40 @@ def main(argv: list[str] | None = None) -> int:
     # --apply
     creations = [Creation(did) for did in report.missing] if args.create_missing else []
     created_dids: list[str] = []
-    if not report.changes and not creations and not report.refused:
+    # A Custom Destination is this tool's own constant target, not somebody's
+    # phone service, so an apply makes it exist: ensuring it is idempotent, it
+    # displaces nothing, and its undo is one line. That is why, unlike a route
+    # row, it needs no opt-in flag — the timer has to be able to clear it, or
+    # the bad-destination flag returns after every rebuild of the PBX.
+    register_dest = dest_drift
+    if not report.changes and not creations and not report.refused and not register_dest:
         print(f"ava_routes: already in sync ({len(report.ok)} DID(s))")
         return 0
 
-    if report.changes or creations:
+    if report.changes or creations or register_dest:
         if args.sql_out:
             with open(args.sql_out, "w", encoding="utf-8") as fh:
                 fh.write(render_sql(report.changes))
             print(f"ava_routes: wrote {args.sql_out} ({len(report.changes)} change(s))")
+            if register_dest:
+                print(
+                    f"ava_routes: {ROUTER} is NOT in this output — the Custom "
+                    "Destination is FreePBX module state, so only a live apply "
+                    "registers it (this run had no PBX to write it to)",
+                    file=sys.stderr,
+                )
         else:
             # The undo is written FIRST and its failure is fatal: an apply with
             # no way back is the thing P0's snapshot discipline exists to
             # prevent, and a half-created revert file is not a way back. It
             # covers the creations as well as the rewrites, so a run that fails
             # between the two halves is still undoable as one thing.
-            revert = render_revert(report.changes, container, creations)
+            revert = render_revert(
+                report.changes,
+                container,
+                creations,
+                DestCreation(dest.table) if register_dest else None,
+            )
             try:
                 with open(args.revert_out, "w", encoding="utf-8") as fh:
                     fh.write(revert)
@@ -651,6 +939,22 @@ def main(argv: list[str] | None = None) -> int:
                 )
                 return 1
             print(f"ava_routes: revert script -> {args.revert_out}")
+            # Registered BEFORE the routes that name it, so a row written here
+            # never references a destination the registry has not got.
+            if register_dest:
+                try:
+                    dest_id = register_router_dest(container, dest)
+                except RouteError as exc:
+                    print(f"ava_routes: {exc}", file=sys.stderr)
+                    print(f"ava_routes: undo with {args.revert_out}", file=sys.stderr)
+                    return 1
+                hint = "" if (report.changes or creations) else (
+                    f"; run `docker exec {container} fwconsole reload`"
+                )
+                print(
+                    f"ava_routes: registered Custom Destination {ROUTER} "
+                    f"as dest-{dest_id}{hint}"
+                )
             if report.changes:
                 try:
                     apply_sql(container, render_sql(report.changes))
@@ -693,9 +997,9 @@ def main(argv: list[str] | None = None) -> int:
                 )
 
     refused = [d for d in report.missing if d not in created_dids] + report.duplicates
-    if refused:
+    if refused or dest_refused:
         print(
-            "ava_routes: the routes above need a human (by default this tool "
+            "ava_routes: the findings above need a human (by default this tool "
             "converges existing rows only; --create-missing has FreePBX's own "
             "API add the ones that are absent) — re-run --check after fixing them",
             file=sys.stderr,

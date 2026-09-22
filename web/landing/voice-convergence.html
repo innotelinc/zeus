@@ -762,6 +762,26 @@
   the router is drift, that two on it are in sync, and that a number the plan does
   not name (<code>7745057136</code>, the ring group) is left alone. Writing routes from a dump
   cannot be right, so <code>ZEUS_ROUTES_TSV</code> is check-only.</p>
+  <p><strong>Found after that measurement (2026-09-22; not yet measured on <code>.30</code>):</strong> the
+  routes were converged, but the destination they name was never registered. A
+  FreePBX inbound route points at a <em>destination</em> the framework's registry knows,
+  not at a bare dialplan target, and <code>zeus-ai-router,s,1</code> existed only as a string
+  in <code>incoming.destination</code> — so every route this phase rewrote was a <strong>bad
+  destination</strong>: the calls answered, so nothing on the caller's side showed it,
+  while the GUI could not name what the DID dials and Apply Config read the route
+  as invalid. <code>pbx/ava_routes.py</code> owns the registry entry now, for the same reason
+  it owns the rows: it is the route rows that name it. A live apply writes the
+  module's own <code>kvstore_&lt;Customappsreg&gt;</code> row (<code>Admin → Custom Destinations</code> — the
+  shape capstone's <code>pbx/bootstrap_dograh_route.py</code> writes for <code>[dograh-inbound]</code>,
+  with <code>destret</code> empty) <strong>before</strong> the routes that name it, <code>--check</code> reports an
+  unregistered destination as a <code>1</code> so the timer converges it, and the undo is a
+  <code>DELETE</code> in the revert script the run was already writing first. A PBX with no
+  <code>customappsreg</code> module is a <code>3</code>: a person installs it, and a timer tick would
+  only reload a live phone system to change nothing. The one asymmetry is
+  deliberate — this is the tool's <em>own constant target</em>, not the operator's route
+  data, which is why a default apply may write it and never creates a route row.
+  <code>./scripts/smoke-test.sh pbx</code> now names both causes on its <code>1</code> case rather than
+  reporting route drift alone.</p>
   <p><strong>Measured on <code>.30</code> (2026-09-22):</strong> the pre-state was taken first
   (<code>pbx/p0-snapshot.sh</code>), then the routes converged — three DIDs rewritten onto
   <code>zeus-ai-router,s,1</code> with the undo written before the write, then <code>fwconsole
@@ -780,7 +800,8 @@
   not asserted here.</p>
   <p><strong>Exit:</strong> every DID answered by AVA, gate proven both ways, <code>7745057136</code> left on
   its ring group.</p>
-  <p><strong>Rollback:</strong> restore the route SQL from the snapshot.</p>
+  <p><strong>Rollback:</strong> restore the route SQL from the snapshot; the same revert script
+  deletes a Custom Destination this phase registered.</p>
   <h3 id="p2-capstone-as-a-per-account-skill-with-hand-back">P2 — Capstone as a per-account skill, with hand-back</h3>
   <ul>
   <li>Add <code>voice_bindings</code>; render <code>ZEUS_CAPSTONE_TARGET</code> per account.</li>

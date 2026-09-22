@@ -395,22 +395,45 @@ class CreationTest(unittest.TestCase):
 class CreateMissingCliTest(unittest.TestCase):
     """The apply path with the flag, driven through stubs instead of a PBX."""
 
-    def _run_main(self, argv: list[str]):
-        real = (art.resolve_container, art.read_live_routes, art.apply_sql, art.create_missing)
+    def _run_main(self, argv: list[str], dest=None, routes: str = ""):
+        real = (
+            art.resolve_container, art.read_live_routes, art.apply_sql,
+            art.create_missing, art.judge_router_dest, art.register_router_dest,
+        )
         created: list[str] = []
+        events: list[str] = []
+        self.registered = []
+        self.events = events
         try:
             art.resolve_container = lambda *a, **k: "zeus-freepbx"
-            art.read_live_routes = lambda c: ""
-            art.apply_sql = lambda c, sql: None
+            art.read_live_routes = lambda c: routes
+            art.apply_sql = lambda c, sql: events.append("routes")
+            # A registered destination by default: these tests are about the
+            # routes, and the destination has its own below.
+            art.judge_router_dest = lambda c: (
+                dest
+                if dest is not None
+                else art.DestState(present=True, dest_id="1", table="kvstore_Customappsreg")
+            )
 
             def fake_create(c, dids):
                 created.extend(dids)
                 return list(dids)
 
+            def fake_register(c, state):
+                self.registered.append(state.table)
+                events.append("dest")
+                return "7"
+
             art.create_missing = fake_create
+            art.register_router_dest = fake_register
             return art.main(argv), created
         finally:
-            art.resolve_container, art.read_live_routes, art.apply_sql, art.create_missing = real
+            (
+                art.resolve_container, art.read_live_routes, art.apply_sql,
+                art.create_missing, art.judge_router_dest,
+                art.register_router_dest,
+            ) = real
 
     def test_apply_creates_the_route_and_goes_green(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -437,6 +460,230 @@ class CreateMissingCliTest(unittest.TestCase):
             self.assertEqual(created, [])
             # Nothing was created, so the undo has nothing to delete either.
             self.assertFalse(os.path.exists(revert))
+
+    # ── the destination the routes name, on the same live path ───────────
+
+    _IN_SYNC_ROUTES = f"7745057135\t{ROUTER}\tJob Interview\n"
+
+    def test_apply_registers_an_unregistered_destination(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            plan = _plan(tmp, ["7745057135"])
+            revert = os.path.join(tmp, "revert.sql")
+            rc, _ = self._run_main(
+                ["--accounts-json", plan, "--apply", "--revert-out", revert,
+                 "--quiet"],
+                dest=art.DestState(table="kvstore_Customappsreg"),
+                routes=self._IN_SYNC_ROUTES,
+            )
+            self.assertEqual(rc, 0)
+            self.assertEqual(self.registered, ["kvstore_Customappsreg"])
+            with open(revert, encoding="utf-8") as fh:
+                self.assertIn("DELETE FROM `kvstore_Customappsreg`", fh.read())
+
+    def test_the_destination_is_registered_before_the_routes(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            plan = _plan(tmp, ["7745057135"])
+            revert = os.path.join(tmp, "revert.sql")
+            rc, _ = self._run_main(
+                ["--accounts-json", plan, "--apply", "--revert-out", revert,
+                 "--quiet"],
+                dest=art.DestState(table="kvstore_Customappsreg"),
+                routes="7745057135\tfrom-did-direct,8005,1\tJob Interview\n",
+            )
+            self.assertEqual(rc, 0)
+            # A route row written before its destination exists is a bad
+            # destination even for the instant between the two writes.
+            self.assertEqual(self.events, ["dest", "routes"])
+            with open(revert, encoding="utf-8") as fh:
+                script = fh.read()
+            self.assertIn("UPDATE `incoming`", script)
+            self.assertIn("DELETE FROM `kvstore_Customappsreg`", script)
+
+    def test_a_registered_destination_is_left_alone_by_an_apply(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            plan = _plan(tmp, ["7745057135"])
+            revert = os.path.join(tmp, "revert.sql")
+            rc, _ = self._run_main(
+                ["--accounts-json", plan, "--apply", "--revert-out", revert,
+                 "--quiet"],
+                routes=self._IN_SYNC_ROUTES,
+            )
+            self.assertEqual(rc, 0)
+            self.assertEqual(self.registered, [])
+            # Nothing to write at all: a registered destination and routes in
+            # sync is not a run that touches the PBX.
+            self.assertFalse(os.path.exists(revert))
+
+
+class RouterDestTest(unittest.TestCase):
+    """The route names a destination, so the destination has to exist.
+
+    A FreePBX inbound route whose destination is not in the framework's registry
+    is a *bad destination*: the calls still answer, so the caller cannot see it,
+    while the GUI cannot name what the DID dials and Apply Config reads it as
+    invalid. The rows this tool writes are the only thing that names it, which is
+    why the tool owns the registry entry too.
+    """
+
+    def test_the_row_is_the_customappsreg_shape(self):
+        row = json.loads(art.custom_dest_row("7"))
+        self.assertEqual(row["destid"], 7)
+        self.assertEqual(row["target"], ROUTER)
+        self.assertEqual(row["description"], art.ROUTER_DESC)
+        # Empty on purpose: a truthy `destret` makes `fwconsole reload` crash on
+        # the 'dest' key this row has no field for.
+        self.assertEqual(row["destret"], "")
+
+    def test_the_table_is_discovered_not_assumed(self):
+        sql = art.custom_dest_table_sql()
+        self.assertIn("information_schema.tables", sql)
+        self.assertIn("ustomappsreg", sql)
+
+    def test_find_orders_by_key_so_two_runs_agree(self):
+        sql = art.find_custom_dest_sql("kvstore_Customappsreg")
+        self.assertIn("ORDER BY CAST(`key` AS UNSIGNED)", sql)
+        self.assertIn("LIMIT 1", sql)
+        self.assertIn(ROUTER, sql)
+
+    def test_insert_is_idempotent_on_the_key(self):
+        sql = art.insert_custom_dest_sql("kvstore_Customappsreg", "7", art.custom_dest_row("7"))
+        self.assertIn("'json-arr', 'dests'", sql)
+        self.assertIn("ON DUPLICATE KEY UPDATE", sql)
+
+    def test_the_undo_is_a_delete_keyed_on_the_target_not_the_id(self):
+        # The undo is written before the write, when the dest-<n> does not exist
+        # yet — so it can only be keyed on what the module matches on.
+        sql = art.DestCreation("kvstore_Customappsreg").revert_sql()
+        self.assertIn("DELETE FROM `kvstore_Customappsreg`", sql)
+        self.assertIn(f"LIKE '%{ROUTER}%'", sql)
+
+    def test_a_missing_entry_is_drift_and_a_missing_module_is_a_human(self):
+        real = art._run
+        try:
+            def fake(args, stdin=None):
+                if "information_schema" in args[-1]:
+                    return _Proc(stdout="kvstore_Customappsreg\n")
+                return _Proc(stdout="\n")  # no dest-<n> names the target
+
+            art._run = fake
+            state = art.judge_router_dest("zeus-freepbx")
+            # `problem` is what makes the difference between an apply and a
+            # person: a missing row is writable by this tool, a missing module
+            # is not.
+            self.assertEqual(state.problem, "")
+            self.assertFalse(state.present)
+            self.assertEqual(state.table, "kvstore_Customappsreg")
+
+            art._run = lambda args, stdin=None: _Proc(stdout="")
+            self.assertTrue(art.judge_router_dest("zeus-freepbx").problem)
+        finally:
+            art._run = real
+
+    def test_register_writes_the_row_and_moves_the_module_counter(self):
+        calls: list[str] = []
+
+        def fake(args, stdin=None):
+            sql = args[-1]
+            calls.append(sql)
+            if "information_schema" in sql:
+                return _Proc(stdout="kvstore_Customappsreg\n")
+            if "MAX(CAST" in sql:
+                return _Proc(stdout="7\n")
+            if "`key`='currentid'" in sql:
+                return _Proc(stdout="3\n")
+            return _Proc(stdout="")
+
+        real = art._run
+        try:
+            art._run = fake
+            state = art.DestState(present=False, table="kvstore_Customappsreg")
+            self.assertEqual(art.register_router_dest("zeus-freepbx", state), "7")
+        finally:
+            art._run = real
+        joined = "\n".join(calls)
+        self.assertIn("INSERT INTO `kvstore_Customappsreg`", joined)
+        self.assertIn("'json-arr'", joined)
+        # The counter was behind, so it moves past dest-7: otherwise the GUI's
+        # next "add destination" would reuse the id and overwrite ours.
+        self.assertIn("'currentid', '8'", joined)
+
+    def test_an_existing_entry_is_reused_not_duplicated(self):
+        calls: list[str] = []
+
+        def fake(args, stdin=None):
+            calls.append(args[-1])
+            if "id`='dests'" in args[-1]:
+                return _Proc(stdout="4\n")
+            return _Proc(stdout="")
+
+        real = art._run
+        try:
+            art._run = fake
+            state = art.DestState(present=False, table="kvstore_Customappsreg")
+            self.assertEqual(art.register_router_dest("zeus-freepbx", state), "4")
+        finally:
+            art._run = real
+        self.assertNotIn("INSERT INTO", "\n".join(calls))
+
+
+class RouterDestCliTest(unittest.TestCase):
+    """The destination as the exit codes see it: 1 converges, 3 needs a person."""
+
+    def _run_check(self, dest: art.DestState, routes: str) -> int:
+        real = (art.resolve_container, art.read_live_routes, art.judge_router_dest)
+        try:
+            art.resolve_container = lambda *a, **k: "zeus-freepbx"
+            art.read_live_routes = lambda c: routes
+            art.judge_router_dest = lambda c: dest
+            with tempfile.TemporaryDirectory() as tmp:
+                plan = _plan(tmp, ["7745057135"])
+                return art.main(
+                    ["--accounts-json", plan, "--check", "--quiet"]
+                )
+        finally:
+            art.resolve_container, art.read_live_routes, art.judge_router_dest = real
+
+    _IN_SYNC = f"7745057135\t{ROUTER}\tJob Interview\n"
+
+    def test_routes_in_sync_and_a_registered_destination_is_zero(self):
+        rc = self._run_check(
+            art.DestState(present=True, dest_id="4", table="kvstore_Customappsreg"),
+            self._IN_SYNC,
+        )
+        self.assertEqual(rc, 0)
+
+    def test_an_unregistered_destination_is_one_even_with_the_routes_in_sync(self):
+        rc = self._run_check(
+            art.DestState(table="kvstore_Customappsreg"),
+            self._IN_SYNC,
+        )
+        self.assertEqual(rc, 1)
+
+    def test_a_missing_module_is_three_not_one(self):
+        # No number of re-runs installs a FreePBX module: an apply that ran for
+        # this would reload a live phone system every timer tick to change
+        # nothing.
+        rc = self._run_check(
+            art.DestState(problem="no customappsreg table"),
+            self._IN_SYNC,
+        )
+        self.assertEqual(rc, 3)
+
+    def test_offline_check_never_touches_the_pbx_registry(self):
+        real = art.judge_router_dest
+        try:
+            art.judge_router_dest = lambda c: (_ for _ in ()).throw(
+                AssertionError("a route dump cannot judge FreePBX module state")
+            )
+            with tempfile.TemporaryDirectory() as tmp:
+                plan = _plan(tmp, ["7745057135"])
+                routes = _routes(tmp, [f"7745057135\t{ROUTER}\tJob Interview"])
+                rc = art.main(
+                    ["--accounts-json", plan, "--routes-tsv", routes, "--check", "--quiet"]
+                )
+        finally:
+            art.judge_router_dest = real
+        self.assertEqual(rc, 0)
 
 
 class LiveTargetTest(unittest.TestCase):

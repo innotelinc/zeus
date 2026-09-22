@@ -198,6 +198,21 @@ Then the failure is outside AVA:
   cannot fix for you: it converges rows that exist and never invents one, so add
   the route in FreePBX and re-run. Everything else in the table is left alone by
   design — a ring group, a partner's number, a `_2XX` pattern.
+* **FreePBX marks the inbound routes as "bad destinations".** The route table is
+  right, but `zeus-ai-router,s,1` is not registered under *Admin → Custom
+  Destinations*, so FreePBX cannot resolve what the DIDs dial. The calls still
+  answer — which is why it reads as cosmetic — while the GUI cannot name the
+  destination and Apply Config treats the route as invalid. One apply writes the
+  registry row, and its undo:
+
+  ```bash
+  python3 pbx/ava_routes.py --db … --apply --revert-out /root/zeus-route-revert.sql
+  docker exec zeus-freepbx fwconsole reload
+  ```
+
+  `--check` reports it as exit `1` (an apply converges it). Exit `3` on the
+  destination is the other shape: the PBX has no `customappsreg` module to write
+  the row into, and no number of re-runs installs one.
 * **`[zeus-ai-accounts]` is stale or missing.** It is generated from the
   portal's plan, not edited by hand:
 
