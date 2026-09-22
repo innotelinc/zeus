@@ -47,29 +47,58 @@ trip per turn. Over a call that compounds into the pauses callers notice.
 
 **When to revisit.** If the interview product is ever rebuilt inside Zeus, the
 hand-off becomes a plain transfer and dograh can be retired. Nothing in this
-integration assumes dograh stays: `[zeus-ai-handoff]` has one destination for
-it, and removing that extension is the whole change.
+integration assumes dograh stays: `[zeus-ai-handoff]` has one destination for it
+(extension 824) and `[zeus-ai-interview]` is the one context that decides what
+a hand-off reaches, so removing those two is the whole change.
 
 ### Model selection is a trap worth recording
 
-Pinning a model id from `/v1/models` is not enough. Measured on the estate's
-gateway:
+Pinning a model id from `/v1/models` is **not** a check, and believing it was
+cost this estate a working call path. A listing answers 200 in milliseconds for
+ids that then take 21 s, return an empty `content`, or 429. Measured with a real
+streaming completion (`scripts/ava-model-check.py`) on 2026-09-22:
 
-| model | result |
-|---|---|
-| `gemini/gemini-3.1-flash-lite` | **200**, 1.5 ms |
-| `gemini/gemini-2.5-flash` | **200**, 1.9 ms |
-| `openrouter/nex-agi/nex-n2.5-mini:free-none` | 200, 0.5 ms |
-| `openrouter/nvidia/nemotron-3-nano-…:free` | 200, 0.7 ms |
-| `gemini/gemini-3.7-flash` | **400** — listed, but *not in the provider's live catalog* |
-| `gemini/gemini-2.5-pro` | **400** — same |
-| `openrouter/google/gemma-4-26b-a4b-it:free` | **502 after 30 s** |
+| model | at `max_tokens: 200` | at `max_tokens: 800` | whole reply |
+|---|---|---|---|
+| `gemini/gemini-3.1-flash-lite` | `content: ""`, 190/196 tokens reasoning | **a complete sentence**, `finish_reason: stop` | 3-7 s |
+| `gemini/gemini-3-flash-preview` | truncated fragment | complete, when its pool is up | 1.9 s, else 429 / no content |
+| `gemini/gemini-2.5-flash` | — | — | **429**, credentials cooling down |
+| `auto/fast`, `auto/chat`, … | — | — | the router's own picks: 40-125 s |
+| `cfp/*` (llama, mistral, qwen) | — | — | **502** — Cloudflare *browser* routes, need Playwright |
+| `gweb/*`, `gemini-web/*` | — | — | **500** — Playwright not installed |
+| `dva/*`, `oc/*`, `felo/*`, `aihorde/*` | — | — | 500 / 401 / 400, or image models |
 
-The 400s and the 30-second 502 are what the original "Gateway responded 502 for
-model …" report was. `config/ava/ai-agent.yaml` therefore pins
-`gemini/gemini-3.1-flash-lite` with the verified fallbacks named in its
-comments — re-verify after any gateway or provider change rather than assuming
-the catalogue listing is truthful.
+**The model was never the fault; the token ceiling was.** Every route this
+gateway serves emits reasoning tokens *before* the content. At the old
+`max_tokens: 200` that left about eight tokens of content, so the agent spoke
+half a sentence and stopped (`"We are open from 9 a."`) — which is what a
+caller reports as the call cutting out, not as a model problem. Two changes
+follow, both now in `config/ava/ai-agent.yaml`:
+
+1. **`max_tokens: 800`** so the ceiling covers the reasoning (174-564 measured)
+   plus a whole answer. The same model as before, complete rather than cut.
+2. **`timeout_sec` / `response_timeout_sec: 15`.** The adapter falls back to a
+   serial request when its stream budget expires, and the provider default is
+   5 s — right on top of a 3-7 s answer plus variance, so a turn that crossed
+   it died mid-call instead of arriving late.
+
+**The latency fix is on the gateway, and it is one parameter.** None of this
+gateway's non-Google routes work at all (see the table), and the Google ones
+reason on every turn because nothing asks them not to. `reasoning_effort` is
+honoured, and the engine has no way to send it (`vendor/ava` has no such
+option), so it belongs on the route in OmniRoute:
+
+| request | total | content | reasoning tokens |
+|---|---|---|---|
+| (unset — today) | 6.9 s | a complete sentence | 190-564 |
+| `"reasoning_effort": "none"` | 7.6 s | `"We are open Monday through Friday, from 9:00 a.m. to 5:00 p.m."` | **0** |
+| `"reasoning_effort": "minimal"` | **3.4 s** | the same, complete | **0** |
+
+Until that is set, a turn costs 3-7 s of silence instead of about one — which is
+the difference between this agent and a conversation. Re-verify after any
+gateway or provider change with `python3 scripts/ava-model-check.py`: it asks
+for a real completion and names what it found, instead of trusting a catalogue
+listing, and it distinguishes *cannot answer* (fatal) from *answers slowly*.
 
 ---
 
@@ -90,9 +119,15 @@ the catalogue listing is truthful.
        │                        trans fer / business functions    │
        │                                                          ▼
  [zeus-ai-handoff]  ◀────────────────────────────────────────────┘
-       │  exten 824, gated on ZEUS_CAPSTONE_ADDON
+       │  exten 824 — an entry point, not a target
        ▼
-   Stasis(dograh)  ──▶ Capstone interview agent
+ [zeus-ai-interview]   gated on ZEUS_CAPSTONE_ADDON, dispatches on
+       │               ${ZEUS_CAPSTONE_TARGET} (the account's binding)
+       ▼
+ dograh-inbound,${ZEUS_CAPSTONE_TARGET},1  ──▶ Capstone interview agent
+       │  a concluded interview hands back to [zeus-ai-return]
+       ▼
+   AVA (AI_AGENT=…) or the operator
 ```
 
 **Why the DID dispatch lives in dialplan, not in FreePBX route variables.**
@@ -102,10 +137,11 @@ PBX (`pbx/tests/test_ava_routing.py`).
 
 **Why the add-on gate is in the dialplan.** The prompt is not an enforcement
 point: an agent can be talked into trying a transfer, and a prompt can be
-edited by anyone with the portal open. `[zeus-ai-handoff]` refuses extension
-824 unless the router stamped `ZEUS_CAPSTONE_ADDON=1`, and the router stamps it
-only for accounts Magnate says are entitled. A refused hand-off goes to the
-operator — a caller is never dropped silently.
+edited by anyone with the portal open. `[zeus-ai-interview]` refuses the
+hand-off unless the router stamped `ZEUS_CAPSTONE_ADDON=1`, and the router
+stamps it only for accounts Magnate says are entitled. What an allowed hand-off
+then reaches is the account's own binding, not one fixed extension — and a
+refused hand-off goes to the operator, so a caller is never dropped silently.
 
 ### File map
 
@@ -113,7 +149,7 @@ operator — a caller is never dropped silently.
 |---|---|
 | `config/ava/ai-agent.yaml` | AVA engine config (tracked template: gateway LLM, local STT/TTS, AudioSocket). Seeded into gitignored `data/ava/project/config/` |
 | `docker-compose.yml` (`voice` profile) | `ai-engine`, `ai-engine-admin`, `local-ai-server`. `omniroute` is `gateway`-profile only — the canonical gateway is on `.46` |
-| `pbx/asterisk/extensions_custom.conf` | the static dialplan: router, first response, hand-off destinations, refusal |
+| `pbx/asterisk/extensions_custom.conf` | the static dialplan: router, first response, hand-off destinations, the per-account interview dispatch, refusal |
 | `pbx/asterisk/ari.conf` | AVA's own ARI user, separate from the portal's |
 | `pbx/ava_routing.py` | renders `[zeus-ai-accounts]` from the accounts; **the add-on gate** |
 | `pbx/ava_ari_check.py` | the engine and `ari.conf` must carry one ARI secret; checked by the PBX sync and the deploy script |

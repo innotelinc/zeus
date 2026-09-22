@@ -219,6 +219,16 @@ services:
       # Read-only: this decides whether to start the engine, it never edits
       # anyone's configuration to make itself pass.
       - ./pbx:/pbx:ro
+      # pbx/ava_ari_check.py reads the engine's `.env` through scripts/env_file.py
+      # (`from env_file import read_key`), resolving it as `${__file__}/../scripts`
+      # — which on a host is the repo's scripts/ and in this container is
+      # `/scripts`, a path that did not exist here. Mounting only ./pbx made the
+      # gate die with ModuleNotFoundError before it could judge anything, and
+      # because the engine waits on `service_completed_successfully` the whole
+      # voice profile then refused to start (`docker compose up` left the engine
+      # at "Created"). It has to be the directory: /pbx is itself read-only, and
+      # a file bind-mount inside it cannot create its mountpoint.
+      - ./scripts:/scripts:ro
       # Renamed on the way in so the paths in the failure message are the
       # container's, and so neither file can be read at its repo location and
       # shadowed by a stale copy.
