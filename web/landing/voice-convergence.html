@@ -816,6 +816,22 @@
   rather than falling back to a guess. A target that could close
   <code>DIALPLAN_EXISTS(...)</code> is refused at validation, beside the provider and
   audio-profile overrides.</p>
+  <p><strong>Measured on <code>.30</code> (2026-09-22):</strong> the checkout fast-forwarded to the renderer
+  and the sync timer converged the fragment on its own tick — <code>zeus-pbx-sync:
+  re-applied fragments (local)</code>, 2.975s CPU, dialplan reloaded — so the live
+  <code>[zeus-ai-accounts]</code> now carries the envelope and an explicit empty
+  <code>ZEUS_CAPSTONE_TARGET</code> on every entry. Nothing reads either yet, which is the
+  point of converging first: both are inert until the context that consumes the
+  target exists.</p>
+  <p>The plan-route half does <strong>not</strong> travel by converging a file. The portal is
+  deployed from a published image (<code>ghcr.io/innotelinc/zeus:latest</code>, <code>node
+  server.js</code>, its own data volume), not from the checkout the PBX reads, so
+  <code>account</code> and <code>capstone_target</code> reach the plan when that image is next released
+  and restarted — which is also when <code>voice_bindings</code> is created, since
+  <code>src/lib/db.ts</code> applies <code>schema.sql</code> and <code>scripts/migrations/</code> on boot. Measured
+  in between: the live plan endpoint answers seven accounts with no <code>account</code> and
+  no <code>capstone_target</code>, and the renderer correctly renders <code>AI_ACCOUNT</code> not at all
+  rather than an empty value over a channel that may already have one.</p>
   <p><strong>The dialplan half is deliberately not in this change.</strong> The spec replaces the
   constant <code>824 → dograh-inbound,8000</code> with <code>[zeus-ai-interview]</code> and
   <code>[zeus-ai-return]</code>; the transition form of that keeps the old constant as the
