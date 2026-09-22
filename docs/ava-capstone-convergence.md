@@ -471,12 +471,19 @@ reconciler work exists to make uneventful.
 dispatches to cannot disagree about what a number is; it rewrites a mis-prefixed
 `extension` at the same time as the destination (a row stored as `17745057135`
 never matches a call to `7745057135`, so it is drift like any other); and it
-writes its undo script *before* it writes anything. Two rules it carries: it
-converges rows that exist (a DID with no inbound route — or two — is refused **by
-name** rather than invented, because guessing FreePBX's other columns a row at a
-time is worse than a named gap), and it only ever touches DIDs the plan names,
-reporting the rest of the table — the ring group, a partner's number, a `_2XX`
-pattern — as *left alone*, so that is evidence rather than an assumption.
+writes its undo script *before* it writes anything. Two rules it carries: a
+default apply converges rows that exist (a DID with no inbound route — or two —
+is refused **by name** rather than invented, because guessing FreePBX's other
+columns a row at a time is worse than a named gap), and it only ever touches DIDs
+the plan names, reporting the rest of the table — the ring group, a partner's
+number, a `_2XX` pattern — as *left alone*, so that is evidence rather than an
+assumption. The refused case has an opt-in escape hatch, `--create-missing`,
+because the GUI step that leaves a *new* DID unrouted is the same step that wires
+it: the flag calls FreePBX's own create path (`FreePBX::Core()->addDID`) inside
+the container, so the fifteen columns this tool does not model are the
+framework's to fill rather than this tool's to guess, and the undo is a `DELETE`
+in the same revert script. It needs an explicit `--apply`, is refused offline, and
+no timer passes it — a created row is a deliberate act, not a 15-minute one.
 
 The wiring is in `pbx/bootstrap-zeus-pbx.sh`, on both paths: `--check` fails on
 route drift, and an apply converges the routes **before** `fwconsole reload` —

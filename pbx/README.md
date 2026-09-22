@@ -16,7 +16,7 @@ operational shape.
 | `setup-cloudonix-trunk.sh` | Peer a Cloudonix domain with this PBX (`pjsip_custom_cloudonix.conf` + `extensions_custom_cloudonix.conf`), **script-owned** — `bootstrap-zeus-pbx.sh` skips both files, and `docker-entrypoint-full.sh` calls this on boot. `--check` drift mode |
 | `bootstrap-zeus-pbx.sh` | Render + apply the fragments idempotently; `--check` drift mode |
 | `asterisk_converge.py` | Per-section merge for the **shared** `extensions_custom.conf` / `ari.conf` (ownership markers) |
-| `ava_routes.py` | Converge each platform DID's FreePBX inbound route onto `zeus-ai-router,s,1`, from the same plan that renders `[zeus-ai-accounts]` — see [One ingress](#one-ingress-every-platform-did-reaches-the-router). `--check` / `--apply`, `--routes-tsv` to judge off-host. Exit 1 = an apply converges it, 3 = only a person can |
+| `ava_routes.py` | Converge each platform DID's FreePBX inbound route onto `zeus-ai-router,s,1`, from the same plan that renders `[zeus-ai-accounts]` — see [One ingress](#one-ingress-every-platform-did-reaches-the-router). `--check` / `--apply`, `--routes-tsv` to judge off-host, `--create-missing` to create a route for a DID that has none (via FreePBX's own API). Exit 1 = an apply converges it, 3 = only a person can |
 | `ava_ari_check.py` | Does the engine and the PBX share one ARI secret? `--require-engine-env` is the mode the compose preflight runs — see [Voice plane gates](#voice-plane-gates-and-d7-assertions) |
 | `d7_assert.py` | The three D7 claims about the live stack (call recorded, both ARI apps registered, one gateway serving the configured model). `--call` places a self-contained probe call. Exit 2 = nothing could be evaluated |
 | `p0-snapshot.sh` | Records the live pre-state (containers, PBX files with hashes, routes, units, CDR watermark) before a change, in the `/root/revert-to-1510/` shape |
@@ -514,6 +514,10 @@ halves, and rendering one of them looks finished while calls still land wrong:
 python3 pbx/ava_routes.py --db /var/lib/docker/volumes/zeus-portal-data/_data/pbx.db --check
 python3 pbx/ava_routes.py --db … --apply --revert-out /root/zeus-route-revert.sql
 
+# a DID the plan names but FreePBX has no route for at all: the absent row is
+# created through FreePBX's own create path (below), never an INSERT of ours
+python3 pbx/ava_routes.py --db … --apply --create-missing
+
 # off-host, against a route table dumped by pbx/p0-snapshot.sh (check-only)
 python3 pbx/ava_routes.py --db … --routes-tsv routes/incoming.tsv --check
 ```
@@ -534,7 +538,7 @@ different things to a caller:
 | --- | --- | --- |
 | `0` | every platform DID reaches the router | nothing |
 | `1` | routes off it | apply — it converges them |
-| `3` | a platform DID with no route, or two | nothing an apply can do; add the route in FreePBX (the check keeps failing) |
+| `3` | a platform DID with no route, or two | nothing a *default* apply can do; add the route in FreePBX, or run `--create-missing` (the check keeps failing until then) |
 | `2` | no PBX reachable / table unreadable | nothing — a host running part of the group is not a drifted host |
 
 A `3` deliberately does **not** send the bootstrap down its apply path: an apply
@@ -545,11 +549,19 @@ wrapper puts the apply's own output in the journal when it refuses.
 
 What the tool will not do, deliberately:
 
-- **It never invents a route.** A DID with no inbound route at all (or two) is
-  refused by name, for a human to fix in two clicks: creating an `incoming` row
-  means guessing FreePBX's other columns, and a half-written row on a live phone
-  system is worse than a named gap. It stays visible — `--check` keeps failing
-  until the route exists.
+- **A default apply never invents a route.** A DID with no inbound route at all
+  (or two) is refused by name: a hand-written `incoming` row means guessing its
+  other fifteen columns, and a half-written row on a live phone system is worse
+  than a named gap. It stays visible — `--check` keeps failing until the route
+  exists.
+- **`--create-missing` is the one, deliberate exception, and it is not a
+  guess.** It calls FreePBX's *own* create path (`FreePBX::Core()->addDID`) inside
+  the PBX container, so the columns this tool does not model are filled by the
+  same code the GUI's "Add Inbound Route" page runs, hooks included. It needs an
+  explicit `--apply`, is refused offline (`--routes-tsv`/`--sql-out` cannot call
+  a framework), and its undo is a `DELETE` in the same revert script — so a mixed
+  run still undoes as one thing. The timer never passes it: a row this tool had
+  no evidence for belongs in a one-off run, not a periodic one.
 - **It only touches DIDs the plan names.** A ring group, a partner's number and
   a pattern route like `_2XX` are somebody else's phone service, and the tool
   reports them as *left alone* so that is evidence rather than an assumption.

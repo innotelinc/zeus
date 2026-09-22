@@ -217,9 +217,19 @@ Then the failure is outside AVA:
   write, and then prints the apply's own output: read it before assuming the PBX
   is unreachable. The usual cause is a platform DID with **no inbound route in
   FreePBX at all**, which no number of re-runs can fix —
-  `python3 pbx/ava_routes.py --db … --check` names the DID, and adding its
-  inbound route (destination `zeus-ai-router,s,1`) in the GUI is the fix. Exit 3
-  from that tool is this case; exit 1 is a route a re-run *will* converge.
+  `python3 pbx/ava_routes.py --db … --check` names the DID. Two ways to fix it:
+
+  ```bash
+  # one command: creates the missing route(s) through FreePBX's own create path,
+  # writes its undo first, then reload the dialplan
+  python3 pbx/ava_routes.py --db … --apply --create-missing
+  docker exec zeus-freepbx fwconsole reload
+  ```
+
+  …or add the route (destination `zeus-ai-router,s,1`) in the GUI. Exit 3 from
+  that tool is this case; exit 1 is a route a re-run *will* converge. Deliberately
+  no timer does this for you — a route the table had no evidence for is a
+  one-off, not a 15-minute job.
 
 ## Before you escalate
 

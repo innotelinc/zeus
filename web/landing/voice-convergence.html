@@ -718,12 +718,19 @@
   dispatches to cannot disagree about what a number is; it rewrites a mis-prefixed
   <code>extension</code> at the same time as the destination (a row stored as <code>17745057135</code>
   never matches a call to <code>7745057135</code>, so it is drift like any other); and it
-  writes its undo script <em>before</em> it writes anything. Two rules it carries: it
-  converges rows that exist (a DID with no inbound route — or two — is refused <strong>by
-  name</strong> rather than invented, because guessing FreePBX's other columns a row at a
-  time is worse than a named gap), and it only ever touches DIDs the plan names,
-  reporting the rest of the table — the ring group, a partner's number, a <code>_2XX</code>
-  pattern — as <em>left alone</em>, so that is evidence rather than an assumption.</p>
+  writes its undo script <em>before</em> it writes anything. Two rules it carries: a
+  default apply converges rows that exist (a DID with no inbound route — or two —
+  is refused <strong>by name</strong> rather than invented, because guessing FreePBX's other
+  columns a row at a time is worse than a named gap), and it only ever touches DIDs
+  the plan names, reporting the rest of the table — the ring group, a partner's
+  number, a <code>_2XX</code> pattern — as <em>left alone</em>, so that is evidence rather than an
+  assumption. The refused case has an opt-in escape hatch, <code>--create-missing</code>,
+  because the GUI step that leaves a <em>new</em> DID unrouted is the same step that wires
+  it: the flag calls FreePBX's own create path (<code>FreePBX::Core()-&gt;addDID</code>) inside
+  the container, so the fifteen columns this tool does not model are the
+  framework's to fill rather than this tool's to guess, and the undo is a <code>DELETE</code>
+  in the same revert script. It needs an explicit <code>--apply</code>, is refused offline, and
+  no timer passes it — a created row is a deliberate act, not a 15-minute one.</p>
   <p>The wiring is in <code>pbx/bootstrap-zeus-pbx.sh</code>, on both paths: <code>--check</code> fails on
   route drift, and an apply converges the routes <strong>before</strong> <code>fwconsole reload</code> —
   they are rows FreePBX builds its dialplan from, so the change is invisible until
