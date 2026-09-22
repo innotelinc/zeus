@@ -48,6 +48,13 @@ image; run it after any image update, or from the entrypoint to self-heal:
     docker cp patch-freepbx-trunk-next-id.py zeus-freepbx:/tmp/ && \\
       docker exec zeus-freepbx python3 /tmp/patch-freepbx-trunk-next-id.py
 
+Preferred on a containerised stack: have it copy itself in, run there, and pull
+the backups back out — the container's own filesystem is disposable, so a
+backup left inside it does not survive the image refresh that made it useful:
+
+    pbx/patch-freepbx-trunk-next-id.py --container zeus-freepbx --check
+    pbx/patch-freepbx-trunk-next-id.py --container zeus-freepbx
+
 The pure functions are unit-tested without a PBX (pbx/tests).
 """
 from __future__ import annotations
@@ -55,6 +62,7 @@ from __future__ import annotations
 import argparse
 import os
 import shutil
+import subprocess
 import sys
 import time
 
@@ -110,6 +118,64 @@ PJSIP_PATCHED = """\t\t// Clear this trunk's rows first: the settings below are 
 """
 
 PJSIP_MARKER = "DELETE FROM `pjsip` WHERE `id` = :trunknum"
+
+# ── running inside a container ─────────────────────────────────────────────
+# The files being patched only exist inside the PBX container, so on a
+# containerised stack the patcher has to act there. It is shipped into the
+# image (Dockerfile.full copies it to /usr/local/bin and the entrypoint runs
+# it on every boot), but a DEPLOYED image that predates that copy has no
+# patcher at all — and its entrypoint silently skips the repair, leaving the
+# bug live with nothing to re-apply it. This mode is the way back in from the
+# host: no image rebuild, no hand-typed docker cp.
+CONTAINER_SCRIPT = "/tmp/patch-freepbx-trunk-next-id.py"
+DEFAULT_BACKUP_DIR = "/root/trunk-repair"
+
+
+def container_commands(
+    container: str, script_path: str, inner_args: list[str], host_backup_dir: str
+) -> list[list[str]]:
+    """The docker commands that apply this patch inside `container`.
+
+    Pure, so the wiring is testable without a Docker daemon: the first two must
+    succeed, the third (pulling backups out) is best-effort because a run that
+    changed nothing has nothing to pull.
+    """
+    remote = f"{container}:{CONTAINER_SCRIPT}"
+    return [
+        ["docker", "cp", script_path, remote],
+        ["docker", "exec", container, "python3", CONTAINER_SCRIPT, *inner_args],
+        # `/.` copies the contents, so the host dir is created if absent and
+        # existing backups are not nested one level deeper on every run.
+        ["docker", "cp", f"{container}:{DEFAULT_BACKUP_DIR}/.", host_backup_dir],
+    ]
+
+
+def run_in_container(args) -> int:
+    """Apply inside `args.container`; returns the inner run's exit code."""
+    inner = ["--backup-dir", DEFAULT_BACKUP_DIR]
+    if args.check:
+        inner.append("--check")
+    for name in args.hunk or []:
+        inner += ["--hunk", name]
+
+    host_backup = os.path.abspath(os.path.expanduser(args.host_backup_dir))
+    steps = container_commands(
+        args.container, os.path.abspath(__file__), inner, host_backup
+    )
+
+    rc = subprocess.call(steps[0])
+    if rc != 0:
+        print(f"patch-freepbx-trunk-next-id: cannot place the patcher in "
+              f"{args.container} (rc={rc})", file=sys.stderr)
+        return 2
+
+    rc = subprocess.call(steps[1])
+
+    os.makedirs(host_backup, exist_ok=True)
+    if subprocess.call(steps[2], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL) == 0:
+        print(f"patch-freepbx-trunk-next-id: backups pulled to {host_backup}")
+    return rc
+
 
 HUNKS = (
     {
@@ -183,8 +249,17 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--hunk", choices=[h["name"] for h in HUNKS], action="append",
                         help="restrict to one hunk (repeatable; default: all)")
     parser.add_argument("--file", help="single-file mode: patch this file with --hunk")
-    parser.add_argument("--backup-dir", default="/root/trunk-repair")
+    parser.add_argument("--backup-dir", default=DEFAULT_BACKUP_DIR)
+    parser.add_argument("--container", metavar="NAME",
+                        help="run the patch inside this PBX container (copies "
+                             "itself in, runs, pulls backups back out)")
+    parser.add_argument("--host-backup-dir", default=DEFAULT_BACKUP_DIR,
+                        help="host directory to pull container backups into "
+                             "(with --container)")
     args = parser.parse_args(argv)
+
+    if args.container:
+        return run_in_container(args)
 
     selected = [h for h in HUNKS if not args.hunk or h["name"] in args.hunk]
     if args.file:

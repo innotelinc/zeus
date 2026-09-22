@@ -11,6 +11,7 @@ import importlib.util
 import os
 import sys
 import tempfile
+import types
 import unittest
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
@@ -221,6 +222,79 @@ class CliTest(unittest.TestCase):
     def test_file_without_a_single_hunk_is_rejected(self):
         path = self._write(NEXT_ID_FILE)
         self.assertEqual(pt.main(["--file", path]), 2)
+
+
+class ContainerModeTest(unittest.TestCase):
+    """`--container` is the way back in on a deployed image that predates the
+    patcher, so its wiring is pinned here. It shells out, so the runner is
+    stubbed: these tests must not need a Docker daemon or a PBX."""
+
+    def setUp(self):
+        self._real = pt.subprocess.call
+        self.calls = []
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.addCleanup(lambda: setattr(pt.subprocess, "call", self._real))
+
+    def _stub(self, *codes):
+        """Record each command and return `codes`, holding the last one."""
+        def fake(cmd, **kwargs):
+            self.calls.append(cmd)
+            return codes[min(len(self.calls), len(codes)) - 1]
+        pt.subprocess.call = fake
+
+    def _args(self, **over):
+        base = {
+            "check": False,
+            "hunk": None,
+            "container": "zeus-freepbx",
+            "host_backup_dir": os.path.join(self.tmp.name, "backups"),
+        }
+        base.update(over)
+        return types.SimpleNamespace(**base)
+
+    def test_the_plan_is_copy_run_pull(self):
+        cmds = pt.container_commands("pbx", "/repo/p.py", ["--check"], "/h/b")
+        self.assertEqual(len(cmds), 3)
+        self.assertEqual(cmds[0][:3], ["docker", "cp", "/repo/p.py"])
+        self.assertTrue(cmds[0][3].startswith("pbx:"), "must land where the run looks")
+        self.assertEqual(cmds[1][:4], ["docker", "exec", "pbx", "python3"])
+        self.assertIn("--check", cmds[1])
+        self.assertTrue(cmds[2][2].endswith("/."),
+                        "pull must copy the contents, not nest a level per run")
+        self.assertEqual(cmds[2][3], "/h/b")
+
+    def test_check_and_every_hunk_are_forwarded_to_the_inner_run(self):
+        self._stub(0, 0, 0)
+        pt.run_in_container(
+            self._args(check=True, hunk=["trunk-next-id", "pjsip-write-idempotent"])
+        )
+        inner = self.calls[1]
+        self.assertIn("--check", inner)
+        self.assertEqual(inner.count("--hunk"), 2)
+        self.assertIn("pjsip-write-idempotent", inner)
+
+    def test_drift_reported_inside_the_container_is_returned(self):
+        self._stub(0, 1, 0)
+        self.assertEqual(pt.run_in_container(self._args(check=True)), 1)
+
+    def test_a_failed_copy_stops_before_touching_the_pbx(self):
+        self._stub(1, 0, 0)
+        self.assertEqual(pt.run_in_container(self._args()), 2)
+        self.assertEqual(len(self.calls), 1, "must not exec into the PBX")
+
+    def test_an_unpullable_backup_does_not_change_the_result(self):
+        # Nothing changed, so there is nothing to pull — not a failure.
+        self._stub(0, 0, 1)
+        self.assertEqual(pt.run_in_container(self._args()), 0)
+        self.assertEqual(len(self.calls), 3)
+
+    def test_backups_are_pulled_to_the_host_not_left_in_the_container(self):
+        self._stub(0, 0, 0)
+        args = self._args()
+        pt.run_in_container(args)
+        self.assertTrue(os.path.isdir(args.host_backup_dir))
+        self.assertTrue(self.calls[2][2].startswith("zeus-freepbx:"))
 
 
 if __name__ == "__main__":
