@@ -87,6 +87,39 @@ CREATE TABLE IF NOT EXISTS asteriskcdrdb.cel (
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 SQL
 
+# ── ODBC DSN for CDR/CEL ───────────────────────────────────────────────────
+# res_odbc / cdr_adaptive_odbc / cel_odbc each fail with "Data source name not
+# found and no default driver specified" — and CDR/CEL then record *nothing at
+# all* (no calls, no caller ID) — when /etc/odbc.ini names a driver that
+# odbcinst.ini doesn't define, or when Socket= points at a mysqld socket this
+# container doesn't use. The image ships `driver=MySQL` while only the MariaDB
+# Connector/ODBC ("MariaDB Unicode") is installed, and its socket path is the
+# distro default rather than the one mariadb actually listens on here, so
+# normalise both on every boot. Runs after `service mariadb start`, so the real
+# socket exists to compare against.
+if [ -f /etc/odbc.ini ]; then
+  odbc_driver="$(sed -nE 's/^[[:space:]]*driver[[:space:]]*=[[:space:]]*(.*)$/\1/p' /etc/odbc.ini | head -1)"
+  if [ -n "$odbc_driver" ] && ! odbcinst -q -d 2>/dev/null | grep -qxF "[$odbc_driver]"; then
+    for cand in "MariaDB Unicode" "MariaDB" "MySQL"; do
+      if odbcinst -q -d 2>/dev/null | grep -qxF "[$cand]"; then
+        sed -i "s|^[[:space:]]*driver[[:space:]]*=.*|driver=$cand|" /etc/odbc.ini
+        echo ">>> [odbc] driver '$odbc_driver' is not installed — using '$cand'"
+        break
+      fi
+    done
+  fi
+  odbc_socket="$(sed -nE 's/^[[:space:]]*Socket[[:space:]]*=[[:space:]]*(.*)$/\1/p' /etc/odbc.ini | head -1)"
+  if [ -n "$odbc_socket" ] && [ ! -S "$odbc_socket" ]; then
+    for cand in /run/mysqld/mysqld.sock /var/run/mysqld/mysqld.sock /var/lib/mysql/mysql.sock; do
+      if [ -S "$cand" ]; then
+        sed -i "s|^[[:space:]]*Socket[[:space:]]*=.*|Socket=$cand|" /etc/odbc.ini
+        echo ">>> [odbc] Socket '$odbc_socket' does not exist — using '$cand'"
+        break
+      fi
+    done
+  fi
+fi
+
 # ── Adopt an existing database's credentials ───────────────────────────────
 # FreePBX's installer generates AMPDBPASS *randomly at image build time*, but
 # the database lives on the shared pbx-mariadb-data volume and outlives every

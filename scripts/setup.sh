@@ -582,7 +582,11 @@ fi
 cat > /etc/odbc.ini <<EOF
 [MySQL-asteriskcdrdb]
 Description=MySQL connection to 'asteriskcdrdb' database
-driver=MySQL
+# Must match the name the driver is registered under below (`odbcinst -i -d -n
+# MariaDB`). "MySQL" resolves to nothing on this image — only the MariaDB
+# Connector/ODBC is installed — and an unresolvable driver makes res_odbc /
+# cdr_adaptive_odbc / cel_odbc fail at connect, so CDR/CEL record nothing.
+driver=MariaDB
 server=localhost
 database=asteriskcdrdb
 username=root
