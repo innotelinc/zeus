@@ -1,0 +1,48 @@
+# ═══════════════════════════════════════════════════════════════
+# Zeus — observability via an EXTERNAL collector (Capstone's SigNoz)
+# ═══════════════════════════════════════════════════════════════
+# The co-hosted deployment: Zeus and Capstone share one host, and the target
+# architecture is one observability spine rather than two (docs/stack.md,
+# roadmap item 3; docs/ava-capstone-convergence.md, D7). Running a second
+# ClickHouse + SigNoz just so Zeus's spans have somewhere to land is the
+# duplication this mode retires — the portal exports to Capstone's collector
+# and an operator reads both products in Capstone's Grafana/SigNoz.
+#
+#   docker compose -f docker-compose.yml \
+#                  -f compose.observability.external.yml up -d
+#
+# No services are added: this is an override of the portal's environment only.
+#
+# Where the collector is:
+#   OTEL_EXTERNAL_COLLECTOR   base URL (default http://otel-collector:4318)
+#
+# The default is Capstone's collector BY SERVICE NAME, because the two stacks
+# already share one bridge — Capstone's compose joins Zeus's `pbx-net`
+# (docs/zeus-integration.md), so a container name resolves. It is NOT
+# `host.docker.internal`: Capstone binds its collector to loopback on the host
+# (`127.0.0.1:4318`), and a loopback-bound port is exactly the "docker addresses
+# do not work" case this repo's README documents — from inside the portal
+# container the host gateway address has no listener.
+#
+# That default needs one Capstone-side change to work: its `otel-collector`
+# service must join `pbx-net` (it is on `interview-net` today). See
+# docs/capstone-repo-changes.md, C1.
+#
+# Capstone's collector is metrics-only — it turns spans into RED metrics and
+# DROPS the spans — so Zeus spans become `zeus-portal` series in Capstone's
+# Prometheus/Grafana beside `dograh-pipeline`, not a second trace store.
+#
+# Do NOT combine this with compose.observability.yml: both set the portal's
+# OTEL_EXPORTER_OTLP_ENDPOINT, and whichever file compose reads last wins. Pick
+# one. (The bundled profile is for a host that does not run Capstone; this one
+# is for a host that does.)
+# ═══════════════════════════════════════════════════════════════
+
+services:
+  pbx:
+    environment:
+      - OTEL_EXPORTER_OTLP_ENDPOINT=${OTEL_EXTERNAL_COLLECTOR:-http://otel-collector:4318}
+      - OTEL_SERVICE_NAME=${OTEL_SERVICE_NAME:-zeus-portal}
+      # Name the deployment so two Zeus installs exporting to one collector are
+      # not a single anonymous service in the UI.
+      - OTEL_DEPLOYMENT_ENVIRONMENT=${OTEL_DEPLOYMENT_ENVIRONMENT:-zeus}

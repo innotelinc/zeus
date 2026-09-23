@@ -12,13 +12,24 @@
 #   SigNoz UI + API  http://localhost:3301
 #   OTLP ingest      http://127.0.0.1:4318 (HTTP) / 4317 (gRPC) — loopback
 #
-# Optional: point the portal/next app at the collector with
-# OTEL_EXPORTER_OTLP_ENDPOINT=http://zeus-signoz-otel-collector:4318 and
-# OTEL_SERVICE_NAME=zeus-portal (not wired by default — see docs/stack.md).
+# The portal is pointed at THIS profile's collector automatically (an
+# override of the base file's empty default), so `-f compose.observability.yml`
+# is enough to get spans — no second setting to remember. Point it elsewhere by
+# setting OTEL_EXPORTER_OTLP_ENDPOINT in .env: on a host that also runs
+# Capstone, use compose.observability.external.yml instead of this file and read
+# from Capstone's SigNoz, rather than standing up a second ClickHouse that only
+# Zeus writes to (docs/stack.md).
 # Set SIGNOZ_POSTGRES_PASSWORD / SIGNOZ_JWT_SECRET in .env.
 # ═══════════════════════════════════════════════════════════════
 
 services:
+  # Override, not a new service: the portal is the only Zeus component that
+  # emits spans today (src/instrumentation.ts → src/lib/otel.ts).
+  pbx:
+    environment:
+      - OTEL_EXPORTER_OTLP_ENDPOINT=${OTEL_EXPORTER_OTLP_ENDPOINT:-http://zeus-signoz-otel-collector:4318}
+      - OTEL_SERVICE_NAME=${OTEL_SERVICE_NAME:-zeus-portal}
+
   zeus-signoz-postgres:
     image: postgres:16
     container_name: zeus-signoz-postgres

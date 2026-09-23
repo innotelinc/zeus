@@ -8,6 +8,7 @@ import {
   type AvaAgent,
   type AvaCall,
 } from "@/lib/ava";
+import { accountLines } from "@/lib/voice-bindings";
 import AddonGate from "@/components/dashboard/AddonGate";
 import VoiceSection from "@/components/dashboard/VoiceSection";
 
@@ -35,6 +36,13 @@ export default async function VoicePage() {
     .prepare("SELECT agent_slug FROM voice_agents WHERE user_id = ?")
     .get(user.id) as MappingRow | undefined;
 
+  // The per-DID half of the same form: which Capstone workflow each number
+  // reaches. The Capstone gate is evaluated with the same addonStatus() the
+  // routing path uses, so the card is never shown for an add-on whose routing
+  // is refused.
+  const lines = accountLines(user.id);
+  const capstone = await addonStatus("capstone", { user: user.email });
+
   if (!avaConfigured()) {
     return (
       <AddonGate
@@ -57,6 +65,8 @@ export default async function VoicePage() {
       calls={calls}
       mappedAgent={mapping?.agent_slug ?? null}
       avaState={avaState}
+      lines={lines}
+      capstone={{ state: capstone.state, reason: capstone.reason }}
     />
   );
 }

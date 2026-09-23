@@ -3,6 +3,8 @@
  *
  * Handles:
  *   - Newchannel / Hangup → call_history entries (CDR)
+ *   - VarSet / Newexten → voice_calls: the call envelope, and every hand-off
+ *     (P4 — one record, one id, written by the switch rather than by an agent)
  *   - DeviceStateChange → freepbx_extensions.device_state updates
  *   - Cdr → finalized call records with duration
  */
@@ -10,6 +12,14 @@
 import { randomUUID } from "node:crypto";
 import db from "./db";
 import { getAmiClient, type AmiEvent, type AmiClient } from "./ami";
+import { SPAN_KIND, startSpan } from "./otel";
+import {
+  concludeCall,
+  handoffFromContext,
+  noteHandoff,
+  recordEnvelope,
+  type EnvelopeFacts,
+} from "./voice-calls";
 
 // ─── In-memory tracking ───
 
@@ -120,6 +130,49 @@ function handleNewchannel(event: AmiEvent): void {
   });
 }
 
+/**
+ * The envelope variables the dialplan stamps, and the `voice_calls` column each
+ * one fills (see `pbx/ava_routing.py`).
+ *
+ * Keyed on the variable name because AMI reports every `Set()` as its own
+ * `VarSet` event: one call arrives here several times, in dialplan order, and
+ * `recordEnvelope` is built to fill blanks rather than overwrite — so the last
+ * event cannot erase what an earlier one established.
+ *
+ * The row is keyed on `Uniqueid`, which is also what `AI_CALL_ID` is defined as
+ * (`AI_CALL_ID = ${UNIQUEID}`, D2). That invariant is what makes `Hangup` able
+ * to conclude the row this handler opened; a deployment that changes the
+ * definition has to change this line too, and the dialplan fragment says so.
+ */
+const ENVELOPE_VARS: Record<string, keyof Omit<EnvelopeFacts, "call_id">> = {
+  AI_ACCOUNT: "account_id",
+  AI_AGENT: "agent_slug",
+  ZEUS_CAPSTONE_TARGET: "capstone_binding",
+  FROM_DID: "did",
+};
+
+function handleVarSet(event: AmiEvent): void {
+  const callId = event.Uniqueid ?? "";
+  const field = ENVELOPE_VARS[event.Variable ?? ""];
+  if (!callId || !field) return;
+  recordEnvelope({ call_id: callId, [field]: event.Value ?? "" });
+}
+
+/**
+ * A call entering another agent's context is a hand-off, on the switch's own
+ * evidence.
+ *
+ * This is where the two products share one record without either of them
+ * reporting anything: the dialplan moves the channel, AMI sees the context, and
+ * the row records the hop. It is also why the record survives an agent that dies
+ * mid-interview — the switch is still there to say where the call was.
+ */
+function handleNewexten(event: AmiEvent): void {
+  const target = handoffFromContext(event.Context ?? "");
+  if (!target) return;
+  noteHandoff(event.Uniqueid ?? "", target);
+}
+
 function handleBridge(event: AmiEvent): void {
   const id1 = event.Uniqueid1;
   const id2 = event.Uniqueid2;
@@ -150,6 +203,12 @@ function handleBridge(event: AmiEvent): void {
 function handleHangup(event: AmiEvent): void {
   const uniqueId = event.Uniqueid;
   const cause = event.Cause ?? "0";
+
+  // Concluded before the in-memory guard: the call record is written from
+  // events this map does not track (a `VarSet` can arrive for a channel whose
+  // `Newchannel` we never saw), and a call that ended is a call that ended
+  // whether or not this process watched it start.
+  concludeCall(uniqueId);
 
   const call = activeCalls.get(uniqueId);
   if (!call) return;
@@ -187,8 +246,26 @@ function handleCdr(event: AmiEvent): void {
   const duration = parseInt(event.BillableSeconds ?? event.Duration ?? "0", 10);
   const disposition = event.Disposition ?? "ANSWERED";
 
+  // One span per CDR write, carrying the Asterisk uniqueid as the call id —
+  // the same id the dialplan stamps as AI_CALL_ID and Capstone fetches
+  // context with. That is what turns "the CDR was missing for nine days"
+  // (docs/ava-capstone-convergence.md §2.7) from a discovery into a symptom:
+  // the trace shows the event arriving and the row it did or did not update.
+  // A no-op span when tracing is off, so the hot path is unchanged.
+  const span = startSpan("ami.cdr", {
+    kind: SPAN_KIND.INTERNAL,
+    attributes: {
+      "zeus.call_id": uniqueId || undefined,
+      "zeus.cdr.disposition": disposition,
+      "zeus.cdr.src": src,
+      "zeus.cdr.dst": dst,
+    },
+  });
+  span.setAttribute("zeus.cdr.billable_seconds", Number.isFinite(duration) ? duration : undefined);
+
   const call = activeCalls.get(uniqueId);
   if (call?.dbRecordId) {
+    span.setAttribute("zeus.cdr.persisted", true);
     const status = disposition === "ANSWERED"
       ? "completed"
       : disposition === "NO ANSWER"
@@ -205,7 +282,14 @@ function handleCdr(event: AmiEvent): void {
            status = ?
        WHERE id = ?`,
     ).run(src, src, dst, dst, duration, duration, status, call.dbRecordId);
+    span.setAttribute("zeus.cdr.status", status);
+  } else {
+    // A CDR for a channel this process never tracked, or an event with no
+    // uniqueid: the record it would update does not exist. Recording the fact
+    // is the point — silently doing nothing is how the odbc outage hid.
+    span.setAttribute("zeus.cdr.persisted", false);
   }
+  span.end();
 }
 
 function handleDeviceStateChange(event: AmiEvent): void {
@@ -277,6 +361,12 @@ export function initAmiHandler(): void {
       switch (event.Event) {
         case "Newchannel":
           handleNewchannel(event);
+          break;
+        case "VarSet":
+          handleVarSet(event);
+          break;
+        case "Newexten":
+          handleNewexten(event);
           break;
         case "Bridge":
         case "BridgeEnter":
