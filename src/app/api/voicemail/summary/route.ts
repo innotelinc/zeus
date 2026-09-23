@@ -4,17 +4,33 @@ import db from "@/lib/db";
 
 export const dynamic = "force-dynamic";
 
-const OLLAMA_URL = (process.env.OLLAMA_URL ?? "http://127.0.0.1:11434").replace(/\/+$/, "");
-const OLLAMA_MODEL = process.env.OLLAMA_MODEL ?? "llama3.2";
+// The endpoint is the estate's shared model gateway (OmniRoute) in the
+// deployment, reached through its Ollama-compatible surface; a plain Ollama is
+// the fallback for a single-box install.
+const SUMMARY_URL = (
+  process.env.VOICEMAIL_SUMMARY_URL ??
+  process.env.OLLAMA_URL ??
+  "http://127.0.0.1:11434"
+).replace(/\/+$/, "");
+
+// The *pin* is deliberately its own (VOICEMAIL_SUMMARY_MODEL), not the shared
+// OLLAMA_MODEL/AVA_LLM_MODEL: the gateway's free routes cooldown per model, so
+// a summary that rides the call path's model goes silent the moment calls
+// exhaust it — and a busy voicemail box would starve the phone. Two pins make
+// the two consumers independent; OLLAMA_MODEL stays the fallback so a
+// single-Ollama install keeps working unchanged. The pin is asserted against
+// the gateway's live catalogue by `pbx/d7_assert.py` (D7's third claim).
+const SUMMARY_MODEL =
+  process.env.VOICEMAIL_SUMMARY_MODEL ?? process.env.OLLAMA_MODEL ?? "llama3.2";
 
 /**
  * POST /api/voicemail/summary
  * Body: { voicemail_id }
  *
- * Summarises the voicemail transcript with a local LLM (Ollama) and stores
- * the result in voicemails.summary. Idempotent — re-runs regenerate the
- * summary. Returns 503 when Ollama is not reachable so the UI can degrade
- * gracefully.
+ * Summarises the voicemail transcript with the pinned summary model (the
+ * estate gateway, or Ollama on a single-box install) and stores the result in
+ * voicemails.summary. Idempotent — re-runs regenerate the summary. Returns 503
+ * when the endpoint is not reachable so the UI can degrade gracefully.
  */
 export async function POST(req: Request) {
   const user = await getCurrentUser();
@@ -51,16 +67,16 @@ export async function POST(req: Request) {
 
   let summary: string;
   try {
-    const res = await fetch(`${OLLAMA_URL}/api/generate`, {
+    const res = await fetch(`${SUMMARY_URL}/api/generate`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ model: OLLAMA_MODEL, prompt, stream: false }),
+      body: JSON.stringify({ model: SUMMARY_MODEL, prompt, stream: false }),
       cache: "no-store",
       signal: AbortSignal.timeout(60_000),
     });
     if (!res.ok) {
       return NextResponse.json(
-        { error: `Ollama returned ${res.status}` },
+        { error: `the summary model endpoint returned ${res.status}` },
         { status: 502 },
       );
     }
@@ -70,7 +86,8 @@ export async function POST(req: Request) {
     return NextResponse.json(
       {
         error:
-          "AI summaries are unavailable — is Ollama running? Set OLLAMA_URL (default http://127.0.0.1:11434).",
+          "AI summaries are unavailable — is the model endpoint running? Set " +
+          "VOICEMAIL_SUMMARY_URL (falls back to OLLAMA_URL, then http://127.0.0.1:11434).",
       },
       { status: 503 },
     );

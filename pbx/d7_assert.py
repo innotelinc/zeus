@@ -23,6 +23,9 @@ has already been false on this estate without anything raising its voice:
     cloud API directly. A gateway that 502s a model returns an HTML *page*, so
     the pipeline dies on its first turn with nothing naming the cause (the
     symptom was "Gateway responded 502", discovered from a call, not a check).
+    The voicemail summary path asks the same gateway on its **own** model pin
+    (`VOICEMAIL_SUMMARY_MODEL`), so both pins are asserted here: a route that
+    has cooled down is invisible until it is the only one a feature has.
 
 `odbc show` proves the CDR path is *wired*; only a call proves it *writes*. So
 the CDR check can make one: `--call` originates a Local channel at `12@default`,
@@ -79,6 +82,18 @@ CALL_TARGET = "12@default"
 GATEWAY_BASE_KEY = "AVA_LLM_BASE_URL"
 GATEWAY_MODEL_KEY = "AVA_LLM_MODEL"
 GATEWAY_TOKEN_KEY = "OMNIROUTE_API_KEY"
+# The voicemail summary path pins its own model (the portal's
+# src/app/api/voicemail/summary/route.ts), deliberately not the call path's:
+# the gateway's free routes cooldown per model, so sharing one id would let a
+# busy call path silence summaries — and a busy voicemail box starve calls.
+# Two pins only help if both are checked, which is why this one is here: an
+# unlisted pin is a feature that answers 502 and says nothing until someone
+# clicks the ✨ button.
+GATEWAY_SUMMARY_MODEL_KEY = "VOICEMAIL_SUMMARY_MODEL"
+# What a missing model costs, per consumer. Named because "does not offer the
+# configured model" does not say which feature just went dark.
+CALL_CONSEQUENCE = "every call would fail on its first turn"
+SUMMARY_CONSEQUENCE = "voicemail summaries would stop answering"
 
 CHECKS = ("ari", "cdr", "gateway")
 
@@ -253,7 +268,18 @@ def verdict_gateway(
     payload: object,
     model: str,
     url: str,
+    *,
+    summary_model: str = "",
 ) -> list[Finding]:
+    """One finding per consumer's pin: the call path, then the summary path.
+
+    The call path is the pre-existing assertion and its wording is part of the
+    contract (`test_d7_assert.py` pins the consequence text), so a run that
+    configures only `AVA_LLM_MODEL` produces exactly what it always did. The
+    summary pin is asserted only when it is configured *and* differs from the
+    call path's — the same pin twice is one finding, and an unset pin falls back
+    to `OLLAMA_MODEL`, which this check cannot see.
+    """
     if status != 200:
         return [
             Finding(
@@ -265,16 +291,24 @@ def verdict_gateway(
     ids = parse_models(payload)
     if not ids:
         return [Finding(False, f"the gateway answered 200 for {url}/models but listed no models")]
-    if not model:
+
+    wanted: list[tuple[str, str]] = []
+    if model:
+        wanted.append((model, CALL_CONSEQUENCE))
+    if summary_model and summary_model != model:
+        wanted.append((summary_model, SUMMARY_CONSEQUENCE))
+    if not wanted:
         return [Finding(True, f"the gateway answered 200 for {url}/models with {len(ids)} model(s)")]
+
     return [
         Finding(
-            model in ids,
-            f"the gateway lists the configured model {model} ({len(ids)} model(s) offered)"
-            if model in ids
-            else f"the gateway answered 200 but does not offer the configured model {model} "
-            f"({len(ids)} model(s) offered) — every call would fail on its first turn",
+            pinned in ids,
+            f"the gateway lists the configured model {pinned} ({len(ids)} model(s) offered)"
+            if pinned in ids
+            else f"the gateway answered 200 but does not offer the configured model {pinned} "
+            f"({len(ids)} model(s) offered) — {consequence}",
         )
+        for pinned, consequence in wanted
     ]
 
 
@@ -427,7 +461,7 @@ def probe_gateway(url: str, token: str, timeout: float = 10.0) -> tuple[int, obj
         return status, None
 
 
-def check_gateway(url: str, model: str, token: str) -> list[Finding]:
+def check_gateway(url: str, model: str, token: str, summary_model: str = "") -> list[Finding]:
     status, payload = probe_gateway(url, token)
     if status == 0:
         return [Finding(False, f"the gateway did not answer at {url}/models")]
@@ -439,7 +473,7 @@ def check_gateway(url: str, model: str, token: str) -> list[Finding]:
                 f"parse — a proxy or error page, not the model catalogue",
             )
         ]
-    return verdict_gateway(status, payload, model, url.rstrip("/"))
+    return verdict_gateway(status, payload, model, url.rstrip("/"), summary_model=summary_model)
 
 
 # ── CLI ─────────────────────────────────────────────────────────────────────
@@ -508,6 +542,7 @@ def main(argv: list[str]) -> int:
         base = args.gateway_url or (read_key(text, GATEWAY_BASE_KEY) or "")
         model = read_key(text, GATEWAY_MODEL_KEY) or ""
         token = read_key(text, GATEWAY_TOKEN_KEY) or ""
+        summary_model = read_key(text, GATEWAY_SUMMARY_MODEL_KEY) or ""
         if not base:
             reason = (
                 f"{args.env} does not set {GATEWAY_BASE_KEY}"
@@ -516,7 +551,7 @@ def main(argv: list[str]) -> int:
             )
             findings.append(Finding(None, f"gateway: {reason}"))
         else:
-            findings.extend(check_gateway(base, model, token))
+            findings.extend(check_gateway(base, model, token, summary_model))
 
     for finding in findings:
         _emit(finding, args.quiet)

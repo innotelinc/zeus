@@ -89,15 +89,28 @@ bash scripts/fetch-ava.sh --check || fail "fetch-ava.sh --check failed — run: 
 info "4/6 on-box speech models"
 stt="$(python3 scripts/env_file.py get "$ENV_FILE" LOCAL_STT_MODEL_PATH)"
 stt="${stt:-${RUNTIME_DIR}/models/stt/vosk-model-small-en-us-0.15}"
-tts="$(python3 scripts/env_file.py get "$ENV_FILE" LOCAL_TTS_MODEL_PATH)"
-tts="${tts:-${RUNTIME_DIR}/models/tts/en_US-lessac-medium.onnx}"
+# Which TTS artifact to expect follows the backend, not a fixed path: a
+# deployment switched to Kokoro has no .onnx on disk and a deployment left on
+# piper has no kokoro/ tree, so checking the wrong one is a false failure that
+# sends the operator to re-run a fetch that was already correct.
+tts_backend="$(python3 scripts/env_file.py get "$ENV_FILE" LOCAL_TTS_BACKEND)"
+tts_backend="${tts_backend:-piper}"
+if [ "$tts_backend" = "kokoro" ]; then
+  tts="$(python3 scripts/env_file.py get "$ENV_FILE" KOKORO_MODEL_PATH)"
+  tts="${tts:-/app/models/tts/kokoro}/kokoro-v1_0.pth"
+  fetch_hint="bash scripts/fetch-ava-models.sh --tts kokoro"
+else
+  tts="$(python3 scripts/env_file.py get "$ENV_FILE" LOCAL_TTS_MODEL_PATH)"
+  tts="${tts:-${RUNTIME_DIR}/models/tts/en_US-lessac-medium.onnx}"
+  fetch_hint="bash scripts/fetch-ava-models.sh"
+fi
 for model in "$stt" "$tts"; do
   case "$model" in
     /app/*) model="${RUNTIME_DIR}${model#/app}" ;;   # compose paths are container paths
   esac
-  [ -e "$model" ] || fail "missing speech model: ${model} — run: bash scripts/fetch-ava-models.sh"
+  [ -e "$model" ] || fail "missing speech model: ${model} — run: ${fetch_hint}"
 done
-pass "Vosk + Piper models present"
+pass "Vosk + ${tts_backend} models present"
 
 # ── host sanity: this is the box the profile targets ────────────────────────
 test_ip="$(ip -4 route get 1.1.1.1 2>/dev/null | sed -n 's/.*src \([0-9.]*\).*/\1/p' | head -1)"

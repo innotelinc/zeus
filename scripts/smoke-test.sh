@@ -20,6 +20,10 @@
 #   Fax       • AvantFax reachable (AVANTFAX_URL) and its MariaDB has strict
 #               mode off (AvantFAX writes '' into DATE/TIMESTAMP columns, which
 #               strict mode rejects with error 1292 → HTTP 500 after login)
+#   SMS       • the PJSIP SMS trunk is Registered (VOIPMS_TRUNK_NAME)
+#             • the sms-out dialplan context is loaded (SMS_OUT_CONTEXT)
+#             • the portal's AMI user carries the `message` class
+#             • the VoIP.ms inbound webhook answers its liveness GET
 #   Numbers   • VoIP.ms credentials configured (VOIPMS_API_USERNAME)
 #
 # Optional sections are skipped (with a note) when their env vars are unset,
@@ -27,14 +31,16 @@
 #
 #   Voice     • the D7 assertions (pbx/d7_assert.py): both agents registered
 #               with the PBX, the CDR backend wired — and, with D7_CALL=1, a
-#               test call that proves it writes — and the gateway offering the
-#               model the engine is configured to use
+#               test call that proves it writes — and the gateway offering both
+#               pinned models (the call path's AVA_LLM_MODEL and, when set, the
+#               summary path's VOICEMAIL_SUMMARY_MODEL)
 #
 # Usage (run from the repo root):
 #   ./scripts/smoke-test.sh            # everything
 #   ./scripts/smoke-test.sh portal     # portal only
 #   ./scripts/smoke-test.sh pbx        # pbx only
 #   ./scripts/smoke-test.sh voice      # voice plane (D7 assertions)
+#   ./scripts/smoke-test.sh sms        # SMS trunk + inbound webhook
 #
 # Env: D7_CALL=1 places the CDR test call (a Local channel at 12@default — no
 #      trunk, no phone, no agent). D7_PBX names the FreePBX container.
@@ -326,6 +332,89 @@ if [ "$SCOPE" = all ] || [ "$SCOPE" = fax ]; then
     else
       fail "AvantFax DB sql_mode unreadable in $AFX"
     fi
+  fi
+fi
+
+# ─── SMS ─────────────────────────────────────────────────────────
+# SMS deliberately does not ride the VoIP.ms REST API (a per-message fee): the
+# portal hands a SIP MESSAGE to Asterisk, which sends it over the PJSIP trunk
+# (docs/ops-sms-trunk.md). Four things have to be true for that to work, and
+# every one of them has failed on this estate while the Messages screen still
+# said "sent" — so none of them is visible from the product's own UI.
+if [ "$SCOPE" = all ] || [ "$SCOPE" = sms ]; then
+  SMS_TRUNK="${VOIPMS_TRUNK_NAME:-voipms_pjsip}"
+  SMS_CTX="${SMS_OUT_CONTEXT:-sms-out}"
+  AMI_USER="${ASTERISK_AMI_USERNAME:-pbxportal}"
+
+  FBX_SMS=$(docker ps -aq --filter "label=com.docker.compose.service=freepbx" 2>/dev/null | while read -r c; do
+    [ "$(docker inspect -f '{{.State.Status}}' "$c" 2>/dev/null)" = "running" ] && { echo "$c"; break; }
+  done)
+  FBX_SMS="${D7_PBX:-${FBX_SMS:-zeus-freepbx}}"
+  if [ "$(docker inspect -f '{{.State.Status}}' "$FBX_SMS" 2>/dev/null)" = "running" ]; then
+    # ── the trunk ───────────────────────────────────────────────
+    # A `Rejected` trunk is the estate's classic false green: outbound SIP is
+    # fine, the router eats the REGISTER reply, and every send silently stops.
+    # The state is the whole check, so the failing line is printed verbatim.
+    regs="$(docker exec "$FBX_SMS" asterisk -rx 'pjsip show registrations' 2>/dev/null || true)"
+    trunk_line=""
+    while IFS= read -r line; do
+      case "$line" in
+        *"$SMS_TRUNK"*) trunk_line="$line" ;;
+      esac
+    done <<<"$regs"
+    if [ -z "$trunk_line" ]; then
+      fail "no PJSIP registration for the SMS trunk '$SMS_TRUNK' — outbound SMS cannot leave the PBX"
+    elif [ "${trunk_line#*Registered}" = "$trunk_line" ]; then
+      fail "SMS trunk '$SMS_TRUNK' is not Registered:$(printf '%s' "$trunk_line" | head -c 120) — see docs/ops-sms-trunk.md"
+    else
+      pass "SMS trunk '$SMS_TRUNK' is registered"
+    fi
+
+    # ── the dialplan the MESSAGE is built from ──────────────────
+    # The trunk can be up with nowhere to put a MESSAGE: `sms-out` is written by
+    # scripts/setup.sh on bare metal, and the full stack has to have applied it.
+    # An AMI MessageSend against a missing context is accepted and delivered to
+    # nothing, so this is the difference between "sent" and "sent somewhere".
+    sms_dp="$(docker exec "$FBX_SMS" asterisk -rx "dialplan show $SMS_CTX" 2>/dev/null || true)"
+    if grep -qE "^  '[^']" <<<"$sms_dp"; then
+      pass "the '$SMS_CTX' dialplan context is loaded"
+    else
+      fail "'$SMS_CTX' is not in the live dialplan — an outbound SMS has no MESSAGE to build (scripts/setup.sh writes it)"
+    fi
+
+    # ── the AMI class the portal sends with ─────────────────────
+    # Without the `message` class AMI answers `Permission denied`, the send
+    # endpoint turns that into a 502, and the stored row is the only thing that
+    # ever said otherwise. Read from the effective config, because the class is
+    # only ever granted there — a probe send would spend money to find out.
+    ami_grants="$(docker exec "$FBX_SMS" awk -v u="$AMI_USER" \
+      'BEGIN{f=0} $0 ~ "^\\[" u "\\]" {f=1; next} /^\[/ {f=0} f {print}' \
+      /etc/asterisk/manager.conf /etc/asterisk/manager_custom.conf /etc/asterisk/manager_additional.conf 2>/dev/null || true)"
+    if [ -z "$ami_grants" ]; then
+      fail "AMI user '$AMI_USER' is not defined on the PBX — the portal cannot send SMS or read call events"
+    elif grep -qE '(^|[^a-zA-Z])message([^a-zA-Z]|$)' <<<"$ami_grants"; then
+      pass "AMI user '$AMI_USER' is granted the message class (MessageSend permitted)"
+    else
+      fail "AMI user '$AMI_USER' has no message class — MessageSend returns Permission denied (docs/ops-sms-trunk.md)"
+    fi
+  else
+    skip "SMS trunk / sms-out context / AMI class (PBX container $FBX_SMS not running)"
+  fi
+
+  # ── the inbound side ────────────────────────────────────────
+  # VoIP.ms verifies the callback URL with a GET before it posts anything, so
+  # the carrier's own liveness probe is the assertion — unauthenticated, and
+  # 200 by contract. The failure this catches is the old deployed image that
+  # 404s every /api/* route: inbound SMS then stops with nothing erroring.
+  if [ -n "${PORTAL_URL:-}" ]; then
+    code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 10 "${PORTAL_URL}/api/webhooks/voipms" 2>/dev/null || echo 000)
+    if [ "$code" = 200 ]; then
+      pass "the VoIP.ms inbound webhook answers its liveness GET (HTTP 200)"
+    else
+      fail "the VoIP.ms inbound webhook did not answer 200 (HTTP $code) — inbound SMS stops silently"
+    fi
+  else
+    skip "VoIP.ms inbound webhook (PORTAL_URL unset)"
   fi
 fi
 
