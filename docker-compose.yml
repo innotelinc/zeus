@@ -81,6 +81,24 @@ services:
       # Override when the voice plane lives on another host.
       - AVA_ADMIN_URL=${AVA_ADMIN_CONTAINER_URL:-http://zeus-ava-admin:8000}
       - AVA_ENGINE_URL=${AVA_ENGINE_CONTAINER_URL:-http://host.docker.internal:15000}
+      # ── Call-context read (GET /api/voice/context/{token}) ──
+      # The bearer credential the agents present: Capstone at a hand-off and
+      # AVA at the hand-back. Empty means the route refuses every read, so a
+      # deployment that wants the hand-off to carry context must set it here
+      # and hand the same value to those products.
+      - VOICE_CONTEXT_SECRET=${VOICE_CONTEXT_SECRET:-}
+      # ── Observability — the portal's half of the one trace spine (D7) ──
+      # Spans go to whichever collector OTEL_EXPORTER_OTLP_ENDPOINT names, and
+      # a co-hosted stack points that at Capstone's SigNoz rather than running
+      # a second ClickHouse (docs/stack.md). Unset = the tracer is a no-op, so
+      # a portal-only install opens no socket and needs nothing here.
+      - OTEL_EXPORTER_OTLP_ENDPOINT=${OTEL_EXPORTER_OTLP_ENDPOINT:-}
+      - OTEL_SERVICE_NAME=${OTEL_SERVICE_NAME:-zeus-portal}
+      - OTEL_SERVICE_VERSION=${OTEL_SERVICE_VERSION:-}
+      - OTEL_DEPLOYMENT_ENVIRONMENT=${OTEL_DEPLOYMENT_ENVIRONMENT:-}
+      - OTEL_EXPORTER_OTLP_HEADERS=${OTEL_EXPORTER_OTLP_HEADERS:-}
+      - OTEL_TRACES_ENABLED=${OTEL_TRACES_ENABLED:-}
+      - OTEL_EXPORT_INTERVAL_MS=${OTEL_EXPORT_INTERVAL_MS:-}
     healthcheck:
       # No `-f`: the health endpoint returns 503 when >=2 external services
       # (FreePBX/VoIP.ms/Stripe) are down. The container is healthy as long as
@@ -379,13 +397,23 @@ services:
 
   # On-box STT/TTS for the zeus_hybrid pipeline. Slow to start — models load
   # at boot — but it is what keeps caller audio on the premises.
-  #
-  # Defaults match the pipeline this estate actually runs: Vosk STT + Piper
-  # TTS, and no local LLM (reasoning goes to the LAN gateway, so llama.cpp
-  # would only add a torch-sized image). A GPU host can trade quality for the
-  # build by enabling Kokoro and Faster-Whisper:
-  #   INCLUDE_KOKORO=true INCLUDE_FASTER_WHISPER=true docker compose \
-  #     --profile voice build local-ai-server
+  #      # Defaults match the pipeline this estate actually runs: Vosk STT + Piper
+      # TTS, and no local LLM (reasoning goes to the LAN gateway, so llama.cpp
+      # would only add a torch-sized image).
+      #
+      # **Voice quality.** Piper (`en_US-lessac-medium`) is the CPU default and
+      # it is audibly synthetic next to Capstone/dograh's cloud voice — which is
+      # what a caller notices first on the interview line. Kokoro (82M, on-box,
+      # no WAN hop) is the same trade the estate already makes for STT, and the
+      # switch is three lines in .env, not a code change:
+      #
+      #   INCLUDE_KOKORO=true LOCAL_TTS_BACKEND=kokoro LOCAL_TTS_VOICE=af_heart
+      #   docker compose --profile voice build local-ai-server
+      #
+      # The build argument and the env must agree: `INCLUDE_KOKORO` installs the
+      # package, `LOCAL_TTS_BACKEND=kokoro` selects it, and a Kokoro backend
+      # without the model files falls back to a HuggingFace download mid-call —
+      # scripts/fetch-ava-models.sh --tts kokoro stages them instead.
   local-ai-server:
     profiles: ["voice"]
     build:
@@ -406,6 +434,11 @@ services:
     environment:
       - LOCAL_STT_BACKEND=${LOCAL_STT_BACKEND:-vosk}
       - LOCAL_TTS_BACKEND=${LOCAL_TTS_BACKEND:-piper}
+      # The spoken voice. Piper reads it from LOCAL_TTS_MODEL_PATH; Kokoro reads
+      # it from KOKORO_VOICE, then LOCAL_TTS_VOICE (local_ai_server/config.py),
+      # so one variable names the voice for either backend. Kokoro's own
+      # default is `af_heart`; `am_michael`/`am_adam` are the male voices.
+      - LOCAL_TTS_VOICE=${LOCAL_TTS_VOICE:-af_heart}
       # Loopback, not 0.0.0.0. Both consumers (the engine and the admin API)
       # are host-networked, so 127.0.0.1 reaches this server and nothing else
       # does — the server's own guard refuses to bind a non-loopback address
@@ -420,6 +453,13 @@ services:
       # scripts/fetch-ava-models.sh actually downloads for an 8-core CPU box.
       - LOCAL_STT_MODEL_PATH=${LOCAL_STT_MODEL_PATH:-/app/models/stt/vosk-model-small-en-us-0.15}
       - LOCAL_TTS_MODEL_PATH=${LOCAL_TTS_MODEL_PATH:-/app/models/tts/en_US-lessac-medium.onnx}
+      # Kokoro's own model tree. `local` mode loads it from KOKORO_MODEL_PATH and
+      # only falls back to the HuggingFace repo when the directory has no
+      # kokoro-v1_0.pth — the fallback is a mid-call download, so the files are
+      # staged by scripts/fetch-ava-models.sh --tts kokoro instead.
+      - KOKORO_MODEL_PATH=${KOKORO_MODEL_PATH:-/app/models/tts/kokoro}
+      - KOKORO_MODE=${KOKORO_MODE:-local}
+      - KOKORO_LANG=${KOKORO_LANG:-a}
       - TZ=${TZ:-America/New_York}
       - PYTHONUNBUFFERED=1
     volumes:
