@@ -191,6 +191,53 @@ class VerdictGatewayTest(unittest.TestCase):
         findings = d7.verdict_gateway(200, self.CATALOGUE, "", "http://gw/v1")
         self.assertTrue(findings[0].ok, findings)
 
+    # ── the second pin: voicemail summaries ─────────────────────
+    # The summary path pins its own model so a cooldown on one consumer cannot
+    # silence the other. Two pins are only worth having if both are checked —
+    # an unlisted one answers 502 and says nothing until someone clicks ✨.
+    def test_the_summary_pin_is_asserted_beside_the_call_pin(self):
+        findings = d7.verdict_gateway(
+            200,
+            self.CATALOGUE,
+            "gemini/gemini-3.1-flash-lite",
+            "http://gw/v1",
+            summary_model="gemini/gemini-2.5-flash",
+        )
+        self.assertEqual(len(findings), 2)
+        self.assertTrue(findings[0].ok, findings)
+        self.assertFalse(findings[1].ok)
+        self.assertIn("gemini/gemini-2.5-flash", findings[1].detail)
+        # The *right* consequence: naming which consumer went dark is the point.
+        self.assertIn(d7.SUMMARY_CONSEQUENCE, findings[1].detail)
+        self.assertNotIn(d7.CALL_CONSEQUENCE, findings[1].detail)
+
+    def test_a_shared_pin_is_one_finding_not_two(self):
+        findings = d7.verdict_gateway(
+            200,
+            self.CATALOGUE,
+            "gemini/gemini-3.1-flash-lite",
+            "http://gw/v1",
+            summary_model="gemini/gemini-3.1-flash-lite",
+        )
+        self.assertEqual(len(findings), 1)
+        self.assertTrue(findings[0].ok, findings)
+
+    def test_a_summary_pin_alone_is_still_asserted(self):
+        """No call pin configured (AVA not deployed here) is not a reason to
+        skip the summary pin — that is the check's only reason to exist."""
+        findings = d7.verdict_gateway(
+            200, self.CATALOGUE, "", "http://gw/v1", summary_model="gemini/gemini-9"
+        )
+        self.assertEqual(len(findings), 1)
+        self.assertFalse(findings[0].ok)
+        self.assertIn(d7.SUMMARY_CONSEQUENCE, findings[0].detail)
+
+    def test_the_summary_pin_passes_when_the_gateway_offers_it(self):
+        findings = d7.verdict_gateway(
+            200, self.CATALOGUE, "", "http://gw/v1", summary_model="auto/best"
+        )
+        self.assertTrue(findings[0].ok, findings)
+
 
 class ContainerChoiceTest(unittest.TestCase):
     def test_an_explicit_name_is_used_verbatim(self):

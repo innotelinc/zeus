@@ -31,6 +31,14 @@ Inbound can arrive two ways:
 
 ## Voice-host verification (run on the group-2 host, after `setup.sh`)
 
+The first three checks below are automated — `./scripts/smoke-test.sh sms`
+(also part of a plain `./scripts/smoke-test.sh` run) asserts the trunk is
+`Registered`, that the `sms-out` context is in the live dialplan, that the
+portal's AMI user carries the `message` class, and that the inbound webhook
+answers its liveness `GET`. All four are read-only and none sends a message.
+The steps here are what to run by hand when one of them fails, and the send /
+carrier-leg steps are the ones no check can make without spending money.
+
 1. **Trunk registered**
 
    ```bash
@@ -59,6 +67,8 @@ Inbound can arrive two ways:
    `sms_messages` row (`status: sent`).
 
 4. **Confirm carrier delivery (read-only REST is free — this only *reads*)**
+   (the smoke check stops at "the trunk is registered"; only a real send proves
+   the carrier leg, and that is deliberately not automated)
 
    ```bash
    curl -sG 'https://voip.ms/api/v1/rest.php' \

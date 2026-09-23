@@ -351,7 +351,7 @@ python3 scripts/npm-proxy-hosts.py --no-ssl
 
 ## AI Voicemail Summaries & Call Routing
 
-- The portal summarises voicemail transcripts with a local LLM via **Ollama** (`OLLAMA_URL`, `OLLAMA_MODEL`) — click the ✨ button on any voicemail.
+- The portal summarises voicemail transcripts with a pinned model — the estate gateway in the deployment, a plain **Ollama** on a single box (`VOICEMAIL_SUMMARY_URL`/`VOICEMAIL_SUMMARY_MODEL`, falling back to `OLLAMA_URL`/`OLLAMA_MODEL`) — click the ✨ button on any voicemail. The pin is its own, not the call path's, so a free-tier cooldown on one cannot silence the other.
 - The bare-metal installer keeps the full AI stack: **VOSK** speech-to-text (voicemail transcription) + **AI CDR** call summaries (Ollama) + the ARI/WebSocket client for AI call handling. AI-driven call routing hooks (business-hours routing, AI receptionist) are dialplan-level and configured in `setup.sh`.
 
 ---
@@ -370,7 +370,8 @@ Templates: `.env.example` (npm/dev), `.env.docker.example` (Docker). Key groups:
 | `NPM_BASE_DOMAIN` / `NPM_UPSTREAM_HOST` | Proxy host base domain + Docker host IP |
 | `NPM_LETSENCRYPT_EMAIL` | Let's Encrypt email for proxy-host certs |
 | `NPM_WILDCARD_CERT` / `NPM_DNS_PROVIDER` / `NPM_TSIG_NAMESERVER` / `NPM_TSIG_KEY_NAME` / `NPM_TSIG_KEY_SECRET` / `NPM_TSIG_ALGORITHM` | Wildcard cert via DNS-01 (TSIG/rfc2136) — auto-provisioned |
-| `OLLAMA_URL` / `OLLAMA_MODEL` | Local LLM for AI voicemail summaries |
+| `OLLAMA_URL` / `OLLAMA_MODEL` | Model endpoint + fallback for AI voicemail summaries |
+| `VOICEMAIL_SUMMARY_URL` / `VOICEMAIL_SUMMARY_MODEL` | The summary path's own pin — endpoint and model, kept off the call path's `AVA_LLM_MODEL` so one model's free-tier cooldown cannot silence the other. Fall back to `OLLAMA_URL` / `OLLAMA_MODEL` |
 | `NEXT_PUBLIC_BRAND_NAME` | White-label brand override |
 | `SESSION_SECRET` | Session signing key (auto-generated if unset) |
 | `VOIPMS_API_USERNAME` / `_PASSWORD` / `VOIPMS_WEBHOOK_SECRET` | VoIP.ms API + SMS webhook |

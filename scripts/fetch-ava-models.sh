@@ -21,32 +21,56 @@
 # Idempotent — re-running costs one HEAD-sized check per artifact.
 #
 # Usage:
-#   bash scripts/fetch-ava-models.sh [--models-dir DIR] [--force]
+#   bash scripts/fetch-ava-models.sh [--models-dir DIR] [--tts piper|kokoro]
+#                                    [--tts-voice NAME] [--force]
 #
 # Default DIR is ./data/ava/models, which compose mounts at /app/models.
+#
+# --tts picks which voice to stage, and it must agree with LOCAL_TTS_BACKEND
+# in .env: staging Kokoro while the server runs `piper` leaves it looking for
+# an .onnx that is not there (and vice versa). The default is piper, so an
+# existing install re-run is unchanged.
 # ═══════════════════════════════════════════════════════════════════════════
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 MODELS_DIR="${ROOT_DIR}/data/ava/models"
 FORCE=0
+TTS_BACKEND="piper"
+TTS_VOICE="af_heart"
 
 VOSK_NAME="vosk-model-small-en-us-0.15"
 VOSK_URL="https://alphacephei.com/vosk/models/${VOSK_NAME}.zip"
 
 # Piper voice: medium quality en_US lessac — the voice AVA's own config
-# golden files use, so the audio matches what the project tuned for.
+# golden files use, so the audio matches what the project tuned for. It is the
+# CPU default and it is audibly synthetic; --tts kokoro is the natural one.
 PIPER_DIR="https://huggingface.co/rhasspy/piper-voices/resolve/v1.0.0/en/en_US/lessac/medium"
 PIPER_NAME="en_US-lessac-medium.onnx"
+
+# Kokoro 82M: one model, many voices, on-box (no WAN hop — unlike Capstone's
+# cloud TTS this is the local equivalent of). `local` mode loads the files
+# below and only reaches for HuggingFace when they are missing, so staging them
+# is what keeps a call from downloading a model mid-turn.
+KOKORO_REPO="https://huggingface.co/hexgrad/Kokoro-82M/resolve/main"
+KOKORO_MODEL="kokoro-v1_0.pth"
+KOKORO_CONFIG="config.json"
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --models-dir) MODELS_DIR="${2:?--models-dir needs a path}"; shift 2 ;;
+    --tts) TTS_BACKEND="${2:?--tts needs piper or kokoro}"; shift 2 ;;
+    --tts-voice) TTS_VOICE="${2:?--tts-voice needs a name}"; shift 2 ;;
     --force) FORCE=1; shift ;;
-    -h|--help) sed -n '2,30p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; exit 0 ;;
+    -h|--help) sed -n '2,34p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; exit 0 ;;
     *) echo "fetch-ava-models: unknown argument: $1" >&2; exit 2 ;;
   esac
 done
+
+case "$TTS_BACKEND" in
+  piper|kokoro) ;;
+  *) echo "fetch-ava-models: --tts must be piper or kokoro, got '${TTS_BACKEND}'" >&2; exit 2 ;;
+esac
 
 say() { printf 'fetch-ava-models: %s\n' "$*" >&2; }
 
@@ -91,24 +115,50 @@ else
   say "STT installed: ${STT_DIR}/${VOSK_NAME}"
 fi
 
-# ── TTS: Piper voice ───────────────────────────────────────────────────────
-# The .onnx.json beside the voice carries its phoneme config; Piper fails
-# without it, so both are fetched and both are required.
-for artifact in "$PIPER_NAME" "${PIPER_NAME}.json"; do
-  dest="${TTS_DIR}/${artifact}"
+# ── TTS ─────────────────────────────────────────────────────────────────────
+# Fetch one artifact into place, via a `.part` file so an interrupted download
+# is never mistaken for a staged model by the `-s` presence check on the next
+# run. Shared by both backends because the failure mode is the same for both.
+fetch_artifact() {
+  local url="$1" dest="$2" label="$3"
   if [[ -s "$dest" && $FORCE -eq 0 ]]; then
-    say "TTS already present: ${artifact}"
-    continue
+    say "TTS already present: ${label}"
+    return 0
   fi
-  say "downloading ${artifact} ..."
-  # Download beside the target and move into place, so an interrupted fetch
-  # never leaves a truncated model that a later run would consider present.
-  curl -fL --retry 3 --retry-delay 2 -o "${dest}.part" "${PIPER_DIR}/${artifact}"
-  [[ -s "${dest}.part" ]] || { echo "fetch-ava-models: ${artifact} downloaded empty" >&2; exit 1; }
+  say "downloading ${label} ..."
+  curl -fL --retry 3 --retry-delay 2 -o "${dest}.part" "${url}"
+  [[ -s "${dest}.part" ]] || { echo "fetch-ava-models: ${label} downloaded empty" >&2; exit 1; }
   mv "${dest}.part" "$dest"
-done
+}
+
+if [[ "$TTS_BACKEND" == "piper" ]]; then
+  # The .onnx.json beside the voice carries its phoneme config; Piper fails
+  # without it, so both are fetched and both are required.
+  for artifact in "$PIPER_NAME" "${PIPER_NAME}.json"; do
+    fetch_artifact "${PIPER_DIR}/${artifact}" "${TTS_DIR}/${artifact}" "${artifact}"
+  done
+else
+  # Kokoro: the model, its config, and the one voice this deployment speaks
+  # with. `KOKORO_LANG=a` (American English) is the default in compose; a
+  # voice from another language would need it changed to match, which is why
+  # the lang is named here rather than left to whatever the server guesses.
+  KOKORO_DIR="${TTS_DIR}/kokoro"
+  mkdir -p "${KOKORO_DIR}/voices"
+  fetch_artifact "${KOKORO_REPO}/${KOKORO_MODEL}" "${KOKORO_DIR}/${KOKORO_MODEL}" "kokoro model (${KOKORO_MODEL})"
+  fetch_artifact "${KOKORO_REPO}/${KOKORO_CONFIG}" "${KOKORO_DIR}/${KOKORO_CONFIG}" "kokoro config (${KOKORO_CONFIG})"
+  fetch_artifact "${KOKORO_REPO}/voices/${TTS_VOICE}.pt" "${KOKORO_DIR}/voices/${TTS_VOICE}.pt" "kokoro voice (${TTS_VOICE})"
+fi
 
 say "done — models under ${MODELS_DIR}"
 say "compose points the server at:"
 say "  LOCAL_STT_MODEL_PATH=/app/models/stt/${VOSK_NAME}"
-say "  LOCAL_TTS_MODEL_PATH=/app/models/tts/${PIPER_NAME}"
+if [[ "$TTS_BACKEND" == "piper" ]]; then
+  say "  LOCAL_TTS_BACKEND=piper"
+  say "  LOCAL_TTS_MODEL_PATH=/app/models/tts/${PIPER_NAME}"
+else
+  say "  LOCAL_TTS_BACKEND=kokoro"
+  say "  KOKORO_MODEL_PATH=/app/models/tts/kokoro"
+  say "  LOCAL_TTS_VOICE=${TTS_VOICE}"
+  say "  (and INCLUDE_KOKORO=true when building local-ai-server — the env"
+  say "   selects the backend, the build argument installs it)"
+fi

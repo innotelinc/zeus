@@ -172,12 +172,19 @@ new messages and their AI summaries/transcripts.
 ### `POST /api/voicemail/summary` — AI summary
 
 Body: `{"voicemail_id": "…"}`. Summarises the stored transcript with the
-local LLM (Ollama today; OmniRoute is the consolidation target) and persists
-it to `voicemails.summary`. Idempotent (re-runs regenerate).
+summary model — the estate gateway (OmniRoute) in the deployment, reached
+through its Ollama-compatible surface, or a plain Ollama on a single box —
+and persists it to `voicemails.summary`. Idempotent (re-runs regenerate).
 
 Responses: `200 {"success":true,"summary":"…"}`; `400` no transcript;
-`404` not found/not owned; `502` model error; `503` Ollama unreachable
-(`OLLAMA_URL` unset/default down).
+`404` not found/not owned; `502` model error; `503` endpoint unreachable.
+
+Endpoint and model are a **separate pin** from the call path's:
+`VOICEMAIL_SUMMARY_URL` / `VOICEMAIL_SUMMARY_MODEL`, falling back to
+`OLLAMA_URL` / `OLLAMA_MODEL`. Two pins, because the gateway's free routes
+cooldown per model — one consumer exhausting a model must not silence the
+other. `pbx/d7_assert.py` asserts the pin is offered by the gateway's live
+catalogue.
 
 ### `POST /api/voicemail/listened` — mark listened
 

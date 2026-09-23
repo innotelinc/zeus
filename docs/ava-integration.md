@@ -116,7 +116,7 @@ listing, and it distinguishes *cannot answer* (fatal) from *answers slowly*.
        ▼
  [zeus-ai-first-response]    Stasis(asterisk-ai-voice-agent)  ──▶ AVA
        ▲                                                          │
-       │                        trans fer / business functions    │
+       │                        transfer / business functions    │
        │                                                          ▼
  [zeus-ai-handoff]  ◀────────────────────────────────────────────┘
        │  exten 824 — an entry point, not a target
@@ -143,6 +143,34 @@ stamps it only for accounts Magnate says are entitled. What an allowed hand-off
 then reaches is the account's own binding, not one fixed extension — and a
 refused hand-off goes to the operator, so a caller is never dropped silently.
 
+Every part of that is silent when it regresses — an empty binding that reached
+a default agent, a gate that stopped gating, a `Stasis()` for an app name that
+rotates — so `pbx/tests/test_ava_dialplan_contract.py` asserts the contexts
+without a PBX, including that extension 824 agrees across the three files that
+name it (`config/ava/ai-agent.yaml`, `src/lib/handoff.ts`, and this file's
+contexts).
+
+### What a hand-off is told about the call
+
+The channel carries the small facts (`AI_CALL_ID`, `AI_ACCOUNT`, `AI_AGENT`, the
+caller, the Capstone binding), and `AI_CONTEXT_TOKEN=${UNIQUEID}` for the rest:
+
+```bash
+curl -s -H "Authorization: Bearer $VOICE_CONTEXT_SECRET" \
+  "${PORTAL}/api/voice/context/${UNIQUEID}"
+```
+
+That answers with the account (name, plan), the caller, which interview line it
+reached, how many times the caller has called before and a handle for the
+transcript. The token is a pointer, not a secret — Asterisk cannot sign one — so
+the credential is the guard, and `VOICE_CONTEXT_SECRET` unset refuses every read
+rather than opening the route. A call is readable while it is live and for five
+minutes after it ends, which is the window the hand-off itself needs: AVA's
+session ends when the channel leaves Stasis, so at the moment Capstone answers
+the call is *just* over. The facts come off the live channel through AMI first
+(the envelope this call's own dialplan wrote), then from AVA's call record once
+the channel is gone. See docs/ava-capstone-convergence.md, D2.
+
 ### File map
 
 | Path | Role |
@@ -153,13 +181,18 @@ refused hand-off goes to the operator, so a caller is never dropped silently.
 | `pbx/asterisk/ari.conf` | AVA's own ARI user, separate from the portal's |
 | `pbx/ava_routing.py` | renders `[zeus-ai-accounts]` from the accounts; **the add-on gate** |
 | `pbx/ava_ari_check.py` | the engine and `ari.conf` must carry one ARI secret; checked by the PBX sync and the deploy script |
+| `pbx/pjsip_owner_check.py` | who owns the PJSIP endpoint for an extension (read-only): the `pjsip.conf` load tree, duplicate ids, and the file carrying the `#include` |
 | `scripts/deploy-ava-voice.sh` | the bring-up, in order, with the preflight that refuses to start on a broken credential |
 | `scripts/fetch-ava.sh` | pinned AVA checkout (`5d8f888`, v7.6.1) + runtime seeding + the provenance stamp below |
 | `scripts/ava-admin-password.sh` | rotates AVA's one-time admin password and records it in `.env` |
 | `scripts/env_file.py` | reads/upserts one key in `.env` without disturbing the rest of the file |
 | `src/lib/ava.ts` | server-side AVA admin API client (login, typed failure states) |
 | `src/lib/addons.ts` | add-on gating for UI **and** routing (see below) |
-| `src/app/api/voice/*` | agents, calls, live status, agent mapping |
+| `src/lib/voice-context.ts`, `src/app/api/voice/context/{token}` | the call-context read a hand-off is handed: account, plan, prior calls, transcript handle. Machine-authenticated with `VOICE_CONTEXT_SECRET`, live call + 5 minutes (D2) |
+| `src/app/api/voice/*` | agents, calls, live status, agent mapping (which agent answers, plus the per-DID Capstone target — one transaction) |
+| `src/lib/voice-bindings.ts` | the `voice_bindings` write path: which interview workflow each of the account's numbers reaches; resolves the DID against the account's own numbers and stores the form the renderer joins on |
+| `src/lib/dialplan-values.ts` | the two values the portal hands the dialplan (`normalize_did`, the Capstone target's charset) — mirrors of `pbx/ava_routing.py`, kept importless so `npm test` can compare them against it |
+| `src/lib/pjsip-endpoint.ts` | the WebRTC endpoint fragment the portal writes, and whether anything includes it — see [Who owns a PJSIP endpoint](../pbx/README.md#who-owns-a-pjsip-endpoint) |
 | `src/app/api/admin/voice-routing` | the plan `pbx/ava_routing.py` consumes |
 | `src/app/dashboard/voice`, `…/capstone` | the operator screens |
 
@@ -320,6 +353,7 @@ defaults `AI_AGENT` to `receptionist` for a DID with no mapping.
 
 ```bash
 python3 -m unittest discover -s pbx/tests -v        # routing + gate + converge + ARI agreement
+                                                   # + the hand-off dialplan's contract
 python3 -m unittest discover -s scripts/tests -v    # seeding, provenance, env-file writes
 npm test                                            # portal tests
 bash scripts/deploy-ava-voice.sh --check            # host, credentials, ARI agreement, models
