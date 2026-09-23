@@ -74,6 +74,29 @@ jobs:
       - name: Syntax-check every RUN body
         run: python3 scripts/check_dockerfile_runs.py
 
+  # The FreePBX module that puts the voice-plane entry in the admin menu. It is
+  # the only form that entry can take — the framework builds the menu from each
+  # installed module's module.xml — and its whole justification is that it
+  # cannot write. Both claims are checked here, without a PBX and without
+  # network: the classification runs against stubbed framework symbols, and the
+  # read-only guarantee is asserted structurally (no `doConfigPageInit`, no
+  # write verb, no form) so it cannot be edited away silently.
+  freepbx-module:
+    name: FreePBX voice-plane module
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Module tests (classification + the read-only guarantee)
+        run: php pbx/freepbx-modules/voiceplane/tests/reconcile_test.php
+
+      - name: PHP syntax
+        run: |
+          set -euo pipefail
+          mapfile -t files < <(git ls-files 'pbx/freepbx-modules/**/*.php')
+          for f in "${files[@]}"; do php -l "$f"; done
+          echo "php -l: ok (${#files[@]} file(s))"
+
   # Regression guard: user-facing hosts (landing pages, env templates) must
   # never be localhost or docker bridge IPs — the same bug class that shipped
   # in capstone's .env and dashboard fallback data. Server-side code defaults

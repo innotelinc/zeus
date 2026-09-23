@@ -778,6 +778,17 @@ RUN chmod +x /usr/local/bin/entrypoint.sh
 COPY pbx/patch-freepbx-trunk-next-id.py /usr/local/bin/patch-freepbx-trunk-next-id.py
 RUN chmod +x /usr/local/bin/patch-freepbx-trunk-next-id.py
 
+# The voice-plane FreePBX module (Reports → Zeus Voice Plane). It is copied into
+# the image rather than installed here on purpose: /var/www/html is a *volume*
+# (`freepbx-www`), so anything this build wrote into it is shadowed on a host
+# that already has one — the entrypoint converges the module on every boot
+# instead, which is what heals an existing volume. The repo's own copy is
+# mounted at /opt/zeus/pbx and wins when present, so a checkout can move ahead
+# of the image.
+COPY pbx/freepbx-modules /opt/zeus/pbx-modules
+COPY pbx/install-freepbx-voiceplane.py /usr/local/bin/install-freepbx-voiceplane.py
+RUN chmod +x /usr/local/bin/install-freepbx-voiceplane.py
+
 # 10000/tcp = Webmin admin panel; 10101-10120/udp = RTP media
 EXPOSE 80 5060/udp 5061 8088 8089 5038 10000 10101-10120/udp
 
