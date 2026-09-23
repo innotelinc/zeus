@@ -125,6 +125,44 @@ class CallEnvelopeTest(unittest.TestCase):
         self.assertEqual(out.count("Set(AI_CALL_ID=${UNIQUEID})"), 3)
         self.assertEqual(out.count("Set(AI_CALLER_NUM=${CALLERID(num)})"), 3)
 
+    def test_the_context_token_is_stamped_on_every_entry_the_call_id_is(self):
+        # The portal reads the call's context back by this handle
+        # (/api/voice/context/{token}), so an entry that stamps a trace id but
+        # no token is a call whose agents cannot fetch anything.
+        out = _render(
+            {
+                "accounts": [
+                    {"did": "7745057135", "account": "u1"},
+                    {"did": "4132643964", "account": "u2"},
+                ]
+            }
+        )
+        self.assertEqual(
+            out.count("Set(AI_CONTEXT_TOKEN=${UNIQUEID})"),
+            out.count("Set(AI_CALL_ID=${UNIQUEID})"),
+        )
+
+    def test_the_token_is_the_call_and_never_an_account_value(self):
+        # It is a pointer, not a secret, and not an account id: what authorises
+        # the read is the agent credential, so the channel must not carry
+        # anything an attacker could turn into a lookup on its own.
+        out = _render({"accounts": [{"did": "7745057135", "account": "u1"}]})
+        token_lines = [
+            line for line in out.splitlines()
+            if "Set(AI_CONTEXT_TOKEN" in line
+        ]
+        self.assertTrue(token_lines)
+        for line in token_lines:
+            self.assertIn("${UNIQUEID}", line)
+            self.assertNotIn("u1", line)
+
+    def test_the_token_is_set_before_the_call_leaves_the_context(self):
+        out = _render({"accounts": [{"did": "7745057135", "account": "u1"}]})
+        self.assertLess(
+            out.index("Set(AI_CONTEXT_TOKEN=${UNIQUEID})"),
+            out.index("Goto(zeus-ai-first-response"),
+        )
+
     def test_account_id_is_stamped_per_did(self):
         out = _render(
             {
