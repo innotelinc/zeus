@@ -196,3 +196,25 @@ CREATE TABLE IF NOT EXISTS account_addons (
   checked_at TEXT NOT NULL DEFAULT (datetime('now')),
   PRIMARY KEY (user_id, addon)
 );
+
+-- One row per call, one id across products. `call_id` is Asterisk's UNIQUEID —
+-- the value the dialplan stamps as AI_CALL_ID — so one query answers "what
+-- happened on this call?" whichever product answered it, and `handoffs` names
+-- the path (AVA → Capstone → operator). Written by the switch, from AMI events
+-- (src/lib/ami-handler.ts), not by either agent. See
+-- scripts/migrations/011_add_voice_calls.sql for the reasoning.
+CREATE TABLE IF NOT EXISTS voice_calls (
+  call_id TEXT PRIMARY KEY,
+  account_id TEXT REFERENCES users(id) ON DELETE SET NULL,
+  did TEXT,
+  agent_slug TEXT,
+  capstone_binding TEXT,
+  started_at TEXT NOT NULL DEFAULT (datetime('now')),
+  ended_at TEXT,
+  disposition TEXT NOT NULL DEFAULT 'in_progress',
+  handoffs TEXT NOT NULL DEFAULT '[]',
+  updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_voice_calls_account ON voice_calls (account_id, started_at DESC);
+CREATE INDEX IF NOT EXISTS idx_voice_calls_started ON voice_calls (started_at DESC);

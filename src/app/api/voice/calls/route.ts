@@ -1,7 +1,9 @@
 import { NextResponse } from "next/server";
 import { requireUser } from "@/lib/api-helpers";
 import { addonStatus } from "@/lib/addons";
+import { SPAN_KIND, withSpan, type Span } from "@/lib/otel";
 import { avaConfigured, listCalls } from "@/lib/ava";
+import { voiceCallsByCallId } from "@/lib/voice-calls";
 
 export const dynamic = "force-dynamic";
 
@@ -16,8 +18,21 @@ export const dynamic = "force-dynamic";
  * which CDRs do not carry. Read-only, so a disabled add-on still returns the
  * history — removing the data when a subscription lapses would destroy the
  * account's own call records.
+ *
+ * Each call carries its `record` — the portal's own `voice_calls` row, joined on
+ * the id both sides already carry (P4). That join is the point of the screen: a
+ * call AVA answered, handed to Capstone and returned is one row here, with the
+ * path and the account on it, instead of three logs and a question about which
+ * product answered.
  */
 export async function GET(req: Request) {
+  return withSpan("voice.calls.list", (span) => listCallsFor(req, span), {
+    kind: SPAN_KIND.SERVER,
+    attributes: { "http.route": "/api/voice/calls", "http.method": "GET" },
+  });
+}
+
+async function listCallsFor(req: Request, span: Span): Promise<Response> {
   const { user, error } = await requireUser();
   if (error) return error;
 
@@ -28,13 +43,19 @@ export async function GET(req: Request) {
   }
 
   if (!avaConfigured()) {
+    // Not an error — a portal-only install has no engine to read — but the
+    // span must say so, or "empty" and "unconfigured" look the same in a trace
+    // the way they must not look the same in the dashboard.
+    span.setAttribute("zeus.ava.state", "not_configured");
     return NextResponse.json({ configured: false, calls: [], total: null });
   }
 
   const result = await listCalls(parsedLimit);
   const addon = await addonStatus("agents", { user: user.email });
+  span.setAttribute("zeus.ava.state", result.state);
 
   if (result.state !== "ok") {
+    span.setStatus("error", result.error);
     return NextResponse.json(
       {
         configured: true,
@@ -48,10 +69,18 @@ export async function GET(req: Request) {
     );
   }
 
+  const records = voiceCallsByCallId(
+    result.data.calls.map((call) => call.call_id ?? ""),
+  );
+  span.setAttribute("zeus.calls.count", result.data.calls.length);
+
   return NextResponse.json({
     configured: true,
     ava_state: result.state,
-    calls: result.data.calls,
+    calls: result.data.calls.map((call) => ({
+      ...call,
+      record: records.get(call.call_id ?? "") ?? null,
+    })),
     total: result.data.total,
     addon,
   });
