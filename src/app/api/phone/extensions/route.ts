@@ -3,33 +3,16 @@ import { requireUser, badRequest } from "@/lib/api-helpers";
 import db from "@/lib/db";
 import * as freepbx from "@/lib/freepbx";
 import { getAmiClient } from "@/lib/ami";
+import {
+  provisionFragment,
+  readFragmentState,
+  removeFragment,
+  type SoftphoneState,
+} from "@/lib/pjsip-endpoint";
 import { randomUUID } from "node:crypto";
-import { writeFileSync, unlinkSync, existsSync } from "node:fs";
 import type { FreePBXExtension } from "@/lib/types";
 
 export const dynamic = "force-dynamic";
-
-const PJSIP_CONF_DIR = "/etc/asterisk";
-
-function writeWssEndpoint(ext: string, secret: string): void {
-  const conf = `[$ext](webrtc-template)\nauth = ${ext}-auth\naors = ${ext}-aor\n\n[${ext}-auth]\ntype = auth\nauth_type = userpass\npassword = ${secret}\nusername = ${ext}\n\n[${ext}-aor]\ntype = aor\nmax_contacts = 5\n`;
-  const path = `${PJSIP_CONF_DIR}/pjsip_ext_${ext}.conf`;
-  writeFileSync(path, conf, "utf8");
-
-  // Ensure included in pjsip.conf
-  const pjsipConf = `${PJSIP_CONF_DIR}/pjsip.conf`;
-  if (existsSync(pjsipConf)) {
-    const content = require("fs").readFileSync(pjsipConf, "utf8");
-    if (!content.includes(`pjsip_ext_${ext}.conf`)) {
-      require("fs").appendFileSync(pjsipConf, `\n#include pjsip_ext_${ext}.conf\n`);
-    }
-  }
-}
-
-function removeWssEndpoint(ext: string): void {
-  const path = `${PJSIP_CONF_DIR}/pjsip_ext_${ext}.conf`;
-  try { unlinkSync(path); } catch { /* not found */ }
-}
 
 export async function GET() {
   const { user, error } = await requireUser();
@@ -40,6 +23,25 @@ export async function GET() {
     .all(user.id) as FreePBXExtension[];
 
   return NextResponse.json({ extensions });
+}
+
+/**
+ * Reload res_pjsip so a *provisioned* endpoint appears.
+ *
+ * Only ever called when an operator-owned file already includes the fragment.
+ * The reload is what makes a written fragment live, so calling it while the
+ * fragment is loaded any other way is how a duplicate `[<ext>]` — the object id
+ * FreePBX generates for the same extension — gets activated, and a duplicate
+ * object id makes sorcery refuse the whole pjsip configuration. A reload is
+ * cheap; losing every endpoint on the box is not.
+ */
+async function reloadPjsipIfLive(state: SoftphoneState): Promise<void> {
+  if (!state.provisioned) return;
+  const ami = getAmiClient();
+  if (!ami.isConnected) return;
+  await ami
+    .sendAction({ Action: "Command", Command: "module reload res_pjsip.so" })
+    .catch(() => {});
 }
 
 export async function POST(req: Request) {
@@ -72,18 +74,27 @@ export async function POST(req: Request) {
       );
     }
 
-    // ── Create WSS WebRTC endpoint config ──────────────────
+    // ── The WebRTC half ────────────────────────────────────
+    // The extension exists in FreePBX at this point, so a failure here does not
+    // roll it back: it is a real extension a hardware phone can use, and
+    // deleting it because the softphone half could not be finished would
+    // destroy the operator's work. What it must not do is report success — the
+    // old code swallowed this into a comment and handed back a secret that
+    // authenticated nothing.
+    let softphone: SoftphoneState;
     try {
-      writeWssEndpoint(body.extensionId, secret);
-      // Reload PJSIP in Asterisk to pick up the new endpoint
-      const ami = getAmiClient();
-      if (ami.isConnected) {
-        await ami.sendAction({ Action: "Command", Command: "module reload res_pjsip.so" }).catch(() => {});
-      }
-    } catch {
-      // Non-critical — WSS config is best-effort; FreePBX already created
-      // the standard PJSIP endpoint via GQL
+      softphone = provisionFragment(body.extensionId, secret);
+    } catch (e) {
+      softphone = {
+        ...readFragmentState(body.extensionId),
+        provisioned: false,
+        reason:
+          `the extension was created, but the WebRTC fragment could not be written: ` +
+          `${e instanceof Error ? e.message : "unknown error"}. The secret below only works ` +
+          `once ${"/etc/asterisk/pjsip_ext_" + body.extensionId + ".conf"} exists and is included.`,
+      };
     }
+    await reloadPjsipIfLive(softphone);
 
     const extId = randomUUID();
     db.prepare(
@@ -92,7 +103,13 @@ export async function POST(req: Request) {
     ).run(extId, user.id, body.extensionId, body.name, secret, body.vmEnable ? 1 : 0, vmPin);
 
     return NextResponse.json(
-      { success: true, extensionId: body.extensionId, secret, message: result.addExtension.message },
+      {
+        success: true,
+        extensionId: body.extensionId,
+        secret,
+        message: result.addExtension.message,
+        softphone,
+      },
       { status: 201 },
     );
   } catch (e) {
@@ -120,6 +137,10 @@ export async function DELETE(req: Request) {
     return NextResponse.json({ error: "Extension not found" }, { status: 404 });
   }
 
+  // Read before removing: whether a reload is warranted depends on the
+  // fragment having been loaded, not on the delete having succeeded.
+  const before = readFragmentState(ext.extension_id);
+
   try {
     // Delete from FreePBX
     await freepbx.deleteExtension(ext.extension_id).catch(() => {
@@ -129,17 +150,18 @@ export async function DELETE(req: Request) {
     // Continue with local cleanup even if FreePBX fails
   }
 
-  // Remove WSS endpoint config
-  removeWssEndpoint(ext.extension_id);
-
-  // Reload PJSIP
-  const ami = getAmiClient();
-  if (ami.isConnected) {
-    await ami.sendAction({ Action: "Command", Command: "module reload res_pjsip.so" }).catch(() => {});
-  }
+  const danglingIncludes = removeFragment(ext.extension_id);
+  await reloadPjsipIfLive(before);
 
   // Delete from local DB
   db.prepare("DELETE FROM freepbx_extensions WHERE id = ? AND user_id = ?").run(extId, user.id);
 
-  return NextResponse.json({ success: true });
+  return NextResponse.json({
+    success: true,
+    // Reported rather than edited: the includes that still name the deleted
+    // fragment are in files the portal is not the owner of, and FreePBX drops
+    // its own copy at the next Apply Config.
+    dangling_includes: danglingIncludes,
+    recovered: before.provisioned,
+  });
 }

@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { getCurrentUser } from "@/lib/auth";
 import db from "@/lib/db";
 import { routingGate } from "@/lib/addons";
+import { recordAddonDecisions, type AddonDecisionRecord } from "@/lib/addon-cache";
 
 export const dynamic = "force-dynamic";
 
@@ -54,7 +55,10 @@ interface AccountRow {
  *
  * The Capstone flag is re-checked against Magnate here — this route is the
  * routing authority, and the PBX refuses the hand-off for anything it does
- * not mark. The check refreshes the account_addons cache in passing.
+ * not mark. The answers are recorded to the `account_addons` audit trail in one
+ * commit once the whole plan is known (`src/lib/addon-cache.ts`): the plan goes
+ * out whole, so the trail behind it is written whole. Nothing is recorded on
+ * the 503 path below, where no plan is published.
  *
  * `capstone_target` is the other half and comes from `voice_bindings`: the
  * flag says the account may reach Capstone, the binding says WHICH interview
@@ -94,13 +98,10 @@ export async function GET(req: Request) {
     )
     .all() as AccountRow[];
 
-  const cacheStatement = db.prepare(
-    `INSERT INTO account_addons (user_id, addon, entitled, checked_at)
-     VALUES (?, ?, ?, datetime('now'))
-     ON CONFLICT(user_id, addon)
-       DO UPDATE SET entitled = excluded.entitled, checked_at = excluded.checked_at`,
-  );
-
+  // Collected during the loop and committed after it, so the audit trail is
+  // written from the plan that was actually published rather than row by row as
+  // the loop happened to reach each account.
+  const decisions: AddonDecisionRecord[] = [];
   const accounts = [];
   // "Not entitled" and "could not check" are different operator problems — a
   // lapsed subscription versus a billing config error — so they are reported
@@ -132,11 +133,7 @@ export async function GET(req: Request) {
     gateReason = gate.reason;
     if (!gate.entitled) unverified.push({ did: row.did, reason: gate.reason });
 
-    try {
-      cacheStatement.run(row.user_id, "capstone", gate.entitled ? 1 : 0);
-    } catch {
-      // Best-effort cache; the rendered plan below is the authority.
-    }
+    decisions.push({ userId: row.user_id, sku: "capstone", entitled: gate.entitled });
 
     accounts.push({
       did: row.did,
@@ -151,6 +148,17 @@ export async function GET(req: Request) {
       provider: row.provider ?? undefined,
       audio_profile: row.audio_profile ?? undefined,
     });
+  }
+
+  // All-or-nothing, and best-effort: a failure here must not refuse a plan that
+  // was already decided. The plan below is the authority and the audit trail is
+  // the trail — the one thing that would be worse than a stale row is an
+  // un-wired estate because SQLite was busy.
+  try {
+    recordAddonDecisions(decisions);
+  } catch {
+    // Nothing to say in the response; the plan is still correct, and the next
+    // tick (or the next admin load) records the same answer again.
   }
 
   return NextResponse.json({
