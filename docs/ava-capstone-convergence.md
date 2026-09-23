@@ -48,10 +48,12 @@ Each item below is something that actually bit us, not a hypothetical.
 
 ### 2.1 The hand-off has one destination, so every account reaches one agent
 
-`[zeus-ai-handoff]` sends extension 824 to `dograh-inbound,8000` — the generic
-Capstone agent. `"Full Stack Developer"` and `"Job Interview"` both land there.
-`pbx/ava_routing.py`'s docstring promises per-account targets; the dialplan
-resolves one.
+`[zeus-ai-handoff]` sent extension 824 to `dograh-inbound,8000` — the generic
+Capstone agent. `"Full Stack Developer"` and `"Job Interview"` both landed
+there. `pbx/ava_routing.py`'s docstring promised per-account targets; the
+dialplan resolved one. **Closed 2026-09-22:** 824 is an entry point into
+`[zeus-ai-interview]`, which dispatches on the account's `ZEUS_CAPSTONE_TARGET`
+and refuses rather than guessing — see §7 P2.
 
 Live proof of how sharp this is: DID `7745057135` is labelled *"Dograh Voice
 Agent (Job Interview)"* in FreePBX and dials `8005`, but dograh's number `8005`
@@ -106,6 +108,41 @@ The architectural problem is the class, not the instance: two products create
 PBX objects by writing tables directly, with no single owner, no idempotency
 and no integrity check. That is how `(1,'maxchans')` breaks an unrelated
 feature.
+
+**Found in the tree, 2026-09-22 — the same class, on the PJSIP side.** The
+portal's extension API (`src/app/api/phone/extensions/route.ts`) provisions a
+WebRTC endpoint by writing `pjsip_ext_<ext>.conf` and appending
+`#include pjsip_ext_<ext>.conf` **to `pjsip.conf`** — the file FreePBX
+regenerates. The rule this repo already follows everywhere else is the opposite
+(`pbx/README.md`: the `*_custom*.conf` files are operator-owned, the generated
+ones are not; `setup-cloudonix-trunk.sh` and the VoIP.ms trunk both include
+through `pjsip_custom_post.conf`, and the vendored Teams wizard skips its
+`pjsip.conf` write when `FREEPBX_MODE=true`). Two defects sit behind that one
+line:
+
+* the include is dropped by the next Apply Config, leaving the fragment on disk
+  entered by nothing — so the secret the portal issued for the softphone cannot
+  register, and nothing reports it;
+* if the include *is* loaded, the fragment defines `[<ext>]` for an extension
+  FreePBX already generates an endpoint for, from the extension's own `sip`
+  rows. That is a **duplicate object id in the same load tree** — the §2.4
+  failure, where one duplicate makes sorcery refuse the whole `ari.conf` and
+  *"costs every user"*.
+
+It is the same shape as the `(1,'maxchans')` bug: a product writing a
+framework's file, with no owner and no integrity check.
+
+**Corrected the same day, from the portal's side.** The portal no longer writes
+an include into a framework file at all: `src/lib/pjsip-endpoint.ts` writes only
+the fragment, derives the state instead of assuming it (a commented mention of
+the fragment is not an include; a scan of the config directory answers the
+question rather than a list of files it expects), and the extension API returns
+that state — so a softphone that cannot register is reported rather than
+swallowed into a comment beside a secret that authenticates nothing. The
+reload is gated on the same answer: res_pjsip is only reloaded when an
+operator-owned include already loads the fragment, because that reload is what
+would activate the duplicate. Which product should own the endpoint is still
+open (§11), and `pbx/pjsip_owner_check.py` still measures what is on the box.
 
 ### 2.6 Two transcripts, two truth stores
 
@@ -212,7 +249,7 @@ ZEUS_CAPSTONE_ADDON   = 0|1            ; entitlement, enforced in dialplan
 ZEUS_CAPSTONE_TARGET  = <agent key>    ; WHICH interview this account gets
 AI_CALLER_NUM   = ${CALLERID(num)}
 AI_CALLER_NAME  = ${CALLERID(name)}
-AI_CONTEXT_TOKEN= <opaque, short TTL>  ; fetch the rest over HTTP
+AI_CONTEXT_TOKEN= ${UNIQUEID}          ; fetch the rest over HTTP (see below)
 ```
 
 Channel variables carry the *small, certain* facts (they survive within
@@ -224,6 +261,33 @@ prior calls, previous transcript handle — fetched from one portal endpoint
 substitutions and length limits make channel variables a bad JSON transport, and
 a token can be revoked and audited. Every consumer gets the same facts from the
 same place.
+
+**As built (2026-09-22): the token is a pointer, and the credential is the
+guard.** Asterisk cannot compute a signature, so `AI_CONTEXT_TOKEN` is
+`${UNIQUEID}` — timestamp-based and guessable — and what authorises
+`GET /api/voice/context/{token}` is `VOICE_CONTEXT_SECRET` in
+`Authorization: Bearer`, the same machine-to-machine convention
+`/api/agent/transfer-resolve` already uses for Capstone. Unset means the route
+refuses every read (503) rather than opening. The channel therefore carries no
+account id inside the token, which is also the answer to the risk row below
+about a leaked token: nothing is served without the credential, and nothing is
+served for a call outside its window.
+
+**The window is the call, plus five minutes.** AVA's session ends the moment the
+channel leaves Stasis for the hand-off, so at the instant Capstone answers, the
+call is *just* over — that grace is what makes the first fetch possible at all.
+The hand-back is the same channel returning as `[zeus-ai-return]` re-enters
+`zeus-ai-first-response`, so the same token is live again by the time AVA asks.
+After that the id is refused with 410, because a call id that stays readable
+forever is one that can be replayed by whoever read a log.
+
+**Two sources, tried in order.** The live channel through AMI (the envelope this
+call's own dialplan stamped — authoritative, and it needs no join), then AVA's
+call record, which is written when the call ends and is the only source
+afterwards; it carries `called_number`, which is what names the account through
+`phone_numbers`. The route distinguishes "looked, and it is not ours" (404)
+from "could not look" (503), because reporting an unconnected AMI as an unknown
+call is how a working system gets debugged in the wrong place.
 
 *Why it fixes §2.2:* the hand-off carries `AI_CALL_ID`, so Capstone can say
 "you were just telling me about X" instead of "please state your name".
@@ -392,10 +456,48 @@ Everything either product does today, and what happens to it.
   `capstone_binding` in one form, writing one transaction (§5).
 * **FreePBX** stays the switch: trunks, DIDs, extensions, ring groups, queues,
   time conditions. Its job is telephony primitives, not voice logic.
-* **Optional, later:** a small FreePBX admin module showing the same read-only
-  state (per-DID agent/binding/gate, live calls) so a PBX-first operator does not
-  have to open a second product. Nice-to-have; it must be read-only and must not
-  become a second writer of routing.
+* **Reaching that screen from the PBX side (as built 2026-09-22).** A FreePBX
+  admin-menu entry is expressible *only* as a module: the framework builds that
+  menu from each installed module's `module.xml` `<menuitems>` (FreePBX 17,
+  `admin/libraries/modulefunctions.class.php`) and there is no user-defined menu
+  store to write instead. So one now ships — `pbx/freepbx-modules/voiceplane/`,
+  menu *Reports → Zeus Voice Plane*, installed by
+  `pbx/install-freepbx-voiceplane.py` and converged on every boot by
+  `docker-entrypoint-full.sh` (an existing `freepbx-www` volume predates it, so
+  a build-time install would be shadowed). It is read-only in the strong sense:
+  no `doConfigPageInit()` — the only place a module handles a POST — no form,
+  GET-only requests, and its own tests assert all three, because a free-form
+  panel here would be the third opinion that produced the estate's worst routing
+  failure. What it shows is the disagreement instead: the plan the portal
+  publishes (per-DID agent, provider, Capstone gate and binding) beside the
+  routes FreePBX actually answers with, plus live ARI channels.
+
+  Two module-free surfaces still carry the link as well, so the screen is
+  reachable on a PBX where nothing has been installed, and all three name the
+  same origin:
+  * **`pbx.<domain>`'s sign-in page** — the `pbx-sso` gateway shows
+    `OAUTH2_PROXY_BANNER`, which oauth2-proxy renders as **unescaped HTML**, so
+    the anchor is a real link. Measured against the pinned `v7.8.2` image, not
+    assumed: that image's flag is `--banner` (`--signin-message` does not exist
+    yet there and is silently ignored — `--help`, then a page fetch, showed the
+    anchor intact in `<p class="block">`). Override or disable it with
+    `PBX_SSO_BANNER` (Capstone `.env`); `-` shows no banner.
+  * **The landing pages** — Capstone's and Zeus's each carry a *Voice Plane*
+    tile beside their PBX tile.
+
+  All three name `app.zeus.innotel.us/dashboard/voice` — the portal's own declared
+  public name (Zeus's `NEXT_PUBLIC_URL` default), measured through the edge as
+  `307 → /login`. The `portal.<base>` name the Control Center's service map
+  assumed answers **nothing** (Capstone's bundled portal runs behind a compose
+  profile), so its row and this link were repointed at the name that answers;
+  on a stack where the proxy *does* serve `portal.<base>`, `ZEUS_PORTAL_URL`
+  (else `ZEUS_API_URL`) overrides it without touching code.
+
+  A PBX-first operator therefore meets the voice plane at the door they already
+  use, and the module remains the deferred, optional enhancement §7 always said
+  it was — with the exact surface it would need (`module.xml` + a class + a
+  view, installed by `fwconsole ma installlocal`) named here so it is a small,
+  contained job rather than a rediscovery.
 
 ---
 
@@ -569,7 +671,7 @@ deletes a Custom Destination this phase registered.
 - Generate `[zeus-ai-interview]` and `[zeus-ai-return]`; delete the constant
   `824 → dograh-inbound,8000`.
 - Stamp `AI_CALL_ID` + `AI_CONTEXT_TOKEN` at ingress; implement
-  `/api/voice/context/{token}`.
+  `/api/voice/context/{token}`. **(built 2026-09-22 — see D2)**
 - Fix the §2.1 data defect on the live PBX: reconcile `7745057135` / `8005` /
   *Job Interview* so the label, the extension and the binding agree.
 
@@ -619,28 +721,85 @@ in between: the live plan endpoint answers seven accounts with no `account` and
 no `capstone_target`, and the renderer correctly renders `AI_ACCOUNT` not at all
 rather than an empty value over a channel that may already have one.
 
-**The dialplan half is deliberately not in this change.** The spec replaces the
-constant `824 → dograh-inbound,8000` with `[zeus-ai-interview]` and
-`[zeus-ai-return]`; the transition form of that keeps the old constant as the
-*no target* path — which is what the rollback note asks for — but it also means
-the phase's exit ("each interview DID reaches the correct workflow") cannot be
-met until bindings exist on `.30`. It is its own step because it changes the
-shared `extensions_custom.conf` that the sync timer converges every 15 minutes,
-and a live-file change earns a before/after pair here rather than riding along
-with an inert one.
+**Built (2026-09-22): the dialplan half.** The constant is gone. `824` in
+`[zeus-ai-handoff]` is now an *entry point*, and `[zeus-ai-interview]` decides
+what a hand-off reaches: the add-on gate first, then
+`dograh-inbound,${ZEUS_CAPSTONE_TARGET},1`, with an empty target and one naming
+a workflow this PBX does not carry both refusing to the operator through the
+existing `refused` extension — never to whichever agent `8000` happens to be.
+`[zeus-ai-return]` is converged too, as the way back Capstone has to be pointed
+at. `pbx/tests/test_ava_dialplan_contract.py` pins it, because all three of its
+properties fail *silently*: that 824 enters `[zeus-ai-interview]` and that no
+directive in the file reaches `dograh-inbound,8000` or a literal
+`Stasis(dograh)` again, that an empty or unresolvable target refuses instead of
+reaching a default agent, and that 824 agrees across the three files that name
+it. It was checked by mutating the file the test guards — restoring the
+constant, inverting the gate, dropping the empty-target refusal, letting
+`[zeus-ai-return]` guess — and each mutation fails one to three cases rather
+than passing quietly. Two details are the implementation's rather than the sketch's: the refusal
+reuses `[zeus-ai-handoff] refused` instead of a new `[zeus-ai-refused]`
+context, so the file keeps one operator fallback rather than two; and the direct
+`Stasis(dograh)` fallback retires with the constant, because the legacy bare
+app name is one no ARI client registers — entering it was a silent `Hangup()`
+— while Capstone's generated `dograh_<hex>` name is exactly the constant the
+design says the dialplan must not carry.
 
-**Still live and unmet in this phase:** `voice_bindings` rows on the portal, the
-`[zeus-ai-interview]`/`[zeus-ai-return]` contexts, `AI_CONTEXT_TOKEN` and
-`/api/voice/context/{token}` (the token needs a portal mint *and* a TTL decision,
-so it is not a dialplan-only change), and the §2.1 reconciliation of
-`7745057135` / `8005` / *Job Interview* on the box.
+The change is inert until a binding exists: every entry renders an empty
+`ZEUS_CAPSTONE_TARGET` today, so every hand-off refuses exactly as an
+unentitled one does. That is why it could converge on its own tick, and why the
+phase's exit ("each interview DID reaches the correct workflow") still cannot
+be met from here — that needs `voice_bindings` rows on `.30`.
+
+**Built (2026-09-22): the context read.** `pbx/ava_routing.py` stamps
+`AI_CONTEXT_TOKEN=${UNIQUEID}` on every entry and on the fallback, and
+`GET /api/voice/context/{token}` (`src/lib/voice-context.ts`) answers with the
+account, plan, caller, interview binding, prior calls and a transcript handle —
+gated on `VOICE_CONTEXT_SECRET`, and only for a call that is live or ended
+within five minutes. D2 records the two decisions that shaped it: the token is a
+pointer whose guard is the credential, and the window is what covers the gap
+between AVA releasing the channel and Capstone answering it. It is inert until
+`VOICE_CONTEXT_SECRET` is set on the portal *and* handed to the agents that read
+it, which is why it could ship beside the dialplan change rather than before it.
+
+**Built (2026-09-22): the write path for `voice_bindings`.** The table had a
+reader on both sides and no writer, so the phase's exit ("each interview DID
+reaches the correct workflow") could not be reached by anyone using the product
+— a binding could only be set with SQL. It is now the second half of the account's
+voice mapping: `PUT /api/voice/agent-mapping` takes `did` + `capstone_binding`
+beside the agent choice (or either alone) and writes `voice_agents` and
+`voice_bindings` in **one transaction**, which is D5's "add-on enablement is one
+write" applied to the two records that must not disagree; the portal's voice
+screen renders it per number, and `GET` returns `lines` so the form shows what is
+stored before it overwrites it. Three rules moved with it. The DID is resolved
+against the account's own active numbers and the *stored* form is what is written
+(the renderer keys bindings on `phone_numbers.did`, so a pasted
+`+1 (774) 505-7135` resolves to the row rather than storing a value no plan
+lookup matches). The target is held to the renderer's own charset
+(`src/lib/dialplan-values.ts` mirrors `SAFE_TOKEN_RE`), enforced on the way in so
+a value that could close `DIALPLAN_EXISTS(...)` can never reach the table and
+stop the plan from converging. Clearing deletes the row instead of storing an
+empty string, so "no row" and "no target" stay one thing.
+
+**Still live and unmet in this phase:** `voice_bindings` rows on `.30` (the
+product can now write them; the box still has none, so every hand-off refuses),
+`VOICE_CONTEXT_SECRET` handed to Capstone and to AVA (without it the context read
+refuses every request), pointing Capstone at `[zeus-ai-return]`, and the §2.1
+reconciliation of `7745057135` / `8005` / *Job Interview* on the box.
 
 **Exit:** each interview DID reaches the *correct* workflow; an unknown target
 refuses to the operator; a concluded interview returns to AVA or a human with
 its context intact.
 
-**Rollback:** restore routes; `ZEUS_CAPSTONE_TARGET` unset = old behaviour
-retained behind a flag during the phase.
+**Rollback:** revert `pbx/asterisk/extensions_custom.conf` and let the sync
+timer reconverge it. There is no flag to flip back: an unbound account is
+refused to the operator rather than reaching `8000`, so restoring the constant
+is the one `Goto` line in `[zeus-ai-handoff]`. One caveat that tool makes worth
+knowing, and that `test_ava_dialplan_contract.py` asserts rather than assumes:
+`asterisk_converge.py` replaces the contexts its source defines and leaves
+everything else alone — another product shares this file — so it cannot
+*retire* one. Reverting leaves `[zeus-ai-interview]` and `[zeus-ai-return]` on
+the box, entered by nothing and therefore inert, but present; a rollback that
+deletes a context rather than restoring one has to delete the live copy too.
 
 ### P3 — One provisioning path and one transaction for enablement
 
@@ -648,6 +807,91 @@ retained behind a flag during the phase.
 - Reproduce the `(1,'maxchans')` failure with instrumentation, then fix the
   class: check-then-create, explicit collision reporting, preflight refusal.
 - Make add-on enablement write entitlement + routing + UI in one transaction.
+
+**Built (2026-09-23): the provisioner's judgement layer, and one transaction for
+enablement.** Two halves of the phase, from the two halves of what it asks for.
+
+*One transaction for enablement.* D5's "entitlement → `account_addons` →
+rendered routing → portal UI" was one write short in both directions. The cache
+was filled in *inside* the routing plan's per-account loop, so a plan that
+stopped partway left a record disagreeing with what it published; and the voice
+mapping — which had just acted on a gate answer — recorded nothing, leaving the
+row for a different route to write later from a different answer.
+`src/lib/addon-cache.ts` is now the only writer: the plan route collects its
+answers and commits them **once, whole** (best-effort — a SQLite hiccup must not
+refuse a plan that was already decided), and `PUT /api/voice/agent-mapping`
+records the answer that authorised its write **in the same transaction** as the
+mapping. An indecisive gate still records nothing, which is the fail-open policy
+holding: a rejected Magnate token must not leave a `0` behind it. The call path
+reads through the same module (`cachedAddonDecision`), so the reader cannot
+drift from the writers, and `null` (“nothing has ever been asked”) stays
+distinguishable from `false` (“asked, and refused”).
+`scripts/addon-cache.test.mjs` pins all of it — including atomicity, proved by
+forcing a real foreign-key failure and asserting the batch's *earlier* row was
+not written.
+
+*The D6 provisioner, judged before it writes.* `pbx/provision_extension.py` owns
+extension/device creation. It is built check-then-create on purpose: an
+extension is four things in FreePBX — a `users` row, a `devices` row, a
+technology row (`sip`/`pjsip`) and `AMPUSER/<ext>` state in AstDB — and the
+preflight measures all four, because creating over any of them is how a new
+phone inherits a deleted one's call forwarding. Each state has its own named
+refusal and its own repair line, which is what `(1,'maxchans')` never had; a
+two-owner endpoint (this phase's own measurement, reused from
+`pjsip_owner_check.py`) is named before anything else, because creating a device
+there would add a third object to a load tree that already has two. The create
+is the framework's own sequence (`generateDefaultDeviceSettings` → `addDevice` →
+`generateDefaultUserSettings` → `addUser`, read out of FreePBX 17's vendored
+`Core.class.php`, with the framework's own cleanup when `addUser` fails), and the
+result is **verified by re-reading the PBX** — a framework call returning 0 is
+not evidence. The undo is written first and is PHP rather than SQL, so
+delete goes through `delUser`/`delDevice` and not around the AstDB the preflight
+exists to protect. `--observed-json` judges a measurement taken earlier, which is
+how the whole decision table is rehearsable with no PBX at all
+(`pbx/tests/test_provision_extension.py`, 31 cases, including the 1-versus-3 exit
+codes a timer reads).
+
+**Still open in this phase, named rather than implied.** The *portal's* Phone
+screen creates extensions through FreePBX's API (`freepbx.addExtension`) and does
+not pass this preflight, so there are two writers until it does — that delegation
+is the remaining half of "one provisioning path", and it is a cross-process one
+(the portal is Node; the preflight is Python against the PBX's own config and
+database). Inbound routes and the voice mapping stay with their owners by design
+(`ava_routes.py`, `PUT /api/voice/agent-mapping`) and the provisioner reports them
+instead of duplicating them. On `.30` the provisioner has not been run: the
+intent document is the operator's data, as the DIDs were in P1.
+
+**Built (2026-09-22): the portal's half of the endpoint, and the binding write
+path.** The extension API writes the fragment and reports which file loads it
+(the `softphone` block), reporting rather than swallowing, with the res_pjsip
+reload gated on the same answer; the account's interview target is now authored
+per number through the voice mapping (see P2's as-built above). Both are
+verifiable without a box: `npm test` runs the two new probes, which the portal
+previously had no runner for — they transpile the modules with the project's own
+`typescript` (`scripts/ts-probe.mjs`) and check, among other things, that the
+portal's target rule and `pbx/ava_routing.py`'s `SAFE_TOKEN_RE` agree on the same
+candidate list, and that a stored binding survives `render(validate(...))`.
+
+**Opened (2026-09-22): the endpoint's owner is measured before it is changed.**
+The phase's first move is not "move the include to `pjsip_custom_post.conf`",
+because that is a trap: the include would then survive, which is precisely what
+loads a `[<ext>]` that FreePBX already defines. Either fact alone reads as a
+fix, which is why `pbx/tests/test_pjsip_owner_check.py` pins them as one case
+(`test_moving_the_include_does_not_fix_the_duplicate`).
+
+`pbx/pjsip_owner_check.py` is the measurement: read-only, `--json` for the raw
+facts, and it derives its answers rather than restating them — `#include` edges
+are followed from `pjsip.conf` so "on disk" and "loaded" stay separate facts,
+and a duplicate is the same **(id, type)** in two files, so `[101]` in
+`pjsip.endpoint.conf`/`pjsip.auth.conf`/`pjsip.aor.conf` is correctly the benign
+case and the portal's `[<ext>](webrtc-template)` resolves to the same
+`type=endpoint` FreePBX generated. It also reports the pair the interesting
+state produces: *the endpoint exists* (so calls and hardware phones work) and
+*the portal's fragment is inert* (so no softphone registers). Exit 1 is the
+two-owner state, 2 is "nothing could be evaluated".
+
+Not yet measured on `.30` — the host takes no key from here. The command, and
+what each answer implies for the fix, are in `pbx/README.md`.
 
 **Exit:** adding an extension through the portal and through FreePBX both
 succeed, are idempotent, and are reversible; a forced id collision produces a
@@ -660,6 +904,86 @@ named, understandable refusal.
 - Portal live-call screen; transcript links; dispositions.
 - Both agents' spans in one OTel trace.
 
+**Built (2026-09-23): the record, written by the switch.**
+`voice_calls` (`scripts/migrations/011_add_voice_calls.sql`, mirrored in
+`schema.sql`) is one row per call keyed on Asterisk's `UNIQUEID` — the value the
+dialplan already stamps as `AI_CALL_ID` and the agents receive as
+`AI_CONTEXT_TOKEN`, which is what makes one query answer "what happened on this
+call?" across products instead of the two truth stores of §2.6.
+
+What is worth noticing is *who writes it*. Not AVA and not Capstone: the
+**switch** does, from the channel's own events, in `src/lib/ami-handler.ts`. The
+dialplan's envelope arrives as AMI `VarSet` (one event per variable), and a
+hand-off arrives as `Newexten` in a context — `dograh-inbound` out, `zeus-ai-return`
+back — so neither product has to instrument itself, a caller who abandons before
+an agent picks up still leaves a record, and an agent that dies mid-interview
+does not take its call's history with it. The context classifier
+(`handoffFromContext`) reads the two names `pbx/ava_routing.py` renders rather
+than keeping a second copy, and it deliberately does **not** claim the operator
+leg: a refused hand-off reuses `[zeus-ai-handoff]`'s own `refused` extension, so
+the context is indistinguishable from a transfer that succeeded (§11.1).
+`"operator"` stays in the vocabulary so the record can hold what the system
+cannot yet observe rather than growing a migration the day it can.
+
+Two rules keep the row honest, and both are pinned by
+`scripts/voice-calls.test.mjs`: a **blank never overwrites a fact** (the same
+call arrives several times, in dialplan order, and the last write must not erase
+an account id an earlier one established), and **the disposition is the path, not
+the outcome** (a call handed to Capstone and then ended stays `handed_off` with
+an `ended_at` — which agent the caller reached is the fact worth keeping).
+
+**Built (2026-09-23): the operator view reads it.** `/api/voice/live` now serves
+two answers beside each other — `active`, what the engine says it is carrying,
+and `recorded`, the portal's own rows — because they are different questions: the
+engine only knows calls whose media it is handling, while the record exists from
+the moment the channel was stamped, so **a call that has been handed to Capstone
+is absent from the engine's list and present in the record**, which is exactly
+the call an operator is looking for. `/api/voice/calls` joins the same rows onto
+AVA's list per `call_id`, and `/dashboard/voice` renders the record with the path
+(`agent → capstone → ava`), the disposition, the interview binding and the call
+id in monospace — the id to quote in a log search. The record survives a broken
+engine on purpose: the route returns it on the error path too, since that is
+precisely when an operator wants to see which calls are still up.
+
+**Built (2026-09-23): the portal's half of the spine, and no second collector.**
+The portal emits spans now. `src/lib/otel.ts` is a dependency-free OTLP/HTTP
+exporter — no `@opentelemetry/*`, because this image ships a pinned `node
+server.js` dependency tree and a dozen transitive packages is not worth a build
+risk for one exporter — started once by `src/instrumentation.ts`. Three
+properties are what make it safe to put on a live phone system, and
+`scripts/otel.test.mjs` pins each rather than trusting them: **off means off**
+(with `OTEL_EXPORTER_OTLP_ENDPOINT` unset the tracer records nothing and opens
+no socket, so a portal-only install is byte-for-byte the code path it always
+was), **honest about failure** (an unreachable collector drops spans and logs
+*once* after a run of successes, never fails a request, and bounds its queue so
+a dead collector cannot grow the portal's memory), and **nesting is per async
+context** (`node:async_hooks`, not a module-global "current span", so two
+concurrent calls cannot adopt each other's parent). Every span that stands for a
+call carries `zeus.call_id` — Asterisk's `UNIQUEID`, the same value the dialplan
+stamps as `AI_CALL_ID` — in an attribute rather than as the trace id, because an
+operator searches for the call id, not for a hex trace. The CDR write is the
+§2.7 outage made visible: one `ami.cdr` span records whether the row was
+`persisted`, so "the CDR was missing for nine days" is a symptom in the trace
+instead of a discovery.
+
+Which collector is `compose.observability.external.yml`'s job, and it is the
+opposite of the bundled profile: on the co-hosted box the portal exports to
+**Capstone's** collector instead of standing up a second ClickHouse + SigNoz to
+hold one product's spans. The honest reading of that mode today is one
+**metrics** spine, not yet one trace — Capstone's collector is metrics-only, so
+it turns Zeus's spans into `zeus-portal` series and drops the spans; a trace
+that holds both agents is the Capstone-side change in `docs/stack.md` item 3.
+The exporter is also inert until a host sets the endpoint (`.env.example`
+documents both modes), and the default target needs Capstone's `otel-collector`
+to join `pbx-net` before it resolves — neither is a change this repo can make.
+
+**Still open in this phase.** Transcript links are AVA's
+(`/api/voice/calls/[recordId]`, which the join now points at from a call id);
+Capstone's transcript handle is exposed on the context read and not yet surfaced
+on this screen. And the record is *observed*, so a call that never carried an
+envelope has no row at all — that is a routing finding, not a missing log line,
+and the runbook says so.
+
 **Exit:** for a call that moved AVA → Capstone → operator, one screen names the
 path, and one query returns its full record.
 
@@ -670,7 +994,8 @@ path, and one query returns its full record.
 Unit level (already the house style — no PBX needed):
 
 ```bash
-python3 -m unittest discover -s pbx/tests -v        # routing, gate, converge, ARI agreement
+python3 -m unittest discover -s pbx/tests -v        # routing, gate, converge, ARI agreement,
+                                                   # and the hand-off dialplan's contract
 python3 -m unittest discover -s scripts/tests -v    # seeding, provenance, env writes
 npm test                                            # portal
 ```
@@ -689,9 +1014,28 @@ docker exec zeus-freepbx asterisk -rx "ari show users"
 # the gate: an unentitled account must NOT reach Capstone
 docker exec zeus-freepbx asterisk -rx "dialplan show zeus-ai-interview"
 
+# the softphone endpoint's owner: 1 = a duplicate id, a product include in a
+# FreePBX-regenerated file, or a fragment nothing loads (read-only)
+python3 pbx/pjsip_owner_check.py --live
+
+# an interview line reaches its workflow: set one for a DID the account holds,
+# then confirm the plan renders ZEUS_CAPSTONE_TARGET from it
+curl -s -X PUT "$PORTAL/api/voice/agent-mapping" -H "Cookie: $SESSION" \
+  -d '{"did":"7745057135","capstone_binding":"8005"}'
+curl -s "$PORTAL/api/admin/voice-routing" -H "Authorization: Bearer $PBX_SYNC_TOKEN"
+
+# the context read: no credential must be refused, and a live call must answer
+docker exec zeus-freepbx asterisk -rx "core show channels concise"   # take the channel id
+curl -s -o /dev/null -w '%{http_code}\n' "$PORTAL/api/voice/context/<uniqueid>"          # 401
+curl -s -H "Authorization: Bearer $VOICE_CONTEXT_SECRET" "$PORTAL/api/voice/context/<uniqueid>"
+
 # the boring assertions from D7
 docker exec zeus-freepbx asterisk -rx "odbc show"          # one active connection
 # a test call must leave exactly one new CDR row
+
+# the trace: the portal names which mode it is in (disabled by default), and
+# with a collector set, one call's spans are findable by `zeus.call_id`
+docker logs zeus-portal 2>&1 | grep -m1 '^OTEL:'             # disabled | exporting to <url>
 ```
 
 A controlled test call per DID, driven through the real route
@@ -713,7 +1057,7 @@ and **check the caller-visible outcome**, not just the dialplan.
 | A recreate loses a fix that lived in a volume (this already happened twice) | P0 moves the fix into the image **and** keeps it in git; `--check` before/after |
 | Two writers of routing (portal + FreePBX GUI) | D1: routes carry no logic; the router context is generated; PBX GUI edits are inert by design |
 | Re-enabling the sync re-damages the PBX | P0 runs `--check` first, keeps the entrypoint-owned fragments excluded, and verifies byte-identity |
-| Per-call context token leaks account data | Short TTL, single-use, scoped to `call_id`; the portal is the only reader |
+| Per-call context token leaks account data | The token is a pointer, not a credential (D2): the read needs `VOICE_CONTEXT_SECRET`, is served only while the call is live or for five minutes after it, and the channel value carries no account id |
 
 **Non-goals**
 
@@ -739,3 +1083,10 @@ and **check the caller-visible outcome**, not just the dialplan.
 3. **Conference-leg media (D4 long-term)** — worth designing now or after P0–P3?
 4. **Where `capstone_binding` is authored** — portal only, or portal + Capstone's
    UI with a reconciliation pass? (Portal-only is simpler and keeps one writer.)
+5. **Who owns a WebRTC endpoint** — FreePBX's generated endpoint extended from
+   `pjsip.endpoint_custom_post.conf`, which keeps one object but moves the
+   softphone's credential to FreePBX's device secret (and the portal has no way
+   to read that today: `addExtension` will not return it, so it would need a
+   read path of its own); or a portal-owned endpoint under an id FreePBX will
+   not generate (`<ext>-webrtc`), which keeps the portal-issued secret. The
+   measurement that decides it is `pbx/pjsip_owner_check.py --live` (§8 P3).

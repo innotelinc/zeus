@@ -64,17 +64,45 @@ Dograh ARI connects to Zeus/FreePBX):**
 1. **Capstone convergence phase 2 — retire the bundled PBX.** Capstone's
       docker-compose still ships its own FreePBX for standalone installs; the
       target is Capstone dialing Zeus as the only voice plane on the shared host.
-      The structural-parity checklist is the gate.
-2. **AI voicemail summaries in the default path** — the feature ships but the
-      LLM call rides the shared OmniRoute; give it its own model pin so a
-      free-tier cooldown cannot silence summaries.
-3. **Observability profile parity with Capstone** — the SigNoz profile is
+      The structural-parity checklist is the gate. The Zeus-side phase plan for
+      it is [`docs/ava-capstone-convergence.md`](ava-capstone-convergence.md) §8.
+2. ~~**AI voicemail summaries in the default path** — give the LLM call its own
+      model pin so a free-tier cooldown cannot silence summaries.~~
+      **Done (2026-09-23).** The summary path no longer shares a model with the
+      call path: `VOICEMAIL_SUMMARY_URL` / `VOICEMAIL_SUMMARY_MODEL` are its own
+      pin (falling back to `OLLAMA_URL` / `OLLAMA_MODEL`, so a single-Ollama
+      install is unchanged), and `pbx/d7_assert.py` asserts **both** pins against
+      the gateway's live catalogue in the same run — because a pin nobody checks
+      is a feature that answers 502 and says nothing until someone notices.
+      Two pins, one reason: the gateway's free routes cooldown per model, so one
+      consumer exhausting a model must not take the other's feature with it.
+3. ~~**Observability profile parity with Capstone** — the SigNoz profile is
       optional; when both stacks run on one host, point Zeus's OTLP at Capstone's
       collector and read from Capstone's Grafana instead of running a second
-      ClickHouse (already noted in ips `docs/service-audit.md` §4).
-4. **SMS trunk docs into the smoke test** — `docs/ops-sms-trunk.md` is manual;
+      ClickHouse (already noted in ips `docs/service-audit.md` §4).~~
+      **Built (2026-09-23).** The portal's exporter ships
+      (`src/instrumentation.ts` → `src/lib/otel.ts`, pinned by
+      `scripts/otel.test.mjs`) and is a no-op until an endpoint is set, so a
+      portal-only install is unchanged. `compose.observability.external.yml` is
+      the co-hosted mode: the portal exports to Capstone's collector rather than
+      a second ClickHouse. **One caveat, named rather than implied:** that
+      collector is metrics-only today — it turns Zeus's spans into `zeus-portal`
+      series and *drops* the spans — so this is one *metrics* spine, and the
+      spans need Capstone's collector configured to forward before the trace
+      holds both products. The default target also needs Capstone's
+      `otel-collector` to join `pbx-net`. See
+      `docs/ava-capstone-convergence.md` §D7 and §8 P4.
+4. ~~**SMS trunk docs into the smoke test** — `docs/ops-sms-trunk.md` is manual;
       add the trunk check to `scripts/smoke-test.sh` so a dead trunk surfaces in
-      the same pass as the portal and PBX checks.
+      the same pass as the portal and PBX checks.~~
+      **Done (2026-09-23).** `./scripts/smoke-test.sh sms` (and a plain run)
+      asserts the four things that make a text leave the box — the PJSIP trunk is
+      `Registered`, the `sms-out` context is in the live dialplan, the portal's
+      AMI user carries the `message` class, and the VoIP.ms inbound webhook
+      answers its liveness `GET`. All four are read-only; nothing sends a message
+      or spends anything, so the carrier leg stays a manual step. Each failure
+      names its repair rather than its symptom, because every one of them looks
+      identical from the Messages screen: the row says "sent".
 
 
 ### Phase 1 parity (shipped)
@@ -95,9 +123,11 @@ Dograh ARI connects to Zeus/FreePBX):**
   `:3301` + otel-collector writing directly to ClickHouse (OTLP ingest on
   loopback `4317`/`4318`). Configs: `clickhouse-config.yaml`,
   `clickhouse-keeper.yaml`, `otel-collector-config.yaml`. App-side OTel
-  instrumentation (portal traces) is not wired by default — set
+  instrumentation (portal traces) **is wired** (`src/instrumentation.ts` →
+  `src/lib/otel.ts`) and inherited from this profile — the profile sets
   `OTEL_EXPORTER_OTLP_ENDPOINT=http://zeus-signoz-otel-collector:4318` with
-  `OTEL_SERVICE_NAME=zeus-portal` when you want portal spans.
+  `OTEL_SERVICE_NAME=zeus-portal` for you. Unset everywhere, the tracer is a
+  no-op: the portal opens no socket and needs no collector to run.
 
 ## Secrets (Cerulean Vault)
 

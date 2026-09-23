@@ -18,9 +18,13 @@ operational shape.
 | `asterisk_converge.py` | Per-section merge for the **shared** `extensions_custom.conf` / `ari.conf` (ownership markers) |
 | `ava_routes.py` | Converge each platform DID's FreePBX inbound route onto `zeus-ai-router,s,1`, from the same plan that renders `[zeus-ai-accounts]` — see [One ingress](#one-ingress-every-platform-did-reaches-the-router). `--check` / `--apply`, `--routes-tsv` to judge off-host, `--create-missing` to create a route for a DID that has none (via FreePBX's own API). Exit 1 = an apply converges it, 3 = only a person can |
 | `ava_ari_check.py` | Does the engine and the PBX share one ARI secret? `--require-engine-env` is the mode the compose preflight runs — see [Voice plane gates](#voice-plane-gates-and-d7-assertions) |
-| `d7_assert.py` | The three D7 claims about the live stack (call recorded, both ARI apps registered, one gateway serving the configured model). `--call` places a self-contained probe call. Exit 2 = nothing could be evaluated |
+| `pjsip_owner_check.py` | Who owns the PJSIP endpoint for an extension — the load tree, the duplicate ids, and who carries the `#include`. Read-only, `--json` for the raw measurement, exit 1 on a two-owner state — see [Who owns a PJSIP endpoint](#who-owns-a-pjsip-endpoint) |
+| `provision_extension.py` | **The one owner of extension/device creation** (D6): check-then-create through FreePBX's own `addDevice`/`addUser`, with a preflight that refuses on an orphaned `sip`/`pjsip` row, leftover `AMPUSER` state, a half-created extension or a two-owner endpoint. `--check` / `--apply`, `--observed-json` to judge off-host, exit 1 = an apply converges it, 3 = only a person can — see [One provisioning path](#one-provisioning-path-for-extensions) |
+| `d7_assert.py` | The three D7 claims about the live stack (call recorded, both ARI apps registered, one gateway serving **both** pinned models — the call path's `AVA_LLM_MODEL` and the summary path's `VOICEMAIL_SUMMARY_MODEL`). `--call` places a self-contained probe call. Exit 2 = nothing could be evaluated |
 | `p0-snapshot.sh` | Records the live pre-state (containers, PBX files with hashes, routes, units, CDR watermark) before a change, in the `/root/revert-to-1510/` shape |
 | `patch-freepbx-trunk-next-id.py` | The `Core::addTrunk` next-id fix, with a `--container` mode the host can use without an image rebuild — see [docs/freepbx-trunk-repair.md](../docs/freepbx-trunk-repair.md) |
+| `freepbx-modules/voiceplane/` | **Zeus Voice Plane** — the read-only FreePBX module that puts the voice-plane entry in the admin menu (*Reports → Zeus Voice Plane*) and shows the portal's plan beside the routes this PBX actually answers with. No `doConfigPageInit()`, no form, GET-only; its tests assert that. See [its README](freepbx-modules/voiceplane/README.md) |
+| `install-freepbx-voiceplane.py` | Installs/converges that module without an image rebuild: `--check` (drift, changes nothing), `--ensure` (what a boot calls), `--target host` (bare metal). Proves the install by booting FreePBX in the container and asking the framework which menu items it derived |
 | `MSTeams-DR-Wizard.sh` | MS Teams Direct Routing wizard (vendored from [Vince-0/MSTeams-FreePBX](https://github.com/Vince-0/MSTeams-FreePBX), MIT) — configures the native `external_signaling_hostname` PJSIP transport (Asterisk 20.21+/22.11+/23.5+/24+), endpoint/AOR/identify for the Microsoft SIP proxies, RSA cert wiring, `--check` audit |
 | `cerulean-msteams.sh` | Cerulean trust-plane adapter: provisions the SBC DNS record + RSA-2048 DNS-01 certificate, then chains into the wizard |
 | `tests/test_asterisk_converge.py` | Unit tests for the converge tool (`python3 -m unittest discover -s pbx/tests`) |
@@ -292,6 +296,113 @@ Two failure modes are worth knowing, because both are silent:
 (`32768-60999`) to match the Capstone service, so the router forward and both
 compose files stay interchangeable. Moving it is a coordinated change across
 both products *and* the router.
+
+## Who owns a PJSIP endpoint
+
+The rule that keeps this PBX configurable is the `_custom` convention, and it
+has one sentence: **Asterisk reads an operator file, FreePBX regenerates the
+rest.** `pjsip_custom.conf`, `pjsip_custom_post.conf`, `pjsip.endpoint_custom_post.conf`
+and `extensions_custom.conf` are never rewritten by an Apply Config; `pjsip.conf`,
+`pjsip.endpoint.conf`, `pjsip.auth.conf`, `pjsip.aor.conf`, `extensions.conf` and
+`rtp_additional.conf` are. Everything below follows from that —
+`setup-cloudonix-trunk.sh` includes its fragments from `pjsip_custom_post.conf`,
+`scripts/setup.sh` does the same for the VoIP.ms trunk, the vendored Teams wizard
+skips its `pjsip.conf` write when `FREEPBX_MODE=true`, and the TURN settings are
+written into `kvstore_Sipsettings` rather than a file.
+
+One writer used not to follow it: the portal's extension API
+(`src/app/api/phone/extensions/route.ts`). It wrote a WebRTC endpoint fragment
+and made Asterisk load it by appending `#include pjsip_ext_<ext>.conf` **to
+`pjsip.conf`** — the file FreePBX regenerates. Since 2026-09-22 it writes only
+the fragment (`src/lib/pjsip-endpoint.ts`, which never edits a framework file)
+and reports which file, if any, includes it, so a softphone that cannot register
+is a reported state rather than a swallowed comment. Two consequences follow
+from the shape, and they are why the check below exists rather than a patch:
+
+* on the next Apply Config the include is dropped, the fragment is left on disk
+  entered by nothing, and the secret the portal handed the browser cannot
+  register — silently, while the portal still lists the extension as active;
+* if the include *is* loaded, the fragment defines `[<ext>]` for an extension
+  FreePBX already generates an endpoint for (`pjsip.endpoint.conf`, from the
+  extension's `sip` rows), so it is a **duplicate object id in the same load
+  tree** — the failure documented under [Shared `ari.conf`](#shared-ariconf) for
+  the ARI user, where one duplicate makes sorcery refuse the file *"and costs
+  every user"*.
+
+Which of the two states a *box* is in is still a measurement, not an assumption
+— a fragment the portal wrote months ago may be included from FreePBX's file on
+this host and nowhere else. `pjsip_owner_check.py` answers it. It reads
+(never writes) and it derives the answers rather than restating them: `#include`
+edges are followed from `pjsip.conf` so "on disk" and "loaded" stay different
+facts, and a duplicate is the same **(id, type)** in two files — which is why
+`[101]` in `pjsip.endpoint.conf`, `pjsip.auth.conf` and `pjsip.aor.conf` is the
+benign case and template inheritance is resolved rather than string-matched.
+
+```bash
+python3 pbx/pjsip_owner_check.py --live --json      # the box; paste the JSON back
+python3 pbx/pjsip_owner_check.py --config-dir /etc/asterisk   # inside the PBX
+python3 -m unittest discover -s pbx/tests -p 'test_pjsip_owner_check.py'
+```
+
+Exit 0 = measured, one owner; 1 = a two-owner state (`rc=1` naming the duplicate,
+the generated carrier, or the fragment nothing loads); 2 = nothing could be
+evaluated. `--extension` judges one extension instead of every `pjsip_ext_*.conf`
+found.
+
+Deliberately **not** wired into `zeus-pbx-sync.sh`: until the owner decision is
+made, the safe state (the portal's fragment inert, FreePBX answering) is one this
+check reports as a failure, and a timer that fails on a safe state is a timer
+that gets ignored. It is a measurement to run and read, not yet a gate. The
+decision it feeds — whether FreePBX keeps the endpoint and the portal
+extends it via `pjsip.endpoint_custom_post.conf`, or the portal keeps its own
+under an id FreePBX will not generate — is open, and is recorded in
+[docs/ava-capstone-convergence.md](../docs/ava-capstone-convergence.md) §11.
+
+## One provisioning path (for extensions)
+
+`provision_extension.py` owns extension/device creation, because the class of
+bug that motivates D6 is a *second* writer: two products creating PBX objects by
+writing tables directly is how `(1,'maxchans')` — a MySQL `1062` on `pjsip`'s
+primary key — came to break an unrelated feature in a GUI dialog nobody could
+act on.
+
+```bash
+# judge, write nothing (exit 0 in sync, 1 an apply converges it, 3 a person)
+python3 pbx/provision_extension.py --intent accounts.json --check
+
+# the measurement, with the raw facts on stdout, to judge off-host later
+python3 pbx/provision_extension.py --intent accounts.json --check --json > observed.json
+python3 pbx/provision_extension.py --intent accounts.json --observed-json observed.json --check
+
+# create, after taking the phase's pre-state; the undo is written first
+python3 pbx/provision_extension.py --intent accounts.json --apply \
+    --revert-out /root/zeus-ext-revert.php
+docker exec -i zeus-freepbx php < /root/zeus-ext-revert.php   # the way back
+docker exec zeus-freepbx fwconsole reload
+```
+
+An extension is four things in FreePBX — a `users` row, a `devices` row, a
+technology row (`sip`/`pjsip`), and `AMPUSER/<ext>` state in AstDB — and the
+preflight measures all four, because creating over any of them is how a new
+phone silently inherits a deleted one's call forwarding. The create itself is
+the framework's (`FreePBX::Core()->generateDefaultDeviceSettings()` →
+`addDevice()` → `addUser()`, the sequence `Core::doConfigPageInit` runs), so the
+sixty-odd columns this tool does not model are FreePBX's to fill — and the
+result is **verified by re-reading the PBX**, because a framework call returning
+0 is not evidence that the objects exist.
+
+The way back is PHP, not the SQL `ava_routes.py` writes: `delUser`/`delDevice`
+clear the technology rows, the voicemail box and the AstDB subtree, and a raw
+`DELETE` is exactly the orphan this preflight refuses to create over.
+
+**Three legs of D6 belong to somebody else, and are reported rather than
+duplicated:** inbound routes (`ava_routes.py`, below), the account's voice
+mapping (`PUT /api/voice/agent-mapping`), and the WebRTC endpoint, whose owner is
+still an open decision (`docs/ava-capstone-convergence.md` §11.5) — the tool
+creates the framework's endpoint and never the portal's fragment. The portal's
+own `freepbx.addExtension` path (the FreePBX API, from the Phone screen) is the
+one remaining second writer; delegating it onto this preflight is the open half
+of P3, named in the convergence doc rather than implied here.
 
 ## MS Teams Direct Routing (Cerulean trust plane)
 

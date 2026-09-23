@@ -69,7 +69,8 @@ def send(cmd, wait=1.5):
         except socket.timeout: break
     return out.decode(errors="replace")
 send(f"Action: Login\nUsername: {read_key(env,'FREEPBX_AMI_USER')}\nSecret: {read_key(env,'FREEPBX_AMI_SECRET')}")
-for c in ["ari show users", "dialplan show zeus-ai-accounts", "dialplan show zeus-ai-handoff"]:
+for c in ["ari show users", "dialplan show zeus-ai-accounts", "dialplan show zeus-ai-handoff",
+          "dialplan show zeus-ai-interview", "dialplan show zeus-ai-return"]:
     print(send(f"Action: Command\nCommand: {c}", 2.0))
 send("Action: Logoff", 0.4)
 EOF
@@ -84,12 +85,75 @@ What to look for:
 * **`dialplan show zeus-ai-accounts`** — one entry per DID, each ending in
   `Goto(zeus-ai-first-response,s,1)`. A DID that is not here is not wired: the
   router falls through to `zeus-ai-first-response` and the operator, and the
-  caller hears nothing useful (§7).
-* **`dialplan show zeus-ai-handoff`** should carry `824` → Capstone, `0` →
-  operator, `refused`, and a `_X.` catch-all that sends anything else to
-  `refused`. The gate is `GotoIf($["${ZEUS_CAPSTONE_ADDON}"="1"]?824,3:refused,1)`
-  — a hand-off that lands on `refused` is the entitlement gate working, not a
-  bug.
+  caller hears nothing useful (§7). Each entry also stamps the call envelope,
+  including `Set(AI_CONTEXT_TOKEN=${UNIQUEID})` — the handle
+  `/api/voice/context/{token}` resolves, so a hand-off can be told which account
+  and caller it has just been given. It is the call id, not a secret; the read
+  authenticates with `VOICE_CONTEXT_SECRET` (D2). An entry without it is a call
+  whose agents can fetch no context at all.
+* **`dialplan show zeus-ai-handoff`** should carry `824` →
+  `[zeus-ai-interview]`, `0` → operator, `refused`, and a `_X.` catch-all that
+  sends anything else to `refused`. The extension is an entry point, not a
+  target — see the context below. A hand-off that lands on `refused` is the
+  entitlement gate working, not a bug.
+* **`dialplan show zeus-ai-interview`** is where a hand-off is decided, per
+  account: `s` carries the gate
+  (`GotoIf($["${ZEUS_CAPSTONE_ADDON}"="1"]?target,1:zeus-ai-handoff,refused,1)`)
+  and `target` reaches `dograh-inbound,${ZEUS_CAPSTONE_TARGET},1`, a variable
+  rendered from the account's Capstone binding by `pbx/ava_routing.py`. An
+  empty target — or one naming a workflow this PBX does not carry — refuses to
+  the operator rather than reaching whichever agent `8000` happens to be.
+  **`dialplan show zeus-ai-return`** is the way back from Capstone: inert until
+  Capstone is pointed at it, which is why it is converged ahead of that change.
+
+### One row for the whole call
+
+Once the call is over, the question is "what happened?" rather than "where is
+it?", and the answer is one query — not three logs and a guess about which
+product answered. `voice_calls` (P4) holds one row per call keyed on Asterisk's
+`UNIQUEID`: the same value the dialplan stamps as `AI_CALL_ID` and the agents
+receive as `AI_CONTEXT_TOKEN`.
+
+```bash
+# on the voice host — the portal's own record, newest first
+sqlite3 /var/lib/docker/volumes/zeus-portal-data/_data/pbx.db \
+  "SELECT call_id, did, account_id, agent_slug, disposition, handoffs, started_at, ended_at
+     FROM voice_calls ORDER BY started_at DESC LIMIT 20;"
+
+# one call, by the id an operator has in front of them (a log line, a ticket)
+sqlite3 /var/lib/docker/volumes/zeus-portal-data/_data/pbx.db \
+  "SELECT * FROM voice_calls WHERE call_id = '1758500000.1234';"
+```
+
+What the columns mean, and the two traps:
+
+* **`disposition` is the path, not the outcome** — `in_progress`, `handed_off`,
+  `returned`, `concluded`. A call handed to Capstone that then ended stays
+  `handed_off` with an `ended_at`, because which agent the caller reached is the
+  fact worth keeping. A row with `in_progress` and an `ended_at` older than an
+  hour is not a call in progress: it is a `Hangup` this portal never saw (an AMI
+  reconnect is the usual cause), and the screen shows `started_at` beside it for
+  exactly that reason.
+* **`handoffs` is every hop, in order** — `[{"to":"capstone","at":…},
+  {"to":"ava","at":…}]` is a call that went out to Capstone and came back. An
+  empty array with a `handed_off` disposition cannot happen (the disposition is
+  set by the same call that appends), but a `handoffs` value that does not parse
+  is read as empty rather than breaking the row.
+* **No row at all** means the call never carried an envelope: it did not go
+  through `[zeus-ai-accounts]`. That is a routing finding (§2), not a logging
+  one — check the DID's route before looking for the call here.
+* **Who writes it:** `src/lib/ami-handler.ts`, from the channel's own events
+  (`VarSet` for the envelope, `Newexten` in `dograh-inbound` / `zeus-ai-return`
+  for the hand-offs). Neither agent reports anything, which is why the row exists
+  even for a call an agent died in the middle of. The screen an operator actually
+  reads is `/dashboard/voice` → **Live now → Call record**.
+* **The same call in the trace** (only when a collector is set): every span that
+  stands for a call carries the **call id in an attribute**, `zeus.call_id` — it
+  is an Asterisk id, not a hex trace id, so search SigNoz for the id in front of
+  you rather than for a trace. The `ami.cdr` span is the one to read when a CDR
+  goes missing: it records whether the row was `persisted` (§2.7). With
+  `OTEL_EXPORTER_OTLP_ENDPOINT` unset the portal logs `OTEL: disabled` at startup
+  and sends nothing — that is the default, not a fault.
 
 ## 3. `ari_connected: false` — the two files must agree
 
@@ -245,6 +309,28 @@ Then the failure is outside AVA:
   that tool is this case; exit 1 is a route a re-run *will* converge. Deliberately
   no timer does this for you — a route the table had no evidence for is a
   one-off, not a 15-minute job.
+
+* **A WebRTC softphone will not register, while calls work.** That is the shape
+  of the portal's WebRTC endpoint, not of a wrong password. `pjsip_ext_<ext>.conf`
+  is written by the portal, and until 2026-09-22 the portal also added
+  `#include` for it to `pjsip.conf` — a file FreePBX regenerates. So the
+  fragment is either not loaded at all (the secret the portal handed the browser
+  authenticates nothing) or loaded as a **second `[<ext>]`** beside the endpoint
+  FreePBX generates for the same extension. The API now says which of the two it
+  believes (the `softphone` block on the extension response), and on the box it is
+  a measurement, not a judgement call:
+
+  ```bash
+  python3 pbx/pjsip_owner_check.py --live        # exit 1 names which, and where
+  python3 pbx/pjsip_owner_check.py --live --json # the raw facts, to keep
+  ```
+
+  Do **not** "fix" it by moving the include to `pjsip_custom_post.conf` to make
+  it stick: that is what loads the duplicate, and a duplicate object id makes
+  res_pjsip refuse the whole pjsip configuration — every endpoint, not just this
+  one. Who owns the endpoint is an open decision
+  ([ava-capstone-convergence.md](ava-capstone-convergence.md) §11); until it is
+  made, the safe state is the one where the portal's fragment is inert.
 
 ## Before you escalate
 
