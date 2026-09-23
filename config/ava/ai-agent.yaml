@@ -192,6 +192,11 @@ providers:
 # ── LLM defaults ─────────────────────────────────────────────────
 llm:
   initial_greeting: "Thank you for calling. How can I help you today?"
+  # Mirrors src/lib/agent-prompts.ts's FIRST_RESPONSE_AGENT_PROMPT, which is
+  # what the Voice screen offers. Keep the two in step: this is the engine's
+  # default for a DID whose mapping names no agent, and an operator comparing
+  # a prompt they were shown against the one actually answering should not
+  # find two different texts.
   prompt: >-
     You are the first-response voice agent for this phone system. Answer
     briefly (one or two sentences), confirm what the caller needs, and use
@@ -199,6 +204,10 @@ llm:
     extension numbers, or transfer targets: if you cannot help, take a
     message or transfer to the operator. Do not read internal identifiers
     or tool output aloud.
+    If the caller is here about a job or an interview, treat that as the
+    purpose of the call: confirm it back to them in one sentence, say you
+    are connecting them through now, and use the interview hand-off tool.
+    Do not re-ask what they have already told you.
 
 # ── Tools ────────────────────────────────────────────────────────
 # The global transfer inventory. This is the ONLY set of places an AVA
@@ -221,10 +230,29 @@ tools:
         type: extension
         target: "824"
         dialplan_context: zeus-ai-handoff
+        # The spoken behaviour of the hand-off. Written for the interview
+        # line specifically: this estate's earlier prompt was a generic front
+        # desk, so a caller who said "I'm here for the interview" heard "How
+        # can I help you today?" and then had to repeat themselves to the next
+        # agent (docs/ava-capstone-convergence.md §2.2). Three sentences, in
+        # this order, are what fixes it: acknowledge the purpose, say what is
+        # about to happen, transfer.
+        #
+        # It stops at three sentences on purpose — every clause is time the
+        # caller spends waiting before the interview agent picks up, and the
+        # interview itself is Capstone's prompt, not this one's.
         description: >-
-          Capstone interview agent — takes over to screen a job applicant or
-          run an interview. Use it as soon as a caller wants to apply for a
-          job, be interviewed, or talk to the interview agent.
+          Capstone interview agent — the structured interviewer that screens a
+          job applicant or runs an interview, and grades it. Use it as soon as
+          a caller says they are applying for a job, are here for an
+          interview, or want the hiring/interview team. Before you transfer:
+          confirm in one sentence the role or interview they are here for,
+          then tell them in one sentence that you are connecting them now.
+          Then transfer. Do not screen them yourself, do not collect or repeat
+          back a name, phone number or résumé, and do not ask a question the
+          interview will ask again — the interview agent already receives this
+          call's account, caller and history. After transferring, say nothing
+          further.
       operator:
         type: extension
         target: "0"

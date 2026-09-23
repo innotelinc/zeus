@@ -291,6 +291,11 @@ services:
       ASTERISK_AMI_USERNAME: ${FREEPBX_AMI_USER:-pbxportal}
       ASTERISK_AMI_SECRET: ${FREEPBX_AMI_SECRET:-}
 
+      # ── Call-context read (GET /api/voice/context/{token}) ──
+      # Bearer credential for the machines that read a call's context: Capstone
+      # at the hand-off, AVA at the hand-back. Empty refuses every read.
+      VOICE_CONTEXT_SECRET: ${VOICE_CONTEXT_SECRET:-}
+
       # ── WebRTC / TURN ──
       # WSS URL the browser dials for the softphone. Prefer FREEPBX_WSS_URL
       # (same override capstone uses) — the :8089 form below reaches Asterisk
