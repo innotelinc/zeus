@@ -397,23 +397,32 @@ services:
 
   # On-box STT/TTS for the zeus_hybrid pipeline. Slow to start — models load
   # at boot — but it is what keeps caller audio on the premises.
-  #      # Defaults match the pipeline this estate actually runs: Vosk STT + Piper
-      # TTS, and no local LLM (reasoning goes to the LAN gateway, so llama.cpp
-      # would only add a torch-sized image).
-      #
-      # **Voice quality.** Piper (`en_US-lessac-medium`) is the CPU default and
-      # it is audibly synthetic next to Capstone/dograh's cloud voice — which is
-      # what a caller notices first on the interview line. Kokoro (82M, on-box,
-      # no WAN hop) is the same trade the estate already makes for STT, and the
-      # switch is three lines in .env, not a code change:
-      #
-      #   INCLUDE_KOKORO=true LOCAL_TTS_BACKEND=kokoro LOCAL_TTS_VOICE=af_heart
-      #   docker compose --profile voice build local-ai-server
-      #
-      # The build argument and the env must agree: `INCLUDE_KOKORO` installs the
-      # package, `LOCAL_TTS_BACKEND=kokoro` selects it, and a Kokoro backend
-      # without the model files falls back to a HuggingFace download mid-call —
-      # scripts/fetch-ava-models.sh --tts kokoro stages them instead.
+  #
+  # **Voice: Kokoro, the same voice Capstone/dograh speaks with.** AVA used to
+  # run Piper (`en_US-lessac-medium`), the CPU default, and a caller hears that
+  # as synthetic and clipped next to the interview agent on the other side of a
+  # hand-off. Kokoro (82M, on-box, no WAN hop) is the model Capstone's
+  # kokoro-fastapi serves, and `LOCAL_TTS_VOICE=af_heart` is that service's own
+  # default voice — so AVA and dograh speak with one voice instead of two. It
+  # costs image weight and one model fetch, and buys the call's first
+  # impression. Piper stays one line away for a box that cannot pay either:
+  #
+  #   LOCAL_TTS_BACKEND=piper            # .env, then recreate local-ai-server
+  #
+  # The build argument and the env must agree: `INCLUDE_KOKORO` installs the
+  # package, `LOCAL_TTS_BACKEND=kokoro` selects it, and a Kokoro backend with no
+  # model files reaches for HuggingFace *mid-call* — a turn that downloads its
+  # voice is a turn the caller hears as silence. Stage them first; the fetch
+  # now follows LOCAL_TTS_BACKEND, so the two cannot disagree:
+  #
+  #   bash scripts/fetch-ava-models.sh --tts kokoro
+  #   docker compose --profile voice up -d --build local-ai-server
+  #
+  # `bash scripts/deploy-ava-voice.sh --check` verifies the staged model against
+  # the backend in .env before any of this starts.
+  #
+  # No local LLM on purpose: reasoning goes to the LAN gateway, so llama.cpp
+  # would only add a torch-sized image.
   local-ai-server:
     profiles: ["voice"]
     build:
@@ -425,7 +434,7 @@ services:
         - INCLUDE_FASTER_WHISPER=${INCLUDE_FASTER_WHISPER:-false}
         - INCLUDE_WHISPER_CPP=${INCLUDE_WHISPER_CPP:-false}
         - INCLUDE_PIPER=${INCLUDE_PIPER:-true}
-        - INCLUDE_KOKORO=${INCLUDE_KOKORO:-false}
+        - INCLUDE_KOKORO=${INCLUDE_KOKORO:-true}
         - INCLUDE_LLAMA=${INCLUDE_LLAMA:-false}
     image: zeus-ava-local-ai:${AVA_VERSION:-v7.6.1}
     container_name: zeus-ava-local-ai
@@ -433,7 +442,7 @@ services:
     network_mode: host
     environment:
       - LOCAL_STT_BACKEND=${LOCAL_STT_BACKEND:-vosk}
-      - LOCAL_TTS_BACKEND=${LOCAL_TTS_BACKEND:-piper}
+      - LOCAL_TTS_BACKEND=${LOCAL_TTS_BACKEND:-kokoro}
       # The spoken voice. Piper reads it from LOCAL_TTS_MODEL_PATH; Kokoro reads
       # it from KOKORO_VOICE, then LOCAL_TTS_VOICE (local_ai_server/config.py),
       # so one variable names the voice for either backend. Kokoro's own
