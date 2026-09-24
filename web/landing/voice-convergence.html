@@ -1247,14 +1247,14 @@
   <td>Dialplan</td>
   <td><code>[dograh-inbound]</code>, agent Custom Extensions <code>8000+</code>, <code>[from-internal-custom]</code> (append-shared)</td>
   <td>The same contexts converged by <code>pbx/asterisk_converge.py</code>, one owner per fragment (<code>--owner capstone</code>)</td>
-  <td><code>pbx/tests/test_ava_dialplan_contract.py</code>; <code>asterisk_converge.py --owner capstone --check</code> against the live file</td>
+  <td><code>pbx/tests/test_ava_dialplan_contract.py</code> + <code>pbx/tests/test_parity_checklist.py</code> (off-host); <code>asterisk_converge.py --owner capstone --check</code> against the live file</td>
   </tr>
   <tr>
   <td>2</td>
   <td>ARI</td>
   <td><code>[dograh]</code> user, dograh's <code>Stasis(dograh_&lt;hex&gt;)</code> app registered</td>
   <td>The same user in the real <code>/etc/asterisk/ari.conf</code> (no include), same host/port/secret</td>
-  <td><code>python3 pbx/ava_ari_check.py</code> (engine + PBX env agree), <code>curl -s localhost:8088/ari/applications</code></td>
+  <td><code>python3 pbx/ava_ari_check.py</code> (engine + PBX env agree) + <code>pbx/tests/test_parity_checklist.py</code> (off-host, one user per owner); <code>curl -s localhost:8088/ari/applications</code></td>
   </tr>
   <tr>
   <td>3</td>
@@ -1324,7 +1324,7 @@
   <td>Fail-closed default</td>
   <td>the bundled PBX is the default topology</td>
   <td>With <code>CAPSTONE_PBX=zeus</code> and no profile, nothing brings up a second PBX — <code>freepbx</code>, <code>coturn</code> and <code>pbx-portal</code> all sit behind <code>profiles: ["standalone"]</code> / <code>["portal"]</code>, so it takes a flag to start one</td>
-  <td><code>docker compose config --services</code> on the shared box names no <code>freepbx</code>/<code>coturn</code>/<code>pbx-portal</code></td>
+  <td><code>docker compose config --services</code> on the shared box names no <code>freepbx</code>/<code>coturn</code>/<code>pbx-portal</code>; <code>pbx/tests/test_parity_checklist.py</code> reads that from the sibling checkout off-host</td>
   </tr>
   </tbody>
   </table>
@@ -1343,14 +1343,54 @@
     (off-host, in <code>pbx/tests</code>) so the Capstone side can flip a default without
     taking the voice plane down with it.</li>
   </ul>
+  <p><strong>As built (2026-09-24): the three rows Zeus owes are checked off-host.</strong>
+  <code>pbx/tests/test_parity_checklist.py</code> closes the half of rows 1, 2 and 12 that
+  does not need <code>.30</code>, and is explicit about which half that is:</p>
+  <ul>
+  <li><strong>Row 1</strong> — the shipped <code>pbx/asterisk/extensions_custom.conf</code> defines no
+    context another product owns, and reaches a Capstone workflow only through
+    <code>${ZEUS_CAPSTONE_TARGET}</code> rather than a literal. Converged beside a
+    <code>--owner capstone</code> fragment, in <strong>either</strong> order, every context survives, each
+    product's marked segment stays its own, and the pair is a fixed point for both
+    owners — which is what makes the two independent <code>--check</code> runs mean
+    something rather than pass by construction.</li>
+  <li><strong>Row 2</strong> — the two ARI fragments define disjoint users (<code>ari.conf</code> the
+    portal's, <code>ari_additional_custom.conf</code> AVA's, <code>CONVERGE_OWNED</code> naming both),
+    and converging them beside a Capstone <code>[dograh]</code> yields each user exactly
+    once with <code>[general]</code> and the foreign user untouched. The duplicate is the
+    failure this row exists for: sorcery refuses the <em>whole</em> file over one
+    repeated object, so one duplicate costs every ARI user.</li>
+  <li><strong>Row 12</strong> — read from the sibling Capstone checkout (<code>CAPSTONE_COMPOSE</code>,
+    else <code>../capstone/docker-compose.yml</code>; <strong>skipped, never passed</strong>, when it is
+    absent): <code>freepbx</code>, <code>coturn</code> and the bundled <code>portal</code> each carry a non-empty
+    <code>profiles:</code>, so <code>docker compose config --services</code> with no flag names none of
+    them. Zeus's own half is asserted beside it — the full-stack compose supplies
+    the <code>freepbx</code> and <code>coturn</code> those services vacate, and the portal-only compose
+    names no PBX at all.</li>
+  </ul>
+  <p>Rows 3 and 4 keep their "checked with a call" rule and rows 5–11 stay as
+  written: this is the half of the gate this repo owns, not the whole one.</p>
+  <p><strong>Found while checking row 2 — measured, not yet fixed.</strong> A fragment whose last
+  section is followed by comment prose is <em>not</em> byte-idempotent through
+  <code>asterisk_converge.py</code>: that prose lands as the <strong>next</strong> section's attributed
+  prefix on the target, and the next apply installs a second copy of it inside the
+  first section's body. <code>pbx/asterisk/ari.conf</code> ends in exactly that prose (the
+  note about AVA's user deliberately not being rendered there), and the measured
+  growth is 3155 → 4036 bytes on one re-apply, per run. The <em>users</em> stay correct,
+  so nothing a caller reaches is wrong — but <code>--check</code> never converges, which
+  makes the sync timer apply (and the file grow) on every tick. The test records
+  this and asserts the invariants that do hold rather than pinning the growth as
+  expected; the repair belongs in the replace policy (<code>_replace_context</code>), not in
+  the fragments.</p>
   <p><strong>Exit:</strong> every row checked on the shared box, in one run, recorded — then
   Capstone's item 7 ("deprecate the bundled PBX as the default topology") is a
   default flip, not a migration.</p>
   <hr />
   <h2 id="9-verification">9. Verification</h2>
   <p>Unit level (already the house style — no PBX needed):</p>
-  <pre><code class="language-bash">python3 -m unittest discover -s pbx/tests -v        # routing, gate, converge, ARI agreement,
-                                                     # and the hand-off dialplan's contract
+  <pre><code class="language-bash">python3 -m unittest discover -s pbx/tests -v        # routing, gate, converge, ARI agreement, the
+                                                     # hand-off dialplan's contract, and the
+                                                     # structural-parity rows Zeus owns (§8)
   python3 -m unittest discover -s scripts/tests -v    # seeding, provenance, env writes
   npm test                                            # portal
   </code></pre>
