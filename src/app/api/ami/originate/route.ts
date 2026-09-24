@@ -2,7 +2,7 @@ import { NextResponse } from "next/server";
 import { requireUser } from "@/lib/api-helpers";
 import { getAmiClient } from "@/lib/ami";
 import db from "@/lib/db";
-import { resolveOwnedCallerId } from "@/lib/outbound-caller-id";
+import { resolveCallerIdForUser } from "@/lib/outbound-caller-id";
 import { z } from "zod";
 
 export const dynamic = "force-dynamic";
@@ -57,14 +57,7 @@ export async function POST(req: Request) {
     );
   }
 
-  const callerId = resolveOwnedCallerId(
-    caller_id,
-    (
-      db
-        .prepare("SELECT did FROM phone_numbers WHERE user_id = ? AND status = 'active'")
-        .all(user.id) as Array<{ did: string }>
-    ).map((number) => number.did),
-  );
+  const callerId = resolveCallerIdForUser(user.id, caller_id);
   if (callerId === null) {
     return NextResponse.json(
       { error: "Caller ID must be an active phone number on your account" },
