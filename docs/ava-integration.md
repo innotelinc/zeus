@@ -339,6 +339,72 @@ Admin edits are invisible to this on purpose: only *provenance* is judged, so
 an operator who tunes a prompt through the UI is not nagged, while a template
 fix that never reached the engine is not missed.
 
+The live instance of this is caller-visible rather than theoretical: the
+seeded copy in this checkout predates the turn-taking windows and the LLM
+ceiling below it, and `bash scripts/fetch-ava.sh --check` says so —
+
+```
+✗ runtime config was seeded from an older config/ava/ai-agent.yaml — …
+  then: bash scripts/fetch-ava.sh --force
+```
+
+— which is why a host that has not re-seeded is still cutting its own
+sentences short, at the old value for every window in §“Turn-taking”.
+
+### The voice
+
+Speech is on-box, and which voice it is is one `.env` pair. `fetch-ava-models.sh`
+reads that pair for the same reason `deploy-ava-voice.sh` does, so the model
+that is staged cannot be the one the server is not running:
+
+| variable | default | what it decides |
+|---|---|---|
+| `LOCAL_TTS_BACKEND` | `kokoro` | which TTS engine `local-ai-server` loads |
+| `LOCAL_TTS_VOICE` | `af_heart` | the voice — Kokoro reads it via `KOKORO_VOICE`, piper ignores it and uses `LOCAL_TTS_MODEL_PATH` |
+
+Kokoro is the default because it is the model Capstone/dograh's
+`kokoro-fastapi` serves and `af_heart` is that service's own default voice, so
+the first-response agent and the interview agent speak with **one** voice
+instead of two — which is the thing a caller notices across a hand-off. Piper
+(`en_US-lessac-medium`) stays one line away for a box that cannot carry
+Kokoro's image weight and models; it is CPU-cheap and audibly synthetic, and it
+is what this estate ran before.
+
+Neither engine ships in the image. A backend whose model is not on disk falls
+back to a HuggingFace download **mid-call**, and a turn that downloads its
+voice is a turn the caller hears as silence — so the order is models, then
+build:
+
+```bash
+bash scripts/fetch-ava-models.sh                     # stages what .env selects
+INCLUDE_KOKORO=true docker compose --profile voice up -d --build local-ai-server
+```
+
+### Turn-taking
+
+Barge-in is how a caller takes the floor back, and for this pipeline the
+detector is Asterisk's own `TALK_DETECT` on the caller channel: the engine
+enables it over ARI, because AudioSocket RTP can be paused or altered while a
+channel is playing and a detector on the channel itself cannot be. The energy
+thresholds in `barge_in` are the fallback for a channel where that variable
+could not be set (the engine logs `Failed to enable TALK_DETECT` when so).
+
+The windows in `config/ava/ai-agent.yaml` are the engine's own defaults
+(`BargeInConfig`) and they exist to keep the agent's voice, returning off the
+caller's handset, from being counted as the caller talking. Shortening
+`initial_protection_ms` / `post_tts_end_protection_ms` hands that echo to the
+detector as soon as the first syllables land, and the caller hears the agent
+cut itself off. Change them against a number, not a preference:
+
+```bash
+# the windows the engine actually loaded (it reads the mounted copy, not the template)
+curl -s localhost:15000/metrics | grep ai_agent_config_barge_in_
+# how often interruptions were applied — the engine's own verdict on the tuning
+curl -s localhost:15000/metrics | grep ai_agent_barge_in_actions_total
+# per call, on the record the Voice screen reads
+curl -s localhost:8770/api/calls?limit=5   # "barge_in_count" per call
+```
+
 ### Agents
 
 AVA v7.4+ is **agent-only and fails closed**, so a DID whose agent does not
