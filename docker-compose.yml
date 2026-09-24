@@ -308,6 +308,8 @@ services:
       # because another product on this host holds 8090 on loopback).
       - HEALTH_BIND_HOST=0.0.0.0
       - HEALTH_BIND_PORT=${AVA_HEALTH_PORT:-15000}
+      # Shared with ai-engine-admin so its remote sessions probe can authenticate.
+      - HEALTH_API_TOKEN=${HEALTH_API_TOKEN:-}
       - ELEVENLABS_API_KEY=${ELEVENLABS_API_KEY:-}
       - TZ=${TZ:-America/New_York}
       - PYTHONUNBUFFERED=1
@@ -362,6 +364,10 @@ services:
       - ASTERISK_ARI_USERNAME=${AVA_ARI_USER:-zeus-ava}
       - ASTERISK_ARI_PASSWORD=${AVA_ARI_SECRET:-}
       - OMNIROUTE_API_KEY=${OMNIROUTE_API_KEY:-}
+      # The admin probe calls the host-networked engine by LAN IP. The sessions
+      # endpoint is protected, so share the engine's bearer token when set.
+      - AI_ENGINE_HEALTH_URL=http://${AVA_ASTERISK_HOST:-192.168.1.30}:${AVA_HEALTH_PORT:-15000}
+      - HEALTH_API_TOKEN=${HEALTH_API_TOKEN:-}
     volumes:
       # PROJECT_ROOT: config/ai-agent.yaml + config/users.json + .env.
       # Writable — this is where the admin UI persists agent and config edits.
