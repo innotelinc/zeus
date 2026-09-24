@@ -262,12 +262,41 @@ tools:
           when nothing else fits.
 
 # ── Turn-taking ──────────────────────────────────────────────────
+# Barge-in is how a caller takes the floor back. For this pipeline the detector
+# is Asterisk's own TALK_DETECT on the caller channel, set by the engine over
+# ARI (`pipeline_talk_detect_enabled` defaults true in BargeInConfig):
+# AudioSocket RTP can be paused or altered while the engine is playing a
+# channel, and a detector on the channel itself cannot. The energy thresholds
+# below are the fallback for a channel where that variable could not be set —
+# the engine logs "Failed to enable TALK_DETECT" and uses them.
+#
+# The values are the engine's own shipped defaults (vendor/ava/src/config.py,
+# BargeInConfig); this deployment ran 700/150/100/100, which is more eager than
+# the engine on every path, and the audible result is the agent cutting its own
+# sentence short. The protection windows exist to keep the agent's voice,
+# coming back off the caller's handset, from being counted as the caller
+# talking — shortening them by 100-150 ms hands that echo to the detector as
+# soon as the first syllables land. Change these against a measurement, not a
+# preference: the call record carries `barge_in_count`, and the engine's
+# :15000/metrics carries the windows it loaded (ai_agent_config_barge_in_*) and
+# the interruptions it applied (ai_agent_barge_in_actions_total).
 barge_in:
   enabled: true
-  energy_threshold: 700
-  initial_protection_ms: 100
-  min_ms: 150
-  post_tts_end_protection_ms: 100
+  # RMS the fallback path needs before overlap counts at all. 1000 is the
+  # engine default; a lower value has to be justified by a demonstrably quiet
+  # line, because every click and breath over it is caller speech to the VAD.
+  energy_threshold: 1000
+  # Ignore talk from the start of a TTS utterance for this long (the echo of the
+  # opening syllables is the loudest), and for the same reason for this long
+  # after a channel ends. The post-TTS guard is the window the media receive
+  # paths drop audio in, so this and the audio path have to agree.
+  initial_protection_ms: 200
+  post_tts_end_protection_ms: 250
+  # Continuous talk that counts as an interruption, and the shortest gap
+  # between two of them. Without the cooldown, the pauses inside one sentence
+  # register as several interruptions and the agent restarts its reply.
+  min_ms: 250
+  cooldown_ms: 500
 
 vad:
   enhanced_enabled: true
