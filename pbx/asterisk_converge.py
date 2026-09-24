@@ -116,6 +116,20 @@ def _ensure_trailing_newline(block_lines: list[str]) -> list[str]:
     return block_lines
 
 
+def _split_trailing_comment_run(lines: list[str]):
+    """Separate a final comment/blank run from a section's executable body.
+
+    A fragment is allowed to document a section after its directives.  The
+    parser cannot tell that documentation from the prefix of the next section
+    once the section has been followed by another header, so keep the tail as
+    explicit source metadata instead of putting it in the body twice.
+    """
+    split = len(lines)
+    while split and COMMENT_LINE_RE.match(lines[split - 1]):
+        split -= 1
+    return lines[:split], lines[split:]
+
+
 # --------------------------------------------------------------------------
 # merge
 # --------------------------------------------------------------------------
@@ -123,10 +137,13 @@ def _ensure_trailing_newline(block_lines: list[str]) -> list[str]:
 def _source_contexts(source_text: str):
     """Return ordered {name: {"full": lines, "inner": lines}}.
 
-    `full` is the whole context block (attributed comment prefix + header +
-    body) — used when the product owns the context wholesale. `inner` is the
-    body *after* the header, used for append-shared insertions so an owner's
-    segment never re-declares the context header inside the shared one.
+    `full` is the context block (attributed comment prefix + header + body)
+    with its final comment/blank run held separately in `tail` — used when the
+    product owns the context wholesale. `inner` is the body *after* the header,
+    used for append-shared insertions so an owner's segment never re-declares
+    the context header inside the shared one. The separate tail prevents a
+    comment run from being counted as both a preceding section's prose and the
+    following section's prefix after a serialize/parse round trip.
     """
     seen: dict[str, dict] = {}
     for kind, *rest in split_blocks(source_text):
@@ -138,9 +155,12 @@ def _source_contexts(source_text: str):
         hdr_idx = next((i for i, ln in enumerate(full)
                         if SECTION_RE.match(ln)), None)
         inner = full[hdr_idx + 1:] if hdr_idx is not None else []
+        full_core, tail = _split_trailing_comment_run(full)
+        inner_core, _inner_tail = _split_trailing_comment_run(inner)
         seen[name] = {
-            "full": _ensure_trailing_newline(full),
-            "inner": _ensure_trailing_newline(inner),
+            "full": _ensure_trailing_newline(full_core),
+            "inner": _ensure_trailing_newline(inner_core),
+            "tail": _ensure_trailing_newline(tail),
         }
     return seen
 
@@ -186,7 +206,7 @@ def merge_into(target_text: str, source_text: str, owner: str,
         if name in append_shared:
             blocks = _append_shared(blocks, name, owner, src_ctx["inner"])
         else:
-            blocks = _replace_context(blocks, name, src_ctx["full"])
+            blocks = _replace_context(blocks, name, src_ctx["full"], src_ctx["tail"])
     return serialize(blocks)
 
 
@@ -199,7 +219,8 @@ def _split_prefix(lines: list[str]):
     return lines[:hdr], lines[hdr:]
 
 
-def _replace_context(blocks, name: str, src_body: list[str]) -> list:
+def _replace_context(blocks, name: str, src_body: list[str],
+                      src_tail: list[str] | None = None) -> list:
     """Replace target's context `name` with the source body, in place.
     Append at EOF when absent.
 
@@ -207,22 +228,44 @@ def _replace_context(blocks, name: str, src_body: list[str]) -> list:
     it may document this section, or it may trail the previous owner's block
     (an appended context can pick up the file's trailing comments as its
     attributed prefix). Deleting it would eat another owner's text, so the
-    source's own doc prefix is installed only when the target has none."""
+    source's own doc prefix is installed only when the target has none.
+
+    `src_tail` is a source fragment's final comment run.  Once another context
+    follows it, the generic parser attributes that run to the following
+    context.  Re-installing it here as well would duplicate the prose on every
+    apply.  If the next context already carries exactly this tail, leave it
+    there; otherwise put it back at EOF with the section it documents.
+    """
+    src_tail = src_tail or []
     idxs = [i for i, blk in enumerate(blocks) if blk[0] == "ctx" and blk[1] == name]
     src_above, src_hdr_body = _split_prefix(src_body)
     if not idxs:
-        blocks.append(("ctx", name, src_body))
+        blocks.append(("ctx", name, _ensure_trailing_newline(src_body + src_tail)))
         return blocks
     first = idxs[0]
     blk_type, _, body = blocks[first]
     tgt_above, _tgt_hdr = _split_prefix(body)
     has_comment = any(l.lstrip().startswith(";") for l in tgt_above)
+
+    tail_is_next_prefix = False
+    if src_tail and first + 1 < len(blocks) and blocks[first + 1][0] == "ctx":
+        next_above, _next_hdr = _split_prefix(blocks[first + 1][2])
+        # The next context may also have its own document prefix after this
+        # tail (for example `ari.conf`'s prose followed by AVA's file header),
+        # so the tail is a contiguous part of that prefix rather than the
+        # whole prefix.  A list slice keeps the match byte-exact.
+        tail_is_next_prefix = any(
+            next_above[i:i + len(src_tail)] == src_tail
+            for i in range(len(next_above) - len(src_tail) + 1)
+        ) if src_tail else False
+
+    new_tail = [] if tail_is_next_prefix else src_tail
     if has_comment:
         # foreign or previously-installed doc comment: keep it untouched
-        new_body = tgt_above + src_hdr_body
+        new_body = tgt_above + src_hdr_body + new_tail
     else:
         # blank-only prefix: swap in the source's own doc comment
-        new_body = src_above + src_hdr_body
+        new_body = src_above + src_hdr_body + new_tail
     blocks[first] = (blk_type, name, _ensure_trailing_newline(new_body))
     # drop any duplicate definitions of the same context (later ones)
     for idx in sorted(idxs[1:], reverse=True):

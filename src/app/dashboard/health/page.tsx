@@ -166,9 +166,12 @@ export default function HealthPage() {
   }, []);
 
   useEffect(() => {
-    fetchHealth();
+    const initial = window.setTimeout(() => void fetchHealth(), 0);
     const interval = setInterval(fetchHealth, 15_000);
-    return () => clearInterval(interval);
+    return () => {
+      window.clearTimeout(initial);
+      clearInterval(interval);
+    };
   }, [fetchHealth]);
 
   const statusLabel = (s: string) =>

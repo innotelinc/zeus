@@ -61,6 +61,27 @@ class ReplaceTest(unittest.TestCase):
         self.assertEqual(merged2.count("exten => _Z.,1,NoOp"), 1)
         self.assertIn("Wait(1)", merged2)
 
+    def test_trailing_source_comments_are_idempotent_after_a_following_context(self):
+        # A source's final prose is parsed as the next section's prefix on
+        # the next pass.  The replacement policy must recognise that exact
+        # tail instead of installing it in both contexts.
+        source = (
+            "[from-zeus-portal]\n"
+            "exten => _Z.,1,NoOp()\n"
+            "\n"
+            "; This prose documents the portal section.\n"
+            "; It must not grow on every timer tick.\n"
+        )
+        follower = "[dograh-inbound]\nexten => 8000,1,Stasis(dograh)\n"
+        once = ac.merge_into(self.STOCK, source, owner="zeus")
+        once = ac.merge_into(once, follower, owner="capstone")
+        twice = ac.merge_into(once, source, owner="zeus")
+        self.assertEqual(twice, once)
+        self.assertEqual(twice.count("This prose documents"), 1)
+        self.assertEqual(
+            ac.merge_into(twice, follower, owner="capstone"), twice
+        )
+
     def test_appends_when_context_missing_at_eof(self):
         merged = ac.merge_into("", self.ZEUS, owner="zeus")
         self.assertTrue(merged.startswith("; Zeus portal dialplan\n[from-zeus-portal]"))

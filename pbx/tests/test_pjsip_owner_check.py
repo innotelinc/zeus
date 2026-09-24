@@ -484,6 +484,32 @@ class AsteriskOutputTest(unittest.TestCase):
             "Transport:  transport-wss             wss      0      0\n"
         )
         self.assertEqual(check.parse_transports(text), {"transport-udp", "transport-wss"})
+        self.assertEqual(
+            check.parse_transport_types(text),
+            {"transport-udp": "udp", "transport-wss": "wss"},
+        )
+
+    def test_freepbx_generated_wss_id_is_still_recognised(self):
+        """FreePBX names a live WSS listener by its bind, not `transport-wss`."""
+        text = (
+            "Transport:  0.0.0.0-udp               udp      3     96  0.0.0.0:5060\n"
+            "Transport:  0.0.0.0-wss               wss      3     96  0.0.0.0:8089\n"
+        )
+        self.assertEqual(
+            check.parse_transport_types(text),
+            {"0.0.0.0-udp": "udp", "0.0.0.0-wss": "wss"},
+        )
+        findings = check.verdict_asterisk(
+            {"101"},
+            {"0.0.0.0-udp", "0.0.0.0-wss"},
+            True,
+            "101",
+            transport_types=check.parse_transport_types(text),
+        )
+        wss = [f for f in findings if "WSS transport" in f.detail]
+        self.assertEqual(len(wss), 1)
+        self.assertIs(wss[0].ok, True)
+        self.assertIn("0.0.0.0-wss", wss[0].detail)
 
     def test_module_state_is_three_valued(self):
         self.assertTrue(

@@ -3,6 +3,7 @@ import { requireUser } from "@/lib/api-helpers";
 import { addonStatus } from "@/lib/addons";
 import { avaConfigured, callRecordId, getCall, listCalls, type AvaCall } from "@/lib/ava";
 import { isCapstoneHandoff, mightBeHandoff, toHandoffRow } from "@/lib/handoff";
+import { voiceCallsByCallId } from "@/lib/voice-calls";
 
 export const dynamic = "force-dynamic";
 
@@ -62,10 +63,17 @@ export async function GET(req: Request) {
     return mightBeHandoff(call) || agent.includes("capstone") || agent.includes("interview");
   });
 
+  const records = voiceCallsByCallId(
+    candidates.map((candidate) => candidate.call_id ?? ""),
+  );
   const handoffs = [];
   for (const candidate of candidates.slice(0, limit)) {
     const recordId = callRecordId(candidate);
     if (!recordId) continue;
+    // The AVA admin API is estate-wide. The switch-written voice_calls row is
+    // the account boundary; do not fetch a full record until it agrees with
+    // the signed-in customer.
+    if (records.get(candidate.call_id ?? "")?.account_id !== user.id) continue;
     const record = await getCall(recordId);
     if (record.state !== "ok") continue;
     if (!isCapstoneHandoff(record.data)) continue;

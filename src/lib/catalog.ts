@@ -23,14 +23,6 @@ const AGENTS_YEARLY_CENTS = Number(process.env.VOICE_AGENTS_YEARLY_CENTS ?? 4900
 /** Magnate (the ecosystem's billing platform) — shared with lib/magnate.ts. */
 const MAGNATE_URL = (process.env.MAGNATE_PUBLIC_URL || "https://app.magnate.innotel.us").replace(/\/+$/, "");
 
-/** Plans kept in the table for the subscribers already on them, but no longer
- *  offered to new ones. `business` is here: it stays billable for the
- *  subscriber on it while the public offer is one plan for everyone. */
-const UNLISTED = (process.env.ZEUS_UNLISTED_PLANS ?? "business")
-  .split(",")
-  .map((s) => s.trim().toLowerCase())
-  .filter(Boolean);
-
 export interface ServicePlan {
   id: string;
   name: string;
