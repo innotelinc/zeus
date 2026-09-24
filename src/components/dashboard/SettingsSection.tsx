@@ -31,6 +31,10 @@ const INTEGRATIONS: Array<{ label: string; key: string }> = [
   // profile it was never asked to run.
   { label: "Voice engine", key: "ava_engine" },
   { label: "Voice console", key: "ava_admin" },
+  // Whether the Phone screen's "Add extension" gate can read its three
+  // authorities (FreePBX's API, AMI, the mounted `/etc/asterisk`). Reported so
+  // the 503 a create would return is visible before anyone clicks.
+  { label: "Extension provisioning", key: "extension_preflight" },
 ];
 
 export default function SettingsSection({ user }: Props) {

@@ -22,6 +22,7 @@ interface HealthResponse {
     avantfax: ProbeResult;
     ava_engine: ProbeResult;
     ava_admin: ProbeResult;
+    extension_preflight: ProbeResult;
   };
 }
 
@@ -68,6 +69,11 @@ const serviceMeta: Record<
     label: "Voice console",
     desc: "AVA admin API behind the Voice screens",
     icon: "🎛️",
+  },
+  extension_preflight: {
+    label: "Extension provisioning",
+    desc: "FreePBX API, AMI and the Asterisk config mount the create gate reads",
+    icon: "🧾",
   },
 };
 
