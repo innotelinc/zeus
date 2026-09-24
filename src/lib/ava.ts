@@ -35,6 +35,36 @@ export function avaConfigured(): boolean {
 }
 
 /**
+ * What to log at startup when the voice engine is not configured, or null when
+ * there is nothing to say.
+ *
+ * `avaConfigured()` decides every Voice screen, and it is read from *this
+ * process's* environment. Compose reads `env_file` when it **creates** a
+ * container, so a portal created before `AVA_ADMIN_PASSWORD` was added to
+ * `.env` has the value on disk and not in the process — a state whose only
+ * symptom is an empty Voice screen, whose most obvious repair is a `docker
+ * compose restart` that cannot work, and which therefore costs a round trip
+ * worth avoiding. `/dashboard/health` reports the same fact as a state, but
+ * only once somebody thinks to look there; the boot log needs nobody (see
+ * docs/ava-runbook.md §7, and §10 for what a caller hears when the engine is
+ * down).
+ *
+ * Deliberately does not guess at the address: this portal is host-networked in
+ * the full stack and bridged in the dev profile, so "is AVA_ADMIN_URL right"
+ * has two different answers and the credential is the question either way.
+ */
+export function avaConfigurationWarning(): string | null {
+  if (avaConfigured()) return null;
+  return (
+    "the voice engine is not configured in this process: neither " +
+    "AVA_ADMIN_PASSWORD nor AVA_ADMIN_TOKEN is set, so the Voice screens will " +
+    "report it as not configured. Set the password in .env and recreate the " +
+    "portal — env_file is read at container CREATE time, so a restart reuses " +
+    "the environment the container already has (docs/ava-runbook.md §7)."
+  );
+}
+
+/**
  * Where the portal talks to the admin API. Exported so the health probe in
  * /api/health describes the same address the screens use, rather than a
  * second reading of the same variable that can drift from it.
