@@ -155,6 +155,7 @@
 <li><a href="#p2-capstone-as-a-per-account-skill-with-hand-back">P2 — Capstone as a per-account skill, with hand-back</a></li>
 <li><a href="#p3-one-provisioning-path-and-one-transaction-for-enablement">P3 — One provisioning path and one transaction for enablement</a></li>
 <li><a href="#p4-one-record-and-one-operator-view">P4 — One record and one operator view</a></li>
+<li><a href="#the-structural-parity-checklist-the-gate-for-retiring-capstones-bundled-pbx">The structural-parity checklist — the gate for retiring Capstone's bundled PBX</a></li>
 </ul>
 </li>
 <li><a href="#9-verification">9. Verification</a></li>
@@ -1210,6 +1211,141 @@
   log line, and the runbook says so.</p>
   <p><strong>Exit:</strong> for a call that moved AVA → Capstone → operator, one screen names the
   path, and one query returns its full record.</p>
+  <h3 id="the-structural-parity-checklist-the-gate-for-retiring-capstones-bundled-pbx">The structural-parity checklist — the gate for retiring Capstone's bundled PBX</h3>
+  <p>Both roadmap files (<code>docs/stack.md</code> item 1, and Capstone's own item 1) name
+  "the structural-parity checklist" as the gate for the last step of this
+  convergence — Capstone dialing Zeus as the <em>only</em> voice plane, with its bundled
+  <code>freepbx</code>/<code>coturn</code> profiles left off by default rather than merely unused — and
+  both point at it as though it were already written down: <code>docs/stack.md</code> cites
+  <code>innotel-platform-stack/docs/convergence-capstone-zeus.md</code>, which this checkout
+  does not carry. So the roadmap item could not be evaluated <em>from this repo</em> at
+  all, and a gate everybody agrees on and nobody can check is a decision made by
+  whoever happens to run the apply.</p>
+  <p>This section is the Zeus-side half of that gate, written where the roadmap item
+  lives: the layers, and for each one the check that says it is covered. If the
+  external plan's checklist is more specific than this table, that document wins —
+  but the rows below are what this repo can be held to, and the three rules under
+  the table are about reading it honestly.</p>
+  <p>Parity here means one thing only: <strong>every layer Capstone's bundled PBX supplies
+  is supplied by the shared plane, measured the same way, before the profile that
+  supplies it is turned off.</strong> The rows are the layers the two repos actually
+  name (<code>capstone/docs/zeus-integration.md</code> §3, §7); the check column is what
+  makes a row done rather than believed.</p>
+  <table>
+  <thead>
+  <tr>
+  <th>#</th>
+  <th>Layer</th>
+  <th>What the bundled PBX supplies</th>
+  <th>Parity on the shared plane</th>
+  <th>How it is checked</th>
+  </tr>
+  </thead>
+  <tbody>
+  <tr>
+  <td>1</td>
+  <td>Dialplan</td>
+  <td><code>[dograh-inbound]</code>, agent Custom Extensions <code>8000+</code>, <code>[from-internal-custom]</code> (append-shared)</td>
+  <td>The same contexts converged by <code>pbx/asterisk_converge.py</code>, one owner per fragment (<code>--owner capstone</code>)</td>
+  <td><code>pbx/tests/test_ava_dialplan_contract.py</code>; <code>asterisk_converge.py --owner capstone --check</code> against the live file</td>
+  </tr>
+  <tr>
+  <td>2</td>
+  <td>ARI</td>
+  <td><code>[dograh]</code> user, dograh's <code>Stasis(dograh_&lt;hex&gt;)</code> app registered</td>
+  <td>The same user in the real <code>/etc/asterisk/ari.conf</code> (no include), same host/port/secret</td>
+  <td><code>python3 pbx/ava_ari_check.py</code> (engine + PBX env agree), <code>curl -s localhost:8088/ari/applications</code></td>
+  </tr>
+  <tr>
+  <td>3</td>
+  <td>RTP</td>
+  <td><code>rtp_custom.conf</code> <strong>and</strong> the durable <code>kvstore_Sipsettings.rtpstart/rtpend</code> row</td>
+  <td>Zeus's host-published range covers the effective range; Capstone publishes none in add-on mode</td>
+  <td><code>docker exec zeus-freepbx asterisk -rx "rtp show settings"</code> inside the published block</td>
+  </tr>
+  <tr>
+  <td>4</td>
+  <td>STUN/TURN</td>
+  <td>the bundled <code>coturn</code> service</td>
+  <td>Zeus's coturn is primary; both resolve <code>PJSIP_STUN_TURN_ADDR</code> the same way</td>
+  <td><code>docker exec zeus-freepbx asterisk -rx "pjsip show settings"</code>, <code>.env</code> on the shared box</td>
+  </tr>
+  <tr>
+  <td>5</td>
+  <td>WSS / WebRTC</td>
+  <td><code>http.conf</code>, <code>websocket_client.conf</code>, certs</td>
+  <td>Zeus's <code>http_custom.conf</code> + the portal's WSS host serve the softphone and the dashboard's PBX view</td>
+  <td><code>DASHBOARD_PBX_WSS_HOST</code> resolves to the Zeus PBX; §7's surfaces load</td>
+  </tr>
+  <tr>
+  <td>6</td>
+  <td>FreePBX API</td>
+  <td><code>FREEPBX_URL=http://freepbx</code> for Capstone's backend and <code>sync_dograh_routes.py</code></td>
+  <td>The same GraphQL endpoint on <code>zeus-freepbx</code>; agent extensions written there, not locally</td>
+  <td><code>sync_dograh_routes.py --check</code> (Capstone repo, §7 step 3) against the Zeus PBX</td>
+  </tr>
+  <tr>
+  <td>7</td>
+  <td>Trunks &amp; routes</td>
+  <td>Capstone's local outbound route/trunk for campaigns</td>
+  <td>One trunk table, one caller-ID policy, on Zeus</td>
+  <td><code>asterisk -rx "dialplan show from-internal"</code> + a campaign test call (§5.3)</td>
+  </tr>
+  <tr>
+  <td>8</td>
+  <td>Sounds &amp; spool</td>
+  <td><code>asterisk-sounds</code>, <code>asterisk-spool</code>, <code>asterisk-logs</code>, <code>freepbx-www</code> volumes</td>
+  <td>The <code>pbx-*</code> volumes are the single set, owned by <code>zeus-freepbx</code> (already the case)</td>
+  <td><code>docker volume ls \| grep pbx-</code>, and a prompt that exists on the shared box</td>
+  </tr>
+  <tr>
+  <td>9</td>
+  <td>Recordings</td>
+  <td>Capstone's recording path into MinIO</td>
+  <td>Unchanged in add-on mode (Capstone keeps its own store) — the row is in the list because it is <em>called from</em> the dialplan</td>
+  <td>a call that records, and a CDR row in the shared DB (§2.7)</td>
+  </tr>
+  <tr>
+  <td>10</td>
+  <td>Entitlement</td>
+  <td><code>sync_dograh_routes.py</code> refuses an unentitled number/plan</td>
+  <td>The same refusal, at write time, on the shared plane</td>
+  <td>the route-write refusal in <code>capstone/docs/zeus-integration.md</code> §8 G7</td>
+  </tr>
+  <tr>
+  <td>11</td>
+  <td>Convergence ownership</td>
+  <td>Capstone's <code>capstone-pbx-sync</code> timer</td>
+  <td>Two timers, two owners, neither writing the other's context</td>
+  <td>both <code>--check</code> runs byte-identical in either order (G1's test)</td>
+  </tr>
+  <tr>
+  <td>12</td>
+  <td>Fail-closed default</td>
+  <td>the bundled PBX is the default topology</td>
+  <td>With <code>CAPSTONE_PBX=zeus</code> and no profile, nothing brings up a second PBX — <code>freepbx</code>, <code>coturn</code> and <code>pbx-portal</code> all sit behind <code>profiles: ["standalone"]</code> / <code>["portal"]</code>, so it takes a flag to start one</td>
+  <td><code>docker compose config --services</code> on the shared box names no <code>freepbx</code>/<code>coturn</code>/<code>pbx-portal</code></td>
+  </tr>
+  </tbody>
+  </table>
+  <p>Three rules for reading it, because the table is easy to read as a to-do list it
+  is not:</p>
+  <ul>
+  <li><strong>A row is satisfied by a check, not by a doc.</strong> Rows 1, 5 and 10 came from
+    work already recorded as done in the two repos; the others are the reason the
+    deprecation is still open, and none of them is closed by editing this table.</li>
+  <li><strong>Rows 3 and 4 are the ones that fail <em>late</em>.</strong> A media-plane mismatch is
+    silent until a call has audio in one direction only — the same shape as §2.7's
+    nine missing CDR days — so they are checked with a call, not with a config
+    read.</li>
+  <li><strong>The deprecation is a compose change on the Capstone side, not a Zeus one.</strong>
+    What this repo owes the gate is rows 1, 2 and 12 being verifiable here
+    (off-host, in <code>pbx/tests</code>) so the Capstone side can flip a default without
+    taking the voice plane down with it.</li>
+  </ul>
+  <p><strong>Exit:</strong> every row checked on the shared box, in one run, recorded — then
+  Capstone's item 7 ("deprecate the bundled PBX as the default topology") is a
+  default flip, not a migration.</p>
   <hr />
   <h2 id="9-verification">9. Verification</h2>
   <p>Unit level (already the house style — no PBX needed):</p>
