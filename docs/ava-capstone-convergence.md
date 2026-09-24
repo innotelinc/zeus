@@ -791,14 +791,22 @@ on the portal. Dograh's patched API image is deployed with
 context. Auth probes now distinguish the states correctly: no/wrong credential
 is 401, an unknown call is 404, and the AVA admin source is reachable.
 
-The controlled return call is **not yet claimed as passed**. The live portal
-still has no `voice_bindings` rows, no DID has been moved onto the AVA router,
-and the `7745057135` / `8005` / *Job Interview* mismatch is still unreconciled.
-The safe next move is a named pilot DID and workflow, not enabling every DID at
-once: write one binding, move one existing inbound route with
-`pbx/ava_routes.py --apply`, place/receive one call, then verify the same
-`call_id` in `voice_calls`, `return_outcome`, and the AVA/Dograh transcripts.
-Until that happens the deployed return is capability-verified, not
+**Pilot configured on `.30` (2026-09-24), call acceptance still open:** the
+portal now has one explicit binding, `4132643964 → 8000` (the active IT Help
+Desk Mock Interview), written through `PUT /api/voice/agent-mapping`. The live
+PBX reports all seven platform DIDs on `zeus-ai-router,s,1`; the generated
+account block carries the binding only for `4132643964`, while the other DIDs
+remain fail-closed with an empty target. The periodic sync timer is stopped
+during this controlled pilot so it cannot widen the change.
+
+The controlled return call is **not claimed as passed**. A local-media
+origination was attempted against the live AVA/Dograh path, but Asterisk's
+Local channel rejected the generated `zeus-ai-accounts` context as “No such
+extension/context” before AVA answered; no customer call was placed and no
+return transcript is being claimed. The next acceptance step is one controlled
+external call to `4132643964`, asking for the interview workflow, then verify
+the same `call_id` in `voice_calls`, `return_outcome`, and the AVA/Dograh
+transcripts. Until that happens the deployed return is capability-verified, not
 customer-call-verified.
 
 **Exit:** each interview DID reaches the *correct* workflow; an unknown target

@@ -84,12 +84,16 @@ Dograh ARI connects to Zeus/FreePBX):**
    public Capstone edge smoke is 15/15 after repointing
    `subscribe.capstone.innotel.us` from retired `:3040` to Zeus `:3001`.
 
-   This is still **not** a completed customer-call acceptance. There are no
-   `voice_bindings` rows, no DID has been moved to `zeus-ai-router`, and the
-   `7745057135` / `8005` / *Job Interview* mismatch is unresolved. The next safe
-   step is one named pilot: bind one DID, move one inbound route, place one call,
-   and verify the same call id in `voice_calls` plus the return outcome and both
-   transcripts before considering a fleet cutover.
+   **Pilot state (2026-09-24):** one explicit portal binding now exists:
+   `4132643964 → 8000` (IT Help Desk Mock Interview). The live PBX reports all
+   seven platform DIDs on `zeus-ai-router,s,1`; only the pilot DID carries a
+   non-empty `ZEUS_CAPSTONE_TARGET`, and the periodic sync timer is stopped so
+   it cannot widen the change. The controlled external call is still open: a
+   local-media origination was rejected by Asterisk before AVA answered, so no
+   customer call or return transcript is claimed. The next step is one real call
+   to `4132643964`, then verify the same call id in `voice_calls`, the return
+   outcome, and both transcripts before considering fleet cutover. The old
+   `7745057135` / `8005` / *Job Interview* mismatch remains unreconciled.
 
    **Roadmap item completed in the same pass:** `pbx/pjsip_owner_check.py`
    no longer reports WebRTC down merely because FreePBX 17 names the live WSS
