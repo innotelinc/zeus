@@ -43,11 +43,16 @@ export default async function VoicePage() {
   const lines = accountLines(user.id);
   const capstone = await addonStatus("capstone", { user: user.email });
 
+  // The add-on is held; the *engine* is what is missing. That is a deployment
+  // config state, not a billing lookup that could not be completed, so it is
+  // rendered as one — the billing copy told a customer to retry something only
+  // an administrator can change (see AddonGate's `mode`).
   if (!avaConfigured()) {
     return (
       <AddonGate
         sku="agents"
         state="unknown"
+        mode="deployment"
         reason="the voice engine is not configured on this deployment"
       />
     );
