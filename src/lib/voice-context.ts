@@ -432,6 +432,20 @@ export interface CallContext {
    * transcript into every answer.
    */
   transcript_handle: { record_id: string; source: "ava" } | null;
+  /**
+   * The same call in **Capstone's** store, when the account is entitled to hand
+   * off at all.
+   *
+   * There is no URL here because there cannot honestly be one: Capstone writes a
+   * transcript per workflow *run* and addresses it with a signed public token it
+   * mints at call time (its `GET /api/v1/public/download/workflow/<token>/transcript`),
+   * which never passes through the portal. What the portal *does* hold is the key
+   * both products already share — the call id — and the workflow the account's
+   * number reaches, so an operator (or Capstone itself) can find the run from
+   * those. Naming them is the handle; inventing a link that 404s would be worse
+   * than none (§2.6: two transcripts, two truth stores).
+   */
+  capstone_transcript: { call_id: string; workflow: string } | null;
 }
 
 export function buildCallContext(facts: CallFacts, calls: AvaCall[] | null): CallContext {
@@ -451,5 +465,12 @@ export function buildCallContext(facts: CallFacts, calls: AvaCall[] | null): Cal
     transcript_handle: facts.record_id
       ? { record_id: facts.record_id, source: "ava" as const }
       : null,
+    // Offered only beside a true entitlement and a configured target, the same
+    // rule the dialplan and the renderer apply: an unentitled account has no
+    // Capstone run to look up, and a target with no entitlement is not sent.
+    capstone_transcript:
+      interview.entitled && interview.target
+        ? { call_id: facts.call_id, workflow: interview.target }
+        : null,
   };
 }

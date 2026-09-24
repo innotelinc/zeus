@@ -53,6 +53,21 @@ function pathLabel(record: CallRecord): string {
   return hops.join(" → ");
 }
 
+/**
+ * Did this call reach Capstone? The switch's own hand-off list is the evidence,
+ * so the transcript handle is offered on what *happened*, not on what the
+ * account is merely entitled to do.
+ *
+ * Capstone keys a transcript by its workflow run and a signed token it mints at
+ * call time, neither of which the portal holds — so this is a **handle**, not a
+ * link: the call id an operator searches Capstone (or the grader's Grist sheet)
+ * by, plus the workflow that answered. It is the same key the context read
+ * publishes (`capstone_transcript`), so the screen and the API name one thing.
+ */
+function reachedCapstone(record: CallRecord): boolean {
+  return record.handoffs.some((hop) => hop.to === "capstone");
+}
+
 const POLL_MS = 10_000;
 
 export default function VoiceSection({
@@ -255,10 +270,21 @@ export default function VoiceSection({
                     {record.disposition.replace("_", " ")} · {pathLabel(record)}
                   </span>
                 </div>
-                <div className="mt-0.5 flex items-center gap-3 text-xs text-white/30">
+                <div className="mt-0.5 flex flex-wrap items-center gap-x-3 gap-y-0.5 text-xs text-white/30">
                   {/* The id both products carry — the thing to quote in a log search. */}
                   <span className="font-mono">{record.call_id}</span>
                   <span>started {fmtDate(record.started_at)}</span>
+                  {reachedCapstone(record) ? (
+                    <span
+                      className="text-white/45"
+                      title={
+                        "Capstone owns this call's transcript. Find the workflow run by " +
+                        "this call id — the portal never receives Capstone's signed token."
+                      }
+                    >
+                      Capstone transcript · workflow {record.capstone_binding ?? "unknown"}
+                    </span>
+                  ) : null}
                 </div>
               </li>
             ))}
