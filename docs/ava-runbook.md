@@ -245,6 +245,31 @@ The portal authenticates to AVA's admin API as `AVA_ADMIN_USER` with
 **Voice console**, the latter specifically distinguishing a reachable console
 from a usable one.
 
+The Voice screen itself says **“No voice engine is connected to this portal
+ yet”** when there is no credential at all — an administrator's setup step, not
+a change to the customer's account, so it is worded as one rather than as the
+billing “couldn't check”. `avaConfigured()` is read from `process.env` in the
+portal **process**, and compose reads `env_file` only when it *creates* the
+container. So the usual cause is a portal that was created before
+`AVA_ADMIN_PASSWORD` was added to `.env`: the value is on disk and the running
+container still cannot see it. Recreate the portal — not just restart it — and
+confirm the value landed:
+
+```bash
+# the credential the portal process actually holds (do not print the value)
+docker exec zeus-portal printenv AVA_ADMIN_PASSWORD >/dev/null && echo set || echo missing
+docker exec zeus-portal printenv AVA_ADMIN_URL
+
+# env_file is read at CREATE time — a restart reuses the old environment
+# (run from the compose project dir so `.env` resolves; full stack shown)
+docker compose -f docker-compose.full.yml up -d --force-recreate zeus-portal
+```
+
+Note that `.env`'s `AVA_ADMIN_URL` is the *host's* loopback for scripts and
+curl; the portal must be pointed at the container address
+(`AVA_ADMIN_CONTAINER_URL=http://zeus-ava-admin:8000`), which
+`docker-compose.yml` sets for it.
+
 ## 8. Nothing above is wrong, and calls still fail
 
 Then the failure is outside AVA:
