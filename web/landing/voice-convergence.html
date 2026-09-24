@@ -1067,15 +1067,31 @@
   how the whole decision table is rehearsable with no PBX at all
   (<code>pbx/tests/test_provision_extension.py</code>, 31 cases, including the 1-versus-3 exit
   codes a timer reads).</p>
-  <p><strong>Still open in this phase, named rather than implied.</strong> The <em>portal's</em> Phone
-  screen creates extensions through FreePBX's API (<code>freepbx.addExtension</code>) and does
-  not pass this preflight, so there are two writers until it does — that delegation
-  is the remaining half of "one provisioning path", and it is a cross-process one
-  (the portal is Node; the preflight is Python against the PBX's own config and
-  database). Inbound routes and the voice mapping stay with their owners by design
-  (<code>ava_routes.py</code>, <code>PUT /api/voice/agent-mapping</code>) and the provisioner reports them
-  instead of duplicating them. On <code>.30</code> the provisioner has not been run: the
-  intent document is the operator's data, as the DIDs were in P1.</p>
+  <p><strong>Built (2026-09-23): the portal's Phone screen delegates, so there is one
+  writer.</strong> <code>POST /api/phone/extensions</code> no longer creates blind — the <em>second
+  writer</em> the tool exists to remove is gone. The portal cannot run the Python tool
+  (its image ships <code>node server.js</code> with no interpreter and no docker socket), so
+  it mirrors the judgement against the same three authorities it <em>can</em> reach:
+  FreePBX's own API (<code>fetchAllExtensions</code>) for what exists, Asterisk's AMI
+  (<code>database show AMPUSER</code>) for leftover state, and the mounted <code>/etc/asterisk</code>
+  for PJSIP endpoint ownership (<code>src/lib/pjsip-owners.ts</code> — the tool's parser,
+  template hop and all). The route refuses with the tool's own reason and repair;
+  a green light creates. Two rules make the mirror safe rather than a second
+  opinion: a source that cannot be read is a <strong>refusal</strong> (<code>503</code>), never an empty
+  one, and <code>npm test</code> runs the same observed states and config fixtures through
+  both implementations — verdict, reason and repair have to match, so drift fails
+  the build instead of a live switch. Reading AstDB over AMI is something the
+  client could not do before: it resolved only <code>Response: Success</code>, so a <code>Command</code>
+  (which answers <code>Follows</code>) timed out and its multi-line <code>Output</code> was dropped —
+  both fixed in <code>src/lib/ami.ts</code>.</p>
+  <p>Two limits are named rather than hidden. The API lists <em>complete</em> extensions, so
+  the mirror cannot observe the user-without-device half-created state on its own
+  (it sees the technology rows, not the raw tables), and it reads no <code>sip.conf</code>.
+  Those are exactly the facts this tool stays the authority for. Inbound routes and
+  the voice mapping stay with their owners by design (<code>ava_routes.py</code>,
+  <code>PUT /api/voice/agent-mapping</code>) and the provisioner reports them instead of
+  duplicating them. On <code>.30</code> neither path has been run: the intent document is the
+  operator's data, as the DIDs were in P1.</p>
   <p><strong>Built (2026-09-22): the portal's half of the endpoint, and the binding write
   path.</strong> The extension API writes the fragment and reports which file loads it
   (the <code>softphone</code> block), reporting rather than swallowing, with the res_pjsip
@@ -1181,12 +1197,17 @@
   The exporter is also inert until a host sets the endpoint (<code>.env.example</code>
   documents both modes), and the default target needs Capstone's <code>otel-collector</code>
   to join <code>pbx-net</code> before it resolves — neither is a change this repo can make.</p>
-  <p><strong>Still open in this phase.</strong> Transcript links are AVA's
-  (<code>/api/voice/calls/[recordId]</code>, which the join now points at from a call id);
-  Capstone's transcript handle is exposed on the context read and not yet surfaced
-  on this screen. And the record is <em>observed</em>, so a call that never carried an
-  envelope has no row at all — that is a routing finding, not a missing log line,
-  and the runbook says so.</p>
+  <p><strong>Built (2026-09-23): both stores are named on the record.</strong> A call that reached
+  Capstone now carries its Capstone transcript handle on the dashboard's call
+  record — the call id plus the workflow — the same key the context read publishes
+  as <code>capstone_transcript</code>. It is a <em>handle</em>, not a link: Capstone addresses a
+  transcript by its own workflow run and a signed token minted at call time, neither
+  of which the portal holds, so naming the shared key is the honest answer and a
+  synthetic URL would 404 (§2.6). AVA's transcript stays a link
+  (<code>/api/voice/calls/[recordId]</code>, which the join points at from a call id).</p>
+  <p><strong>Still open in this phase.</strong> The record is <em>observed</em>, so a call that never
+  carried an envelope has no row at all — that is a routing finding, not a missing
+  log line, and the runbook says so.</p>
   <p><strong>Exit:</strong> for a call that moved AVA → Capstone → operator, one screen names the
   path, and one query returns its full record.</p>
   <hr />
