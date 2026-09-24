@@ -44,7 +44,7 @@ provides, and explicitly does not own.
 > See the [**Capstone ↔ Zeus convergence plan**](https://github.com/innotelinc/innotel-platform-stack/blob/main/docs/convergence-capstone-zeus.md)
 > for the target architecture and the structural-parity checklist Zeus mirrors from Capstone.
 
-## Roadmap — where Zeus stands (17 September 2026)
+## Roadmap — where Zeus stands (24 September 2026)
 
 **Live and verified on the deployment (`.30` hosts the Zeus stack; Capstone's
 Dograh ARI connects to Zeus/FreePBX):**
@@ -68,9 +68,35 @@ Dograh ARI connects to Zeus/FreePBX):**
       rather than referred to: twelve layers with the check that says each is
       supplied on the shared plane, in
       [`docs/ava-capstone-convergence.md`](ava-capstone-convergence.md) §8 ("The
-      structural-parity checklist"). The external plan the roadmap used to cite
-      (`innotel-platform-stack/docs/convergence-capstone-zeus.md`) is not in this
-      checkout, so the item could not be evaluated from here before this.
+      structural-parity checklist"). **Zeus-side progress (2026-09-24):** rows 1,
+      2, and 12 are covered off-host by `pbx/tests/test_parity_checklist.py`; the
+      ARI replacement policy now has a byte-idempotence regression for trailing
+      comment prose. The remaining gate is the Capstone-side compose default and
+      the live checks in rows 3–11, including the measured RTP/STUN/TURN      and controlled-call checks.
+
+   **Progress (2026-09-24, deployed on `.30`):** the patched Dograh API is live
+   with `ZEUS_RETURN_ENABLED=true`; the portal image is rebuilt and its voice
+   migrations/context route are live; AVA's first-run admin password was rotated
+   and the portal now has a working `VOICE_CONTEXT_SECRET`; and the live
+   `[zeus-ai-interview]` / `[zeus-ai-return]` dialplan contexts are loaded.
+   Dograh's full OIDC check passes (12 agents, superuser settings, group gate),
+   the Capstone Interview Reports API is authenticated and configured, and the
+   public Capstone edge smoke is 15/15 after repointing
+   `subscribe.capstone.innotel.us` from retired `:3040` to Zeus `:3001`.
+
+   This is still **not** a completed customer-call acceptance. There are no
+   `voice_bindings` rows, no DID has been moved to `zeus-ai-router`, and the
+   `7745057135` / `8005` / *Job Interview* mismatch is unresolved. The next safe
+   step is one named pilot: bind one DID, move one inbound route, place one call,
+   and verify the same call id in `voice_calls` plus the return outcome and both
+   transcripts before considering a fleet cutover.
+
+   **Roadmap item completed in the same pass:** `pbx/pjsip_owner_check.py`
+   no longer reports WebRTC down merely because FreePBX 17 names the live WSS
+   listener `0.0.0.0-wss` instead of the hand-written `transport-wss`. The
+   checker now judges the protocol column, so `.30` correctly passes with
+   `res_pjsip` running and `0.0.0.0-wss` loaded. A regression test pins both the
+   old id and FreePBX's generated id; the live check now exits 0.
 2. ~~**AI voicemail summaries in the default path** — give the LLM call its own
       model pin so a free-tier cooldown cannot silence summaries.~~
       **Done (2026-09-23).** The summary path no longer shares a model with the

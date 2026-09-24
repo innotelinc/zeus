@@ -59,6 +59,7 @@ const ENVELOPE_VARS = [
   "AI_CALLER_NUM",
   "AI_CALLER_NAME",
   "AI_CALL_ID",
+  "ZEUS_RETURN_OUTCOME",
 ] as const;
 
 export type ContextAuth = "ok" | "unconfigured" | "unauthorized";
@@ -125,6 +126,8 @@ export interface CallFacts {
   live: boolean;
   /** Which source answered, so a caller can see how it was resolved. */
   source: "channel" | "record";
+  /** Set by the shared-plane interview hand-back, if the channel is still live. */
+  return_outcome: string | null;
 }
 
 /**
@@ -221,6 +224,7 @@ async function channelFacts(token: string): Promise<Lookup> {
       ended_at: null,
       live: true,
       source: "channel",
+      return_outcome: values.ZEUS_RETURN_OUTCOME,
     },
   };
 }
@@ -255,6 +259,7 @@ function recordFacts(token: string, calls: AvaCall[]): CallFacts | null {
     ended_at: record.end_time ?? null,
     live: false,
     source: "record",
+    return_outcome: null,
   };
 }
 
@@ -421,6 +426,7 @@ export interface CallContext {
   started_at: string | null;
   ended_at: string | null;
   live: boolean;
+  return_outcome: string | null;
   resolved_from: CallFacts["source"];
   account: AccountContext | null;
   interview: InterviewContext;
@@ -458,6 +464,7 @@ export function buildCallContext(facts: CallFacts, calls: AvaCall[] | null): Cal
     started_at: facts.started_at,
     ended_at: facts.ended_at,
     live: facts.live,
+    return_outcome: facts.return_outcome,
     resolved_from: facts.source,
     account,
     interview,

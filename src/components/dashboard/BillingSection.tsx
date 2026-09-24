@@ -37,14 +37,17 @@ export default function BillingSection({ user, invoices, magnateUrl }: Props) {
     }
   }, []);
 
-  useEffect(() => { void refreshAddons(); }, [refreshAddons]);
+  useEffect(() => {
+    const initial = window.setTimeout(() => void refreshAddons(), 0);
+    return () => window.clearTimeout(initial);
+  }, [refreshAddons]);
 
   async function handlePlanAction() {
     if (magnateUrl) {
       // Magnate (RevenueOps) owns billing — send the user to the storefront.
       // The legacy /api/billing/checkout path is only a standalone fallback
       // (deprecated; requires STRIPE_SECRET_KEY).
-      window.location.href = magnateUrl;
+      window.open(magnateUrl, "_self", "noopener,noreferrer");
       return;
     }
     setLoading(true);
@@ -55,7 +58,7 @@ export default function BillingSection({ user, invoices, magnateUrl }: Props) {
         method: "POST",
         body: JSON.stringify({ plan: user.plan }),
       });
-      window.location.href = res.url;
+      window.open(res.url, "_self", "noopener,noreferrer");
     } catch (e) {
       toast.error(e instanceof Error ? e.message : "Failed to start checkout");
       setLoading(false);
@@ -66,7 +69,7 @@ export default function BillingSection({ user, invoices, magnateUrl }: Props) {
     if (!confirm("Are you sure you want to cancel your plan? Service continues until end of billing period.")) return;
     if (magnateUrl) {
       // Cancellation runs through Magnate's Stripe customer portal (/manage).
-      window.location.href = `${magnateUrl}/manage`;
+      window.open(`${magnateUrl}/manage`, "_self", "noopener,noreferrer");
       return;
     }
     setLoading(true);

@@ -523,13 +523,25 @@ def parse_transports(text: str) -> set[str]:
     `pjsip show endpoints` — so both forms are accepted rather than one being
     assumed and the other silently parsing as nothing.
     """
-    found: set[str] = set()
+    return set(parse_transport_types(text))
+
+
+def parse_transport_types(text: str) -> dict[str, str]:
+    """Transport id → protocol from ``pjsip show transports``.
+
+    A transport's id is not stable across owners. The hand-written fragment
+    uses ``transport-wss``; FreePBX 17 generates ``0.0.0.0-wss`` for the same
+    live listener. The protocol column is therefore the fact that answers
+    "is WSS loaded?", while the id remains the thing an operator needs in the
+    diagnostic.
+    """
+    found: dict[str, str] = {}
     for line in text.splitlines():
         if HEADER_DOTS in line:
             continue
-        match = re.match(r"\s*Transport:\s*<?([^/>\s]+)", line)
+        match = re.match(r"\s*Transport:\s*<?([^/>\s]+)>?\s+(\S+)", line)
         if match:
-            found.add(match.group(1))
+            found[match.group(1)] = match.group(2)
     return found
 
 
@@ -547,6 +559,7 @@ def verdict_asterisk(
     running: bool | None,
     ext: str = "",
     wanted_transport: str = "transport-wss",
+    transport_types: dict[str, str] | None = None,
 ) -> list[Finding]:
     findings: list[Finding] = []
 
@@ -570,16 +583,26 @@ def verdict_asterisk(
         findings.append(Finding(None, "cannot list PJSIP transports"))
     else:
         listed = ", ".join(sorted(transports)) or "none"
-        findings.append(
-            Finding(
-                wanted_transport in transports,
-                f"the {wanted_transport} transport is loaded (transports: {listed})"
-                if wanted_transport in transports
-                else f"the {wanted_transport} transport is NOT loaded (transports: "
-                f"{listed}) — every WebRTC softphone fails at registration, and "
-                f"{WSS_TRANSPORT_FILE} having no surviving include is the usual reason",
-            )
+        wss_ids = sorted(
+            name
+            for name, protocol in (transport_types or {}).items()
+            if protocol.casefold() == "wss"
         )
+        wss_loaded = wanted_transport in transports or bool(wss_ids)
+        if wanted_transport in transports:
+            detail = f"the {wanted_transport} transport is loaded (transports: {listed})"
+        elif wss_ids:
+            detail = (
+                f"a WSS transport is loaded (id: {', '.join(wss_ids)}; "
+                f"transports: {listed})"
+            )
+        else:
+            detail = (
+                f"the {wanted_transport} transport is NOT loaded (transports: "
+                f"{listed}) — every WebRTC softphone fails at registration, and "
+                f"{WSS_TRANSPORT_FILE} having no surviving include is the usual reason"
+            )
+        findings.append(Finding(wss_loaded, detail))
 
     if endpoints is None:
         findings.append(Finding(None, "cannot list PJSIP endpoints"))
@@ -802,16 +825,24 @@ def main(argv: list[str]) -> int:
 
     endpoints: set[str] | None = None
     transports: set[str] | None = None
+    transport_types: dict[str, str] | None = None
     running: bool | None = None
     if container:
         code, out = asterisk(container, "pjsip show endpoints")
         endpoints = parse_endpoints(out) if code == 0 else None
         code, out = asterisk(container, "pjsip show transports")
-        transports = parse_transports(out) if code == 0 else None
+        transport_types = parse_transport_types(out) if code == 0 else None
+        transports = set(transport_types or {})
         code, out = asterisk(container, "module show like res_pjsip")
         running = parse_module_state(out) if code == 0 else None
         findings.extend(
-            verdict_asterisk(endpoints, transports, running, wanted[0] if wanted else "")
+            verdict_asterisk(
+                endpoints,
+                transports,
+                running,
+                wanted[0] if wanted else "",
+                transport_types=transport_types,
+            )
         )
 
     for finding in findings:
@@ -839,6 +870,7 @@ def main(argv: list[str]) -> int:
                     "asterisk": {
                         "endpoints": sorted(endpoints) if endpoints is not None else None,
                         "transports": sorted(transports) if transports is not None else None,
+                        "transport_types": transport_types or None,
                         "res_pjsip_running": running,
                     },
                     "findings": [asdict(finding) for finding in findings],

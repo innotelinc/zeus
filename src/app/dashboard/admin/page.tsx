@@ -1,11 +1,12 @@
 "use client";
 
-import { useState, useEffect } from "react";
+import { useState, useEffect, useCallback } from "react";
 import { api } from "@/lib/client-api";
 import type { User, PlanInfo } from "@/lib/types";
 import { useToast } from "@/components/ToastProvider";
-import { PlusIcon, XIcon, TrashIcon } from "@/components/icons";
+import { PlusIcon, TrashIcon } from "@/components/icons";
 import { ResellersSection } from "@/components/dashboard/ResellersSection";
+import AdminVoicePlan from "@/components/dashboard/AdminVoicePlan";
 
 export default function AdminPage() {
   const { toast } = useToast();
@@ -26,11 +27,7 @@ export default function AdminPage() {
   const [deleteConfirm, setDeleteConfirm] = useState<string | null>(null);
   const [deleting, setDeleting] = useState(false);
 
-  useEffect(() => {
-    loadAll();
-  }, []);
-
-  async function loadAll() {
+  const loadAll = useCallback(async () => {
     try {
       const [userData, planData] = await Promise.all([
         api<{ users: User[]; stats: typeof stats }>("/api/admin/users"),
@@ -44,7 +41,12 @@ export default function AdminPage() {
     } finally {
       setLoading(false);
     }
-  }
+  }, [toast]);
+
+  useEffect(() => {
+    const initial = window.setTimeout(() => void loadAll(), 0);
+    return () => window.clearTimeout(initial);
+  }, [loadAll]);
 
   async function updateUser(userId: string, updates: { plan?: string; role?: string | null }) {
     setUpdating(userId);
@@ -211,6 +213,10 @@ export default function AdminPage() {
           ))}
         </div>
       </div>
+
+      {/* Voice operations: the same per-DID plan the PBX renders, visible to
+          an administrator without exposing the machine sync token. */}
+      <AdminVoicePlan />
 
       {/* Resellers & white-label */}
       <ResellersSection />

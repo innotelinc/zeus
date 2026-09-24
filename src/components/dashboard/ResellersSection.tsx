@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect } from "react";
+import { useState, useEffect, useCallback } from "react";
 import { api } from "@/lib/client-api";
 import { useToast } from "@/components/ToastProvider";
 import { PlusIcon, XIcon, TrashIcon } from "@/components/icons";
@@ -23,11 +23,7 @@ export function ResellersSection() {
   const [form, setForm] = useState({ name: "", brand_name: "", domain: "" });
   const [deletingId, setDeletingId] = useState<string | null>(null);
 
-  useEffect(() => {
-    load();
-  }, []);
-
-  async function load() {
+  const load = useCallback(async () => {
     try {
       const data = await api<{ resellers: Reseller[] }>("/api/admin/resellers");
       setResellers(data.resellers);
@@ -36,7 +32,12 @@ export function ResellersSection() {
     } finally {
       setLoading(false);
     }
-  }
+  }, [toast]);
+
+  useEffect(() => {
+    const initial = window.setTimeout(() => void load(), 0);
+    return () => window.clearTimeout(initial);
+  }, [load]);
 
   async function create() {
     if (!form.name.trim()) {

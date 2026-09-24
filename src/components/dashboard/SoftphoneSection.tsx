@@ -31,6 +31,7 @@ export default function SoftphoneSection({ extensions }: Props) {
   const [selectedExtId, setSelectedExtId] = useState("");
   const [dialNumber, setDialNumber] = useState("");
   const [incomingCaller, setIncomingCaller] = useState("");
+  const [activeRemoteId, setActiveRemoteId] = useState("");
   const [callDuration, setCallDuration] = useState(0);
   const [volume, setVolume] = useState(1);
   const [showDtmf, setShowDtmf] = useState(false);
@@ -430,6 +431,7 @@ export default function SoftphoneSection({ extensions }: Props) {
     originatingRef.current = false;
     remotePartyRef.current = "";
     setCallDuration(0);
+    setActiveRemoteId("");
     activeCallRef.current = null;
     setMuted(false);
     setDialNumber("");
@@ -450,6 +452,7 @@ export default function SoftphoneSection({ extensions }: Props) {
       startTime: start,
       muted: false,
     };
+    setActiveRemoteId(remotePartyRef.current);
     callTimerRef.current = setInterval(() => {
       setCallDuration(Math.floor((Date.now() - start) / 1000));
     }, 1000);
@@ -504,9 +507,9 @@ export default function SoftphoneSection({ extensions }: Props) {
           <PhoneIcon size={18} className={callState === "in-call" ? "text-mint-400" : callState === "ringing-in" ? "text-sun-400 animate-pulse" : ""} />
           {callState === "idle" && "WebRTC Softphone — Click to open"}
           {callState === "disconnected" && "Softphone — Connect an extension"}
-          {callState === "in-call" && `📞 ${activeCallRef.current?.remoteId || "On call"} · ${formatDuration(callDuration)}`}
+          {callState === "in-call" && `📞 ${activeRemoteId || "On call"} · ${formatDuration(callDuration)}`}
           {callState === "ringing-in" && `Incoming from ${incomingCaller}`}
-          {callState === "held" && `⏸ ${activeCallRef.current?.remoteId || "On hold"} · ${formatDuration(callDuration)}`}
+          {callState === "held" && `⏸ ${activeRemoteId || "On hold"} · ${formatDuration(callDuration)}`}
           {callState === "ringing-out" && `Calling ${dialNumber}...`}
           {callState === "registering" && "Connecting..."}
         </button>
@@ -654,7 +657,7 @@ export default function SoftphoneSection({ extensions }: Props) {
                         {callState === "held" ? "On Hold" : callState === "ringing-out" ? "Ringing..." : "Connected"}
                       </div>
                       <div className="text-sm text-white/45">
-                        {activeCallRef.current?.remoteId || "In call"}
+                        {activeRemoteId || "In call"}
                       </div>
                       <div className="mt-1 font-mono text-2xl font-bold text-white">
                         {formatDuration(callDuration)}

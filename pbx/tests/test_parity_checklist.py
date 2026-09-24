@@ -216,16 +216,10 @@ class Row2AriTest(unittest.TestCase):
     def test_converging_every_product_leaves_one_of_each_user(self):
         """The row's own failure mode: a duplicate object, not a missing one.
 
-        Byte idempotence of these two fragments is deliberately *not* asserted
-        here, because it does not hold: a fragment whose last section is
-        followed by comment prose (`ari.conf` ends with the note about AVA's
-        user being deliberately not rendered there) hands that prose to the
-        next section's attributed prefix, and the next apply installs a second
-        copy of it inside the section body. Measured, not guessed: 3155 -> 4036
-        bytes on one re-apply, growing per run, while the *users* below stay
-        correct. That is a defect in `asterisk_converge.py`'s replace policy,
-        not in this split, and it is recorded where it was found rather than
-        pinned as expected behaviour.
+        `ari.conf` ends with comment prose after its last section. The generic
+        parser hands that prose to the next section's attributed prefix, so
+        the replacement policy must recognise it as the previous section's
+        source tail and keep the merged bytes stable across timer applies.
         """
         capstone_user = "[dograh]\ntype = user\npassword = shared-with-pbx\nread_only = no\n"
         target = "[general]\nenabled = yes\n\n" + capstone_user
@@ -246,6 +240,7 @@ class Row2AriTest(unittest.TestCase):
             again = ac.merge_into(again, fragment, owner="zeus")
         self.assertEqual(sorted(_sections(again)), sorted(sections))
         self.assertEqual(again.count("type = user"), merged.count("type = user"))
+        self.assertEqual(again, merged)
 
 
 def compose_services(path):

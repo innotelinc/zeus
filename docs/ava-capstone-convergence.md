@@ -780,11 +780,26 @@ a value that could close `DIALPLAN_EXISTS(...)` can never reach the table and
 stop the plan from converging. Clearing deletes the row instead of storing an
 empty string, so "no row" and "no target" stay one thing.
 
-**Still live and unmet in this phase:** `voice_bindings` rows on `.30` (the
-product can now write them; the box still has none, so every hand-off refuses),
-`VOICE_CONTEXT_SECRET` handed to Capstone and to AVA (without it the context read
-refuses every request), pointing Capstone at `[zeus-ai-return]`, and the §2.1
-reconciliation of `7745057135` / `8005` / *Job Interview* on the box.
+**Deployed on `.30` (2026-09-24), with the remaining gate named rather than
+hidden:** the Zeus portal image now contains migrations 009–011, the
+authenticated context route, and the account-scoped voice UI; the live
+`[zeus-ai-interview]` and `[zeus-ai-return]` contexts are loaded; AVA's admin
+credential is out of first-run state; and `VOICE_CONTEXT_SECRET` is configured
+on the portal. Dograh's patched API image is deployed with
+`ZEUS_RETURN_ENABLED=true`, so a token-bearing interview channel can write
+`ZEUS_RETURN_OUTCOME=interview_complete` and redirect to the live return
+context. Auth probes now distinguish the states correctly: no/wrong credential
+is 401, an unknown call is 404, and the AVA admin source is reachable.
+
+The controlled return call is **not yet claimed as passed**. The live portal
+still has no `voice_bindings` rows, no DID has been moved onto the AVA router,
+and the `7745057135` / `8005` / *Job Interview* mismatch is still unreconciled.
+The safe next move is a named pilot DID and workflow, not enabling every DID at
+once: write one binding, move one existing inbound route with
+`pbx/ava_routes.py --apply`, place/receive one call, then verify the same
+`call_id` in `voice_calls`, `return_outcome`, and the AVA/Dograh transcripts.
+Until that happens the deployed return is capability-verified, not
+customer-call-verified.
 
 **Exit:** each interview DID reaches the *correct* workflow; an unknown target
 refuses to the operator; a concluded interview returns to AVA or a human with
@@ -1003,9 +1018,37 @@ of which the portal holds, so naming the shared key is the honest answer and a
 synthetic URL would 404 (§2.6). AVA's transcript stays a link
 (`/api/voice/calls/[recordId]`, which the join points at from a call id).
 
+**Built (2026-09-24): the admin and customer surfaces now expose the same
+plan.** The customer Voice screen already shows live calls, the switch-written
+call record, per-DID interview targets, and recent calls. The new admin Voice
+routing panel reads the same `/api/admin/voice-routing` authority the PBX uses:
+active DIDs, AVA agents, Capstone entitlement, workflow targets, gate state,
+and generated-at time are visible without exposing `PBX_SYNC_TOKEN` to the
+browser. It is a read-only view; the portal remains the only writer for those
+mappings.
+
+**Built (2026-09-24): the explicit interview hand-back.** Capstone's ARI hangup
+path now has one opt-in shared-plane branch. When
+`ZEUS_RETURN_ENABLED=true`, Dograh reads `AI_CONTEXT_TOKEN` from the live
+channel, writes `ZEUS_RETURN_OUTCOME=interview_complete`, and ARI-redirects the
+same channel to `[zeus-ai-return]` instead of deleting it. `[zeus-ai-return]`
+re-enters the original `AI_AGENT`; the portal context read exposes the return
+outcome, and AMI's existing `zeus-ai-return` classifier records the second hop
+as `capstone → ava`. Standalone Dograh has the switch off by default and keeps
+its ordinary ARI delete path.
+
+The branch is deliberately guarded twice: deployment opt-in, then a live channel
+token. It does not guess a return context, does not redirect a call without the
+Zeus envelope, and falls back to normal hangup on any ARI error. The remaining
+proof is live: converge `[zeus-ai-return]`, set the shared context secret, set
+`ZEUS_RETURN_ENABLED=true`, then make one controlled interview call and confirm
+the same `AI_CALL_ID` appears in Dograh and the returned `voice_calls` row.
+
 **Still open in this phase.** The record is *observed*, so a call that never
 carried an envelope has no row at all — that is a routing finding, not a missing
-log line, and the runbook says so.
+log line, and the runbook says so. The hand-back branch is shipped in the
+Capstone/AVA contracts but is not live-verified from this checkout because the
+Zeus PBX and Capstone services are not running here.
 
 **Exit:** for a call that moved AVA → Capstone → operator, one screen names the
 path, and one query returns its full record.
@@ -1092,18 +1135,18 @@ does not need `.30`, and is explicit about which half that is:
 Rows 3 and 4 keep their "checked with a call" rule and rows 5–11 stay as
 written: this is the half of the gate this repo owns, not the whole one.
 
-**Found while checking row 2 — measured, not yet fixed.** A fragment whose last
-section is followed by comment prose is *not* byte-idempotent through
-`asterisk_converge.py`: that prose lands as the **next** section's attributed
-prefix on the target, and the next apply installs a second copy of it inside the
-first section's body. `pbx/asterisk/ari.conf` ends in exactly that prose (the
-note about AVA's user deliberately not being rendered there), and the measured
-growth is 3155 → 4036 bytes on one re-apply, per run. The *users* stay correct,
-so nothing a caller reaches is wrong — but `--check` never converges, which
-makes the sync timer apply (and the file grow) on every tick. The test records
-this and asserts the invariants that do hold rather than pinning the growth as
-expected; the repair belongs in the replace policy (`_replace_context`), not in
-the fragments.
+**Fixed (2026-09-24): trailing comment prose is stable across ARI applies.** A
+fragment whose last section is followed by comment prose had a second failure
+mode: the parser attributes that prose to the next section on the next parse,
+and the old replace policy installed a second copy inside the first section's
+body. `pbx/asterisk/ari.conf` ends in exactly that prose (the note about AVA's
+user deliberately not being rendered there), so the ARI file could grow on every
+timer tick even though its users stayed correct. `asterisk_converge.py` now
+keeps a source context's final comment run explicit and recognises that run when
+it is already present in the following context's attributed prefix; it does not
+reinstall it in both places. The regression is covered in
+`pbx/tests/test_asterisk_converge.py`, and the row-2 parity test now requires
+byte-identical re-convergence rather than only checking user counts.
 
 **Exit:** every row checked on the shared box, in one run, recorded — then
 Capstone's item 7 ("deprecate the bundled PBX as the default topology") is a

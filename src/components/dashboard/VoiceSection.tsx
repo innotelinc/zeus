@@ -35,6 +35,12 @@ interface LiveCall {
  * module: this is a client component, and the server module reaches the
  * database.
  */
+interface TranscriptTurn {
+  role?: string;
+  content?: string | null;
+  text?: string | null;
+}
+
 interface CallRecord {
   call_id: string;
   account_id: string | null;
@@ -85,6 +91,9 @@ export default function VoiceSection({
   const [drafts, setDrafts] = useState<Record<string, string>>({});
   const [live, setLive] = useState<LiveCall[]>([]);
   const [recorded, setRecorded] = useState<CallRecord[]>([]);
+  const [transcriptCallId, setTranscriptCallId] = useState<string | null>(null);
+  const [transcript, setTranscript] = useState<TranscriptTurn[] | null>(null);
+  const [transcriptLoading, setTranscriptLoading] = useState(false);
   const [liveError, setLiveError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [showCreate, setShowCreate] = useState(false);
@@ -124,6 +133,31 @@ export default function VoiceSection({
       clearInterval(timer);
     };
   }, [poll]);
+
+  async function openTranscript(call: AvaCall) {
+    const id = call.call_id ?? call.record_id ?? call.id;
+    if (!id) return;
+    if (transcriptCallId === id) {
+      setTranscriptCallId(null);
+      setTranscript(null);
+      return;
+    }
+
+    setTranscriptCallId(id);
+    setTranscript(null);
+    setTranscriptLoading(true);
+    try {
+      const data = (await api(`/api/voice/calls/${encodeURIComponent(id)}`)) as {
+        transcript?: TranscriptTurn[] | null;
+      };
+      setTranscript(data.transcript ?? []);
+    } catch (e) {
+      setTranscript([]);
+      toast.error(e instanceof Error ? e.message : "Could not load that transcript");
+    } finally {
+      setTranscriptLoading(false);
+    }
+  }
 
   async function mapAgent(slug: string) {
     setBusy(true);
@@ -477,22 +511,55 @@ export default function VoiceSection({
           <p className="mt-3 text-sm text-white/40">No calls answered yet.</p>
         ) : (
           <ul className="mt-3 divide-y divide-white/[0.05]">
-            {calls.map((call, i) => (
-              <li key={call.record_id ?? call.id ?? i} className="py-3">
-                <div className="flex items-center justify-between gap-3 text-sm">
-                  <span className="text-white/70">
-                    {call.caller_number ?? call.from_number ?? "Unknown caller"}
-                  </span>
-                  <span className="text-white/40">
-                    {call.started_at ? fmtDate(call.started_at) : ""}
-                    {call.duration_seconds ? ` · ${call.duration_seconds}s` : ""}
-                  </span>
-                </div>
-                {(call.summary ?? call.outcome) && (
-                  <p className="mt-1 text-xs text-white/50">{call.summary ?? call.outcome}</p>
-                )}
-              </li>
-            ))}
+            {calls.map((call, i) => {
+              const record = recorded.find((item) => item.call_id === call.call_id);
+              const transcriptId = call.call_id ?? call.record_id ?? call.id ?? "";
+              const isTranscriptOpen = transcriptCallId === transcriptId;
+              return (
+                <li key={call.record_id ?? call.id ?? i} className="py-3">
+                  <div className="flex items-center justify-between gap-3 text-sm">
+                    <span className="text-white/70">
+                      {call.caller_number ?? call.from_number ?? "Unknown caller"}
+                    </span>
+                    <span className="text-white/40">
+                      {call.started_at ? fmtDate(call.started_at) : ""}
+                      {call.duration_seconds ? ` · ${call.duration_seconds}s` : ""}
+                    </span>
+                  </div>
+                  {(call.summary ?? call.outcome) && (
+                    <p className="mt-1 text-xs text-white/50">{call.summary ?? call.outcome}</p>
+                  )}
+                  {record && (
+                    <p className="mt-1 text-xs text-white/35">
+                      Voice record: {record.disposition.replace("_", " ")} · {pathLabel(record)}
+                    </p>
+                  )}
+                  {transcriptId && (
+                    <button
+                      type="button"
+                      onClick={() => void openTranscript(call)}
+                      className="mt-2 text-xs text-brand-300 transition hover:text-brand-200"
+                    >
+                      {isTranscriptOpen ? "Hide transcript" : "View transcript"}
+                    </button>
+                  )}
+                  {isTranscriptOpen && (
+                    <div className="mt-2 rounded-lg border border-white/[0.06] bg-white/[0.02] p-3">
+                      {transcriptLoading && <p className="text-xs text-white/40">Loading transcript…</p>}
+                      {!transcriptLoading && transcript?.length === 0 && (
+                        <p className="text-xs text-white/40">No transcript was recorded.</p>
+                      )}
+                      {!transcriptLoading && transcript?.map((turn, turnIndex) => (
+                        <p key={turnIndex} className="mb-1.5 text-xs text-white/65">
+                          <span className="mr-2 uppercase text-white/30">{turn.role ?? "turn"}</span>
+                          {turn.content ?? turn.text ?? ""}
+                        </p>
+                      ))}
+                    </div>
+                  )}
+                </li>
+              );
+            })}
           </ul>
         )}
       </section>

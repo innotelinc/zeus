@@ -72,16 +72,21 @@ async function listCallsFor(req: Request, span: Span): Promise<Response> {
   const records = voiceCallsByCallId(
     result.data.calls.map((call) => call.call_id ?? ""),
   );
-  span.setAttribute("zeus.calls.count", result.data.calls.length);
+  const calls = result.data.calls.filter((call) => {
+    const record = records.get(call.call_id ?? "");
+    return record?.account_id === user.id;
+  });
+  span.setAttribute("zeus.calls.count", calls.length);
 
   return NextResponse.json({
     configured: true,
     ava_state: result.state,
-    calls: result.data.calls.map((call) => ({
+    calls: calls.map((call) => ({
       ...call,
       record: records.get(call.call_id ?? "") ?? null,
     })),
-    total: result.data.total,
+    // AVA's total is estate-wide; the portal must report the account's view.
+    total: calls.length,
     addon,
   });
 }

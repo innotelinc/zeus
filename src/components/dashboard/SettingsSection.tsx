@@ -62,9 +62,12 @@ export default function SettingsSection({ user }: Props) {
   const [savedWss, setSavedWss] = useState<string | null>(null);
 
   useEffect(() => {
-    const stored = localStorage.getItem(WSS_STORAGE_KEY);
-    if (stored) setWssUrl(stored);
-    setSavedWss(stored);
+    const initial = window.setTimeout(() => {
+      const stored = localStorage.getItem(WSS_STORAGE_KEY);
+      if (stored) setWssUrl(stored);
+      setSavedWss(stored);
+    }, 0);
+    return () => window.clearTimeout(initial);
   }, []);
 
   // Integration statuses are probed by the server; a failed fetch just leaves

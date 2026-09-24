@@ -4,7 +4,7 @@ import { useState, useEffect, useRef, useCallback } from "react";
 import { api, fmtTime } from "@/lib/client-api";
 import type { SmsConversation, SmsMessage, PhoneNumber, Contact } from "@/lib/types";
 import { useToast } from "@/components/ToastProvider";
-import { SendIcon, PlusIcon, MessageIcon, PhoneIcon, UserIcon, SearchIcon, XIcon } from "@/components/icons";
+import { SendIcon, PlusIcon, MessageIcon, PhoneIcon, UserIcon, XIcon } from "@/components/icons";
 
 interface Props {
   conversations: SmsConversation[];
@@ -31,17 +31,6 @@ export default function MessagesSection({ conversations: initialConvs, numbers, 
   const bottomRef = useRef<HTMLDivElement>(null);
   const prefillDone = useRef(false);
 
-  // Handle prefill from contacts deep-link
-  useEffect(() => {
-    if (prefillPhone && !prefillDone.current) {
-      prefillDone.current = true;
-      setNewPhone(prefillPhone);
-      setShowNew(true);
-      setActiveConv(null);
-      lookupContact(prefillPhone);
-    }
-  }, [prefillPhone]);
-
   const lookupContact = useCallback(async (phone: string) => {
     const clean = phone.replace(/\D/g, "");
     if (clean.length < 7) { setMatchedContact(null); return; }
@@ -51,6 +40,17 @@ export default function MessagesSection({ conversations: initialConvs, numbers, 
       setMatchedContact(match ?? null);
     } catch { setMatchedContact(null); }
   }, []);
+
+  // Handle prefill from contacts deep-link
+  useEffect(() => {
+    if (prefillPhone && !prefillDone.current) {
+      prefillDone.current = true;
+      setNewPhone(prefillPhone);
+      setShowNew(true);
+      setActiveConv(null);
+      lookupContact(prefillPhone);
+    }
+  }, [lookupContact, prefillPhone]);
 
   useEffect(() => { bottomRef.current?.scrollIntoView({ behavior: "smooth" }); }, [messages]);
 
