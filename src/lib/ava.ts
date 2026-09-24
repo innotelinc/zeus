@@ -326,13 +326,75 @@ const callListSchema = z
   })
   .passthrough();
 
+type AvaLiveSession = Record<string, unknown>;
+type AvaLiveStatus = {
+  sessions: AvaLiveSession[];
+  count: number;
+  sessionsState: string | null;
+};
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+/**
+ * AVA's older response exposed `sessions` / `active_calls` directly. The
+ * current live-status hub wraps them in a component snapshot, with session
+ * data under `components.sessions.details`. Normalize both wire formats here
+ * so callers never need to know which AVA release produced the response.
+ */
+export function normalizeLiveStatus(payload: unknown): AvaLiveStatus | null {
+  if (!isRecord(payload)) return null;
+
+  const components = isRecord(payload.components) ? payload.components : {};
+  const rootSessions = payload.sessions;
+  const hasKnownShape =
+    isRecord(payload.components) ||
+    Array.isArray(rootSessions) ||
+    Array.isArray(payload.active_calls) ||
+    (isRecord(rootSessions) && isRecord(rootSessions.details));
+  if (!hasKnownShape) return null;
+  const rootComponent = isRecord(rootSessions) ? rootSessions : null;
+  const sessionsComponentValue = components.sessions ?? rootComponent;
+  const sessionsComponent = isRecord(sessionsComponentValue) ? sessionsComponentValue : null;
+  const details = sessionsComponent && isRecord(sessionsComponent.details)
+    ? sessionsComponent.details
+    : {};
+
+  const sessions = Array.isArray(rootSessions)
+    ? rootSessions
+    : Array.isArray(payload.active_calls)
+      ? payload.active_calls
+      : Array.isArray(details.sessions)
+        ? details.sessions
+        : [];
+  const activeCount = details.active_calls;
+  const count = typeof payload.count === "number"
+    ? payload.count
+    : typeof activeCount === "number"
+      ? activeCount
+      : sessions.length;
+  const sessionsState = typeof sessionsComponent?.state === "string"
+    ? sessionsComponent.state
+    : null;
+
+  return {
+    sessions: sessions.filter(isRecord),
+    count,
+    sessionsState,
+  };
+}
+
 const liveSchema = z
-  .object({
-    sessions: z.array(z.record(z.string(), z.unknown())).optional(),
-    active_calls: z.array(z.record(z.string(), z.unknown())).optional(),
-    count: z.number().nullable().optional(),
-  })
-  .passthrough();
+  .unknown()
+  .transform((payload, ctx) => {
+    const normalized = normalizeLiveStatus(payload);
+    if (!normalized) {
+      ctx.addIssue({ code: "custom", message: "expected an AVA live-status object" });
+      return z.NEVER;
+    }
+    return normalized;
+  });
 
 // ── public surface ────────────────────────────────────────────────
 export function listAgents(): Promise<AvaResult<AvaAgent[]>> {
@@ -363,7 +425,7 @@ export function listCalls(limit = 50): Promise<AvaResult<{ calls: AvaCall[]; tot
   );
 }
 
-export function liveStatus(): Promise<AvaResult<z.infer<typeof liveSchema>>> {
+export function liveStatus(): Promise<AvaResult<AvaLiveStatus>> {
   return request("/api/system/live-status", { method: "GET", schema: liveSchema });
 }
 
