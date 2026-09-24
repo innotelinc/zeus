@@ -332,6 +332,59 @@ Then the failure is outside AVA:
   ([ava-capstone-convergence.md](ava-capstone-convergence.md) §11); until it is
   made, the safe state is the one where the portal's fragment is inert.
 
+## 9. Adding an extension is refused
+
+The Phone screen no longer creates an extension blind. `POST /api/phone/extensions`
+runs the same check-then-create judgement the PBX-side provisioner makes
+(`pbx/provision_extension.py`, the one owner of extension/device creation — D6),
+so a refusal is a **named state and its repair**, not the raw `(1,'maxchans')`
+collision it replaced. The portal mirrors the judgement (it has no Python and no
+docker socket, but it has FreePBX's API, AMI and the mounted `/etc/asterisk`),
+and `scripts/extension-preflight.test.mjs` pins the two implementations equal — so
+the wording below is the wording the tool prints too.
+
+Where to read it: the Phone screen shows `<reason> — <repair>` in the toast, and
+the API returns `{ error, reason, repair }` with the status below.
+
+| What the refusal says | What it means | The repair |
+|---|---|---|
+| *the PBX's Core module is not usable* (`409`) | `fwconsole ma list` did not report `core` enabled, so nothing can be created and re-running changes nothing | `docker exec zeus-freepbx fwconsole ma list`, then `fwconsole ma enable core` |
+| *the PBX has a user object but no device* / *a device but no user object* (`409`) | a half-created extension already owns this number | finish or delete it in FreePBX (Applications → Extensions) — creating here leaves two objects with one id |
+| *the PJSIP endpoint … already has two owners* (`409`) | a duplicate `(id, type)` in the load tree (the §2.4 defect) | settle the owner first: `python3 pbx/pjsip_owner_check.py --live --extension <ext>` names the two files |
+| *the sip/pjsip table already has a row …* (`409`) | an orphaned technology row — the `(1,'maxchans')` class | delete that row in FreePBX first; creating over it collides or silently shadows it |
+| *AstDB still holds AMPUSER/<ext> state* (`409`) | a deleted extension's call forwarding / device mapping is still on this number | `docker exec zeus-freepbx asterisk -rx "database deltree AMPUSER <ext>"` — otherwise the new phone inherits it |
+| *\<ext\> already exists in FreePBX* (`409`) | the number is a complete user + device already; a create would collide | delete it first, or choose another number |
+| *could not check whether … is safe to create* (`503`) | the portal could not take the measurement — AMI is not connected, `/etc/asterisk` is not mounted, or `fetchAllExtensions` did not answer in the shape the preflight reads | restore the missing source (AMI credentials, the config mount), or run the tool on the voice host: `python3 pbx/provision_extension.py --intent <intent.json> --check` |
+
+A `503` is deliberate: a source that cannot be read is treated as **unknown, not
+empty**, because "I could not check" acted on as "there is nothing there" is
+exactly how a new phone silently inherits a deleted one's state.
+
+The PBX-side tool is the authority, and it answers the whole question — including
+the two facts the portal's mirror cannot see (an extension's user row without a
+device, and anything in `sip.conf`):
+
+```bash
+# judge, write nothing — exit 0 in sync, 1 an apply converges it, 3 a person
+docker exec zeus-freepbx fwconsole ma list                     # the module gate, live
+python3 pbx/provision_extension.py --intent accounts.json --check
+python3 pbx/provision_extension.py --intent accounts.json --check --json   # keep the measurement
+
+# create, after taking the phase's pre-state — the undo is written first
+python3 pbx/provision_extension.py --intent accounts.json --apply \
+    --revert-out /root/zeus-ext-revert.php
+docker exec -i zeus-freepbx php < /root/zeus-ext-revert.php   # the way back
+docker exec zeus-freepbx fwconsole reload
+```
+
+**A create still needs a reload.** The portal reloads `res_pjsip` when the
+softphone fragment is live (so the endpoint can load), but — like the PBX-side
+tool — it does not run `fwconsole reload`: FreePBX builds its dialplan and device
+config from the rows it wrote, so a freshly added extension is not dialable until
+`docker exec zeus-freepbx fwconsole reload` (or the next Apply Config). That is
+the same rule §8's route work follows — the reload stays with the convergence,
+not with each writer.
+
 ## Before you escalate
 
 Capture, in this order: `curl -s localhost:15000/health`, the engine's log
