@@ -410,6 +410,59 @@ config from the rows it wrote, so a freshly added extension is not dialable unti
 the same rule §8's route work follows — the reload stays with the convergence,
 not with each writer.
 
+## 10. The agent sounds wrong — robotic, clipped, or talking over the caller
+
+Three separate causes, in the order they are worth checking. They are separate
+because the fixes share nothing, and a caller describing all three at once
+("choppy and robotic, and it interrupts you") is usually describing the first
+and the third, which arrived together.
+
+**Robotic.** The engine is speaking with Piper, not Kokoro. Piper is AVA's CPU
+default, it is audibly synthetic, and the fix is one line in `.env` plus a model
+fetch and a rebuild — in that order, because the backend's model has to be on
+disk first (see `docs/ava-integration.md`, “The voice”):
+
+```bash
+grep -n '^LOCAL_TTS_BACKEND\|^LOCAL_TTS_VOICE' .env   # expect kokoro / af_heart
+docker exec zeus-ava-local-ai printenv LOCAL_TTS_BACKEND   # what the container actually holds
+bash scripts/fetch-ava-models.sh          # stages the backend .env selects
+bash scripts/deploy-ava-voice.sh --check  # verifies the staged model before you build
+docker compose --profile voice up -d --build local-ai-server
+```
+
+`env_file` is read at container **create** time (§7), so a container built before
+the switch keeps its old backend until it is recreated, not restarted.
+
+**Clipped mid-sentence, or half a sentence then nothing.** Either the reply is
+being truncated by the model's token ceiling, or the engine is cutting its own
+speech when it hears its own echo. Both are the *runtime* config, and the first
+thing to check is whether it is even the current one — the deployed copy is
+seeded once and never overwritten, so a template fix that never reached the
+engine looks exactly like a fix that did not work:
+
+```bash
+bash scripts/fetch-ava.sh --check    # ✗ → the deploy is running an older template
+bash scripts/fetch-ava.sh --force    # re-seed; discards admin edits to that file
+```
+
+**Talking over the caller.** The `barge_in` windows in the mounted copy: they
+are what keeps the agent's own voice, coming back off the caller's handset,
+from counting as the caller talking. Ask the engine what it loaded rather than
+what the template says — they are different files:
+
+```bash
+curl -s localhost:15000/metrics | grep ai_agent_config_barge_in_
+curl -s localhost:15000/metrics | grep ai_agent_barge_in_actions_total
+curl -s localhost:8770/api/calls?limit=5    # "barge_in_count" on the record
+```
+
+A call with a stutter and a high `barge_in_count` is the echo being counted; a
+call where the caller cannot be heard at all until the agent stops is the
+opposite, and both are answered by the windows, not by the prompt. The values
+and the reasons are in `config/ava/ai-agent.yaml`; changing them on the host is
+changing a mounted file, so re-seed it deliberately and record the before/after
+from those three commands.
+
 ## Before you escalate
 
 Capture, in this order: `curl -s localhost:15000/health`, the engine's log
