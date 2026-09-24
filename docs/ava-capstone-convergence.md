@@ -1041,6 +1041,24 @@ docker exec zeus-freepbx asterisk -rx "dialplan show zeus-ai-interview"
 # FreePBX-regenerated file, or a fragment nothing loads (read-only)
 python3 pbx/pjsip_owner_check.py --live
 
+# adding an extension: the portal refuses with a reason, it never creates blind
+# (D6 — the same check-then-create judgement the tool below makes)
+curl -s -X POST "$PORTAL/api/phone/extensions" -H "Cookie: $SESSION" \
+  -d '{"extensionId":"1001","name":"Ada","email":"ada@example.com"}'
+#   409 extension_exists         — a complete user + device is already there
+#   409 extension_not_creatable  — names the leftover state and its repair
+#   503 preflight_unavailable    — a source could not be read (AMI, the
+#                                  /etc/asterisk mount, or FreePBX's API)
+
+# the same three sources, reported before anyone clicks Add extension
+curl -s "$PORTAL/api/health" \
+  | python3 -c 'import json,sys; print(json.load(sys.stdin)["services"]["extension_preflight"])'
+#   degraded names which source failed and its repair; ok means a create can be judged
+
+# and the authority, run on the voice host: 0 in sync, 1 an apply converges it,
+# 3 a person
+python3 pbx/provision_extension.py --intent accounts.json --check
+
 # an interview line reaches its workflow: set one for a DID the account holds,
 # then confirm the plan renders ZEUS_CAPSTONE_TARGET from it
 curl -s -X PUT "$PORTAL/api/voice/agent-mapping" -H "Cookie: $SESSION" \
@@ -1051,6 +1069,14 @@ curl -s "$PORTAL/api/admin/voice-routing" -H "Authorization: Bearer $PBX_SYNC_TO
 docker exec zeus-freepbx asterisk -rx "core show channels concise"   # take the channel id
 curl -s -o /dev/null -w '%{http_code}\n' "$PORTAL/api/voice/context/<uniqueid>"          # 401
 curl -s -H "Authorization: Bearer $VOICE_CONTEXT_SECRET" "$PORTAL/api/voice/context/<uniqueid>"
+
+# the Capstone half of the record is a *handle*, not a link: the portal has the
+# shared call id and the workflow, never Capstone's signed run token (§2.6), so
+# the context read publishes both and names nothing it cannot honour
+curl -s -H "Authorization: Bearer $VOICE_CONTEXT_SECRET" "$PORTAL/api/voice/context/<uniqueid>" \
+  | python3 -c 'import json,sys; print(json.load(sys.stdin).get("capstone_transcript"))'
+#   present only for a call whose hand-offs include `capstone`: {call_id, workflow}
+#   for a call that never reached it: None (a routing finding, not a lost transcript)
 
 # the boring assertions from D7
 docker exec zeus-freepbx asterisk -rx "odbc show"          # one active connection
