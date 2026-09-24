@@ -145,3 +145,47 @@ export async function deleteExtension(
   );
 }
 
+// ---- Extension list (Core module's `fetchAllExtensions`) ----
+
+/** One extension as the Core API returns it. */
+export interface FreePbxExtensionRow {
+  extensionId: string;
+  tech: string;
+}
+
+/**
+ * Every extension FreePBX knows about, from the Core module's own query.
+ *
+ * This is the read the provisioning preflight needs and the portal never had:
+ * `POST /api/phone/extensions` used to create blind. The API is FreePBX's own
+ * answer to "what extensions exist", so the portal is asking the authority
+ * rather than re-deriving it from tables it cannot see.
+ *
+ * The response is normalised defensively — the api module has shipped the row
+ * both as `{ extension: { … } }` and flat — because a shape change must surface
+ * as "the preflight could not read the PBX" (a refusal), never as "no
+ * extensions exist" (a create over an existing number). A malformed body is
+ * therefore an error, not an empty list.
+ */
+export async function fetchAllExtensions(): Promise<FreePbxExtensionRow[]> {
+  const query = `query { fetchAllExtensions { extension { extensionId tech } } }`;
+  const data = await gql<{ fetchAllExtensions?: unknown }>(query);
+
+  const raw = data?.fetchAllExtensions;
+  if (!Array.isArray(raw)) {
+    throw new Error(
+      "fetchAllExtensions did not return a list — the PBX API's shape is not what " +
+        "this preflight reads, so it cannot tell whether an extension exists",
+    );
+  }
+
+  const rows: FreePbxExtensionRow[] = [];
+  for (const entry of raw) {
+    const row = (entry as { extension?: unknown })?.extension ?? entry;
+    const extensionId = String((row as { extensionId?: unknown })?.extensionId ?? "").trim();
+    if (!extensionId) continue;
+    rows.push({ extensionId, tech: String((row as { tech?: unknown })?.tech ?? "").trim() });
+  }
+  return rows;
+}
+

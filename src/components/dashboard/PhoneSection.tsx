@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, useEffect, useRef } from "react";
-import { api } from "@/lib/client-api";
+import { api, apiErrorMessage } from "@/lib/client-api";
 import type { PhoneNumber, FreePBXExtension } from "@/lib/types";
 import { useToast } from "@/components/ToastProvider";
 import { PlusIcon, RefreshIcon, CheckCircleIcon, SearchIcon, PhoneIcon, XIcon, TrashIcon, AlertCircleIcon } from "@/components/icons";
@@ -141,7 +141,10 @@ export default function PhoneSection({ numbers: initialNumbers, extensions: init
         toast.success("Extension provisioned.");
       }
     } catch (e) {
-      toast.error(e instanceof Error ? e.message : "Provisioning failed");
+      // The preflight's refusals are structured (`reason` + `repair`): a number
+      // that already exists, or one with leftover state. Surfacing the reason is
+      // the whole point — the old path showed a raw collision and nothing else.
+      toast.error(apiErrorMessage(e, "Provisioning failed"));
     } finally { setProvisioning(false); }
   }
 
