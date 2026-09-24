@@ -48,6 +48,121 @@ function message(e: unknown): string {
 }
 
 /**
+ * One of the three authorities the preflight reads, and whether it answered.
+ * `detail` names what is wrong *and* what restores it — the same half of the
+ * refusal the create route prints, so the readiness screen and the refusal
+ * agree about the repair.
+ */
+export interface PreflightSource {
+  source: "freepbx_api" | "asterisk_ami" | "asterisk_config";
+  ok: boolean;
+  detail: string;
+}
+
+export interface PreflightReadiness {
+  /** Every source answered — a create can be judged. */
+  ok: boolean;
+  sources: PreflightSource[];
+}
+
+/** The repair common to every unreadable source, phrased once. */
+const SOURCE_REPAIR =
+  "restore the missing source (AMI credentials, the Asterisk config mount, or " +
+  "FreePBX's API) — or run the PBX-side preflight on the voice host: " +
+  "`python3 pbx/provision_extension.py --intent <intent.json> --check`";
+
+/**
+ * Whether each of the preflight's three sources can be read right now.
+ *
+ * `POST /api/phone/extensions` refuses with a 503 when any source is
+ * unreadable, and that refusal is correct but late: an operator finds out only
+ * when they try to add a phone. This probes the same three reads the create path
+ * performs — FreePBX's extension list, the AstDB over AMI, and the mounted
+ * `/etc/asterisk` — and names which one is missing, so `/api/health` and the
+ * Phone screen can say it before anyone clicks. Each source is probed
+ * independently: a first failure must not hide the state of the other two.
+ *
+ * Read-only. It creates nothing and changes no config; it is safe to run on
+ * every health request.
+ */
+export async function preflightReadiness(dir: string = DEFAULT_CONF_DIR): Promise<PreflightReadiness> {
+  const sources: PreflightSource[] = [];
+
+  // 1. FreePBX's own answer to "what extensions exist".
+  try {
+    await fetchAllExtensions();
+    sources.push({ source: "freepbx_api", ok: true, detail: "" });
+  } catch (e) {
+    sources.push({
+      source: "freepbx_api",
+      ok: false,
+      detail: `could not read FreePBX's extension list (${message(e)}) — ${SOURCE_REPAIR}`,
+    });
+  }
+
+  // 2. Asterisk's own answer, over AMI: does a `Command` complete with output?
+  const ami = getAmiClient();
+  if (!ami.isConnected) {
+    sources.push({
+      source: "asterisk_ami",
+      ok: false,
+      detail: `AMI is not connected, so leftover extension state could not be read — ${SOURCE_REPAIR}`,
+    });
+  } else {
+    try {
+      const response = await ami.sendAction({
+        Action: "Command",
+        Command: `database show ${ASTDB_FAMILY}`,
+      });
+      sources.push(
+        response.Output === undefined
+          ? {
+              source: "asterisk_ami",
+              ok: false,
+              detail:
+                "`database show` answered without output — this client cannot tell whether " +
+                `AMPUSER state exists — ${SOURCE_REPAIR}`,
+            }
+          : { source: "asterisk_ami", ok: true, detail: "" },
+      );
+    } catch (e) {
+      sources.push({
+        source: "asterisk_ami",
+        ok: false,
+        detail: `the AstDB read failed (${message(e)}) — ${SOURCE_REPAIR}`,
+      });
+    }
+  }
+
+  // 3. The mounted config, for endpoint ownership.
+  sources.push(
+    existsSync(dir)
+      ? { source: "asterisk_config", ok: true, detail: "" }
+      : {
+          source: "asterisk_config",
+          ok: false,
+          detail: `the Asterisk config directory ${dir} is not mounted, so endpoint ownership could not be read — ${SOURCE_REPAIR}`,
+        },
+  );
+
+  return { ok: sources.every((s) => s.ok), sources };
+}
+
+/**
+ * One line for a health probe: which sources could not be read, why, and the
+ * repair. The shared repair is stated once at the end rather than repeated per
+ * source, and each source keeps its specific cause (an unset `FREEPBX_URL`, a
+ * missing mount) — a readiness check that only said "preflight unavailable"
+ * would be the same unactionable dialog the preflight exists to replace.
+ */
+export function preflightReadinessError(readiness: PreflightReadiness): string {
+  const reasons = readiness.sources
+    .filter((s) => !s.ok)
+    .map((s) => s.detail.replace(` — ${SOURCE_REPAIR}`, ""));
+  return `adding an extension would be refused: ${reasons.join("; ")} — ${SOURCE_REPAIR}`;
+}
+
+/**
  * Measure the PBX for one extension. `ok: false` means the caller must refuse
  * — the PBX could not be read, so nothing here is safe to create over.
  */

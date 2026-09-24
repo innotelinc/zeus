@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import db from "@/lib/db";
 import { getAmiClient } from "@/lib/ami";
 import { avaAdminBase, avaConfigured, listAgents } from "@/lib/ava";
+import { preflightReadiness, preflightReadinessError } from "@/lib/extension-preflight-live";
 
 export const dynamic = "force-dynamic";
 
@@ -74,6 +75,29 @@ async function probeAvaEngine(): Promise<ProbeResult> {
 }
 
 /**
+ * Can the phone plane create an extension *safely*?
+ *
+ * `POST /api/phone/extensions` refuses with a 503 when any of the preflight's
+ * three sources (FreePBX's extension list, the AstDB over AMI, the mounted
+ * `/etc/asterisk`) cannot be read — correct, but an operator only meets it when
+ * they click Add extension. This reports which source is missing from the same
+ * place the rest of the voice plane is reported, so the cause is visible before
+ * the refusal.
+ *
+ * `degraded`, never `down`: a box that cannot provision a phone is not a box
+ * that cannot answer one — the AST/AMI state that breaks a *create* is exactly
+ * the state a live call may not care about. The same reasoning the VoIP.ms
+ * config check follows.
+ */
+async function probeExtensionPreflight(): Promise<ProbeResult> {
+  const t0 = Date.now();
+  const readiness = await preflightReadiness();
+  const latency_ms = Date.now() - t0;
+  if (readiness.ok) return { status: "ok", latency_ms };
+  return { status: "degraded", latency_ms, error: preflightReadinessError(readiness) };
+}
+
+/**
  * Reachability is not usability: on a first run AVA mints a one-time admin
  * password and answers 403 to everything until it is rotated, so the console
  * can be up while the Voice screens read nothing. The authenticated call is
@@ -121,6 +145,7 @@ interface HealthResponse {
     avantfax: ProbeResult;
     ava_engine: ProbeResult;
     ava_admin: ProbeResult;
+    extension_preflight: ProbeResult;
   };
 }
 
@@ -154,7 +179,7 @@ export async function GET() {
   //    screens use, so the two agree about whether AVA is in play here.
   const voiceExpected = avaConfigured();
 
-  const [dbResult, freepbxResult, amiResult, stripeResult, avantfaxResult, engineResult, adminResult] =
+  const [dbResult, freepbxResult, amiResult, stripeResult, avantfaxResult, engineResult, adminResult, preflightResult] =
     await Promise.all([
       // ── Database (SQLite) ──────────────────────────────────
       probe("database", async () => {
@@ -258,6 +283,11 @@ export async function GET() {
       // another's name (which is exactly how it looked on the first run).
       voiceExpected ? probeAvaEngine() : Promise.resolve<ProbeResult>({ status: "ok", latency_ms: 0 }),
       voiceExpected ? probeAvaAdmin() : Promise.resolve<ProbeResult>({ status: "ok", latency_ms: 0 }),
+
+      // ── Extension provisioning readiness ──────────────────
+      // Last on purpose: the array above is destructured by position (see the
+      // note on the AVA probes) — inserting here shifts nothing.
+      probeExtensionPreflight(),
     ]);
 
   // ── VoIP.ms REST API credentials ───────────────────────────
@@ -288,6 +318,7 @@ export async function GET() {
     avantfax: avantfaxResult,
     ava_engine: engineResult,
     ava_admin: adminResult,
+    extension_preflight: preflightResult,
   };
 
   const downCount = Object.values(services).filter((s) => s.status === "down").length;
