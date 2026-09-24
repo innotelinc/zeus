@@ -64,8 +64,13 @@ Dograh ARI connects to Zeus/FreePBX):**
 1. **Capstone convergence phase 2 — retire the bundled PBX.** Capstone's
       docker-compose still ships its own FreePBX for standalone installs; the
       target is Capstone dialing Zeus as the only voice plane on the shared host.
-      The structural-parity checklist is the gate. The Zeus-side phase plan for
-      it is [`docs/ava-capstone-convergence.md`](ava-capstone-convergence.md) §8.
+      The structural-parity checklist is the gate, and it is now written down
+      rather than referred to: twelve layers with the check that says each is
+      supplied on the shared plane, in
+      [`docs/ava-capstone-convergence.md`](ava-capstone-convergence.md) §8 ("The
+      structural-parity checklist"). The external plan the roadmap used to cite
+      (`innotel-platform-stack/docs/convergence-capstone-zeus.md`) is not in this
+      checkout, so the item could not be evaluated from here before this.
 2. ~~**AI voicemail summaries in the default path** — give the LLM call its own
       model pin so a free-tier cooldown cannot silence summaries.~~
       **Done (2026-09-23).** The summary path no longer shares a model with the
