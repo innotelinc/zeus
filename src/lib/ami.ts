@@ -296,8 +296,13 @@ export class AmiClient {
         continue;
       }
 
-      // Handle action response
-      if (parsed.ActionID && parsed.Response === "Success") {
+      // Handle action response. `Follows` is Asterisk's answer to an action
+      // whose payload is multi-line (`Command`, and anything framed like it):
+      // the `Output` arrives in the same block, so it is a completed action and
+      // must resolve like `Success` — treating it as neither is what made this
+      // client wait out the 10s timeout on every `Command` (the `module reload`
+      // in the phone route included) and reject with no output.
+      if (parsed.ActionID && (parsed.Response === "Success" || parsed.Response === "Follows")) {
         if (this.pendingActions.has(parsed.ActionID)) {
           const p = this.pendingActions.get(parsed.ActionID)!;
           this.pendingActions.delete(parsed.ActionID);
@@ -320,8 +325,19 @@ export class AmiClient {
       // Skip empty lines
       if (!line.trim()) continue;
 
+      // The `Command` action's output is terminated by this sentinel line,
+      // which is framing rather than data.
+      if (line.trim() === "--END COMMAND--") continue;
+
       const colIdx = line.indexOf(":");
-      if (colIdx === -1) continue;
+      if (colIdx === -1) {
+        // AMI's multi-line values carry their continuation lines raw (no key);
+        // they belong to the last field parsed. Skipping them truncated
+        // `Command` output at its first line, which is exactly the shape
+        // `database show` uses.
+        if (result._lastKey) result[result._lastKey] += "\n" + line;
+        continue;
+      }
 
       const key = line.slice(0, colIdx).trim();
       let value = line.slice(colIdx + 1);

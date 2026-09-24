@@ -400,9 +400,11 @@ duplicated:** inbound routes (`ava_routes.py`, below), the account's voice
 mapping (`PUT /api/voice/agent-mapping`), and the WebRTC endpoint, whose owner is
 still an open decision (`docs/ava-capstone-convergence.md` §11.5) — the tool
 creates the framework's endpoint and never the portal's fragment. The portal's
-own `freepbx.addExtension` path (the FreePBX API, from the Phone screen) is the
-one remaining second writer; delegating it onto this preflight is the open half
-of P3, named in the convergence doc rather than implied here.
+own `freepbx.addExtension` path (the FreePBX API, from the Phone screen) used to
+be a second writer; it now consults the same judgement —
+`src/lib/extension-preflight.ts`, mirrored from this tool and pinned equal to it
+by `scripts/extension-preflight.test.mjs` — and **refuses (503) when it cannot
+take the measurement**, rather than creating blind.
 
 ## MS Teams Direct Routing (Cerulean trust plane)
 

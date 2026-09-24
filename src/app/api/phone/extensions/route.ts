@@ -9,6 +9,8 @@ import {
   removeFragment,
   type SoftphoneState,
 } from "@/lib/pjsip-endpoint";
+import { judgeExtension, isValidExtension } from "@/lib/extension-preflight";
+import { readObservedExtensions } from "@/lib/extension-preflight-live";
 import { randomUUID } from "node:crypto";
 import type { FreePBXExtension } from "@/lib/types";
 
@@ -54,12 +56,62 @@ export async function POST(req: Request) {
     return badRequest("extensionId, name, and email are required");
   }
 
+  const extensionId = String(body.extensionId).trim();
+  if (!isValidExtension(extensionId)) {
+    return badRequest(
+      "extensionId must be 2-8 digits — a user/device is a number you dial, and " +
+        "every consumer on this box assumes digits",
+    );
+  }
+
+  // ── The preflight (D6 / P3) ────────────────────────────────────
+  // This route used to be the *second* writer D6 exists to remove: it called
+  // `freepbx.addExtension` without asking whether the number was safe to create
+  // over, which is how a raw `(1,'maxchans')` collision surfaced as an
+  // unactionable dialog. It now consults the same judgement the PBX-side
+  // provisioner makes (`src/lib/extension-preflight.ts`) before it writes.
+  //
+  // A measurement that could not be taken is a refusal, not a green light: an
+  // unread source read as "nothing there" is exactly how a new phone inherits a
+  // deleted one's call forwarding.
+  const preflight = await readObservedExtensions(extensionId);
+  if (!preflight.ok) {
+    return NextResponse.json(
+      {
+        error: "preflight_unavailable",
+        reason: `could not check whether ${extensionId} is safe to create: ${preflight.reason}`,
+        repair:
+          "run the PBX-side preflight on the voice host — `python3 pbx/provision_extension.py " +
+          "--intent <intent.json> --check` — or restore AMI and the Asterisk config mount",
+      },
+      { status: 503 },
+    );
+  }
+
+  const verdict = judgeExtension({ extension: extensionId, name: String(body.name).trim() }, preflight.observed);
+  if (verdict.state === "refuse") {
+    return NextResponse.json(
+      { error: "extension_not_creatable", reason: verdict.reason, repair: verdict.repair },
+      { status: 409 },
+    );
+  }
+  if (verdict.state === "in-sync") {
+    return NextResponse.json(
+      {
+        error: "extension_exists",
+        reason: `${extensionId} already exists in FreePBX (a user and a device) — creating it again would collide`,
+        repair: "delete it first, or choose another number",
+      },
+      { status: 409 },
+    );
+  }
+
   try {
     const secret = body.secret ?? randomUUID().replace(/-/g, "").slice(0, 16);
     const vmPin = body.vmPassword ?? Math.random().toString().slice(2, 6);
 
     const result = await freepbx.addExtension({
-      extensionId: body.extensionId,
+      extensionId,
       name: body.name,
       email: body.email,
       tech: "pjsip",
@@ -83,15 +135,15 @@ export async function POST(req: Request) {
     // authenticated nothing.
     let softphone: SoftphoneState;
     try {
-      softphone = provisionFragment(body.extensionId, secret);
+      softphone = provisionFragment(extensionId, secret);
     } catch (e) {
       softphone = {
-        ...readFragmentState(body.extensionId),
+        ...readFragmentState(extensionId),
         provisioned: false,
         reason:
           `the extension was created, but the WebRTC fragment could not be written: ` +
           `${e instanceof Error ? e.message : "unknown error"}. The secret below only works ` +
-          `once ${"/etc/asterisk/pjsip_ext_" + body.extensionId + ".conf"} exists and is included.`,
+          `once ${"/etc/asterisk/pjsip_ext_" + extensionId + ".conf"} exists and is included.`,
       };
     }
     await reloadPjsipIfLive(softphone);
@@ -100,12 +152,12 @@ export async function POST(req: Request) {
     db.prepare(
       `INSERT INTO freepbx_extensions (id, user_id, extension_id, extension_name, extension_secret, voicemail_enabled, voicemail_pin, status, device_state)
        VALUES (?, ?, ?, ?, ?, ?, ?, 'active', 'offline')`,
-    ).run(extId, user.id, body.extensionId, body.name, secret, body.vmEnable ? 1 : 0, vmPin);
+    ).run(extId, user.id, extensionId, body.name, secret, body.vmEnable ? 1 : 0, vmPin);
 
     return NextResponse.json(
       {
         success: true,
-        extensionId: body.extensionId,
+        extensionId,
         secret,
         message: result.addExtension.message,
         softphone,
