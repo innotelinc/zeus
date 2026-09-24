@@ -1036,8 +1036,8 @@ makes a row done rather than believed.
 
 | # | Layer | What the bundled PBX supplies | Parity on the shared plane | How it is checked |
 |---|---|---|---|---|
-| 1 | Dialplan | `[dograh-inbound]`, agent Custom Extensions `8000+`, `[from-internal-custom]` (append-shared) | The same contexts converged by `pbx/asterisk_converge.py`, one owner per fragment (`--owner capstone`) | `pbx/tests/test_ava_dialplan_contract.py`; `asterisk_converge.py --owner capstone --check` against the live file |
-| 2 | ARI | `[dograh]` user, dograh's `Stasis(dograh_<hex>)` app registered | The same user in the real `/etc/asterisk/ari.conf` (no include), same host/port/secret | `python3 pbx/ava_ari_check.py` (engine + PBX env agree), `curl -s localhost:8088/ari/applications` |
+| 1 | Dialplan | `[dograh-inbound]`, agent Custom Extensions `8000+`, `[from-internal-custom]` (append-shared) | The same contexts converged by `pbx/asterisk_converge.py`, one owner per fragment (`--owner capstone`) | `pbx/tests/test_ava_dialplan_contract.py` + `pbx/tests/test_parity_checklist.py` (off-host); `asterisk_converge.py --owner capstone --check` against the live file |
+| 2 | ARI | `[dograh]` user, dograh's `Stasis(dograh_<hex>)` app registered | The same user in the real `/etc/asterisk/ari.conf` (no include), same host/port/secret | `python3 pbx/ava_ari_check.py` (engine + PBX env agree) + `pbx/tests/test_parity_checklist.py` (off-host, one user per owner); `curl -s localhost:8088/ari/applications` |
 | 3 | RTP | `rtp_custom.conf` **and** the durable `kvstore_Sipsettings.rtpstart/rtpend` row | Zeus's host-published range covers the effective range; Capstone publishes none in add-on mode | `docker exec zeus-freepbx asterisk -rx "rtp show settings"` inside the published block |
 | 4 | STUN/TURN | the bundled `coturn` service | Zeus's coturn is primary; both resolve `PJSIP_STUN_TURN_ADDR` the same way | `docker exec zeus-freepbx asterisk -rx "pjsip show settings"`, `.env` on the shared box |
 | 5 | WSS / WebRTC | `http.conf`, `websocket_client.conf`, certs | Zeus's `http_custom.conf` + the portal's WSS host serve the softphone and the dashboard's PBX view | `DASHBOARD_PBX_WSS_HOST` resolves to the Zeus PBX; §7's surfaces load |
@@ -1047,7 +1047,7 @@ makes a row done rather than believed.
 | 9 | Recordings | Capstone's recording path into MinIO | Unchanged in add-on mode (Capstone keeps its own store) — the row is in the list because it is *called from* the dialplan | a call that records, and a CDR row in the shared DB (§2.7) |
 | 10 | Entitlement | `sync_dograh_routes.py` refuses an unentitled number/plan | The same refusal, at write time, on the shared plane | the route-write refusal in `capstone/docs/zeus-integration.md` §8 G7 |
 | 11 | Convergence ownership | Capstone's `capstone-pbx-sync` timer | Two timers, two owners, neither writing the other's context | both `--check` runs byte-identical in either order (G1's test) |
-| 12 | Fail-closed default | the bundled PBX is the default topology | With `CAPSTONE_PBX=zeus` and no profile, nothing brings up a second PBX — `freepbx`, `coturn` and `pbx-portal` all sit behind `profiles: ["standalone"]` / `["portal"]`, so it takes a flag to start one | `docker compose config --services` on the shared box names no `freepbx`/`coturn`/`pbx-portal` |
+| 12 | Fail-closed default | the bundled PBX is the default topology | With `CAPSTONE_PBX=zeus` and no profile, nothing brings up a second PBX — `freepbx`, `coturn` and `pbx-portal` all sit behind `profiles: ["standalone"]` / `["portal"]`, so it takes a flag to start one | `docker compose config --services` on the shared box names no `freepbx`/`coturn`/`pbx-portal`; `pbx/tests/test_parity_checklist.py` reads that from the sibling checkout off-host |
 
 Three rules for reading it, because the table is easy to read as a to-do list it
 is not:
@@ -1064,6 +1064,47 @@ is not:
   (off-host, in `pbx/tests`) so the Capstone side can flip a default without
   taking the voice plane down with it.
 
+**As built (2026-09-24): the three rows Zeus owes are checked off-host.**
+`pbx/tests/test_parity_checklist.py` closes the half of rows 1, 2 and 12 that
+does not need `.30`, and is explicit about which half that is:
+
+* **Row 1** — the shipped `pbx/asterisk/extensions_custom.conf` defines no
+  context another product owns, and reaches a Capstone workflow only through
+  `${ZEUS_CAPSTONE_TARGET}` rather than a literal. Converged beside a
+  `--owner capstone` fragment, in **either** order, every context survives, each
+  product's marked segment stays its own, and the pair is a fixed point for both
+  owners — which is what makes the two independent `--check` runs mean
+  something rather than pass by construction.
+* **Row 2** — the two ARI fragments define disjoint users (`ari.conf` the
+  portal's, `ari_additional_custom.conf` AVA's, `CONVERGE_OWNED` naming both),
+  and converging them beside a Capstone `[dograh]` yields each user exactly
+  once with `[general]` and the foreign user untouched. The duplicate is the
+  failure this row exists for: sorcery refuses the *whole* file over one
+  repeated object, so one duplicate costs every ARI user.
+* **Row 12** — read from the sibling Capstone checkout (`CAPSTONE_COMPOSE`,
+  else `../capstone/docker-compose.yml`; **skipped, never passed**, when it is
+  absent): `freepbx`, `coturn` and the bundled `portal` each carry a non-empty
+  `profiles:`, so `docker compose config --services` with no flag names none of
+  them. Zeus's own half is asserted beside it — the full-stack compose supplies
+  the `freepbx` and `coturn` those services vacate, and the portal-only compose
+  names no PBX at all.
+
+Rows 3 and 4 keep their "checked with a call" rule and rows 5–11 stay as
+written: this is the half of the gate this repo owns, not the whole one.
+
+**Found while checking row 2 — measured, not yet fixed.** A fragment whose last
+section is followed by comment prose is *not* byte-idempotent through
+`asterisk_converge.py`: that prose lands as the **next** section's attributed
+prefix on the target, and the next apply installs a second copy of it inside the
+first section's body. `pbx/asterisk/ari.conf` ends in exactly that prose (the
+note about AVA's user deliberately not being rendered there), and the measured
+growth is 3155 → 4036 bytes on one re-apply, per run. The *users* stay correct,
+so nothing a caller reaches is wrong — but `--check` never converges, which
+makes the sync timer apply (and the file grow) on every tick. The test records
+this and asserts the invariants that do hold rather than pinning the growth as
+expected; the repair belongs in the replace policy (`_replace_context`), not in
+the fragments.
+
 **Exit:** every row checked on the shared box, in one run, recorded — then
 Capstone's item 7 ("deprecate the bundled PBX as the default topology") is a
 default flip, not a migration.
@@ -1075,8 +1116,9 @@ default flip, not a migration.
 Unit level (already the house style — no PBX needed):
 
 ```bash
-python3 -m unittest discover -s pbx/tests -v        # routing, gate, converge, ARI agreement,
-                                                   # and the hand-off dialplan's contract
+python3 -m unittest discover -s pbx/tests -v        # routing, gate, converge, ARI agreement, the
+                                                   # hand-off dialplan's contract, and the
+                                                   # structural-parity rows Zeus owns (§8)
 python3 -m unittest discover -s scripts/tests -v    # seeding, provenance, env writes
 npm test                                            # portal
 ```
