@@ -12,8 +12,10 @@
 #      engine does not have)
 #   3. the AVA checkout is at the pinned rev and the seeded config is current
 #      (scripts/fetch-ava.sh --check)
-#   4. both speech models are on disk         (the server starts without them,
-#      logs two "model not found" lines, and every call has no speech)
+#   4. both speech models are on disk, and the running speech server is the
+#      backend .env selects  (the server starts without the models, logs two
+#      "model not found" lines, and every call has no speech; and a container
+#      created before LOCAL_TTS_BACKEND changed keeps speaking the old voice)
 #   5. seed, fetch assets, render the dialplan, start the profile
 #   6. rotate AVA's one-time admin password into .env
 #      (until then the portal logs in and every screen is 403)
@@ -111,6 +113,42 @@ for model in "$stt" "$tts"; do
   [ -e "$model" ] || fail "missing speech model: ${model} — run: ${fetch_hint}"
 done
 pass "Vosk + ${tts_backend} models present"
+
+# The check above proves the artifacts for the backend the ENV FILE names are on
+# disk. It says nothing about the container that is already RUNNING: compose
+# reads env_file when it CREATES a container, so changing LOCAL_TTS_BACKEND and
+# not recreating leaves a server whose own environment still says piper while
+# .env, this check and the operator all say kokoro. Every file on disk is then
+# correct and the caller hears the other voice — the same silence-shaped failure
+# the fetch/backend agreement exists to prevent, one container later. So compare
+# what .env selects against what the process was actually created with.
+env_label="${ENV_FILE#"${REPO_ROOT}"/}"
+env_backend="$(python3 scripts/env_file.py get "$ENV_FILE" LOCAL_TTS_BACKEND)"
+env_voice="$(python3 scripts/env_file.py get "$ENV_FILE" LOCAL_TTS_VOICE)"
+if [ -z "$env_backend" ] && [ -z "$env_voice" ]; then
+  pass "no TTS backend or voice in ${env_label} — the running server keeps compose's defaults"
+elif ! command -v docker >/dev/null 2>&1; then
+  warn "docker is not on PATH, so the running local-ai-server could not be compared with ${env_label}"
+elif ! docker inspect zeus-ava-local-ai >/dev/null 2>&1; then
+  # The voice profile is opt-in and this script also runs on hosts that never
+  # start it, so an absent container is not a disagreement.
+  warn "zeus-ava-local-ai is not running on this host — nothing to compare with ${env_label}"
+else
+  live_env="$(docker inspect -f '{{range .Config.Env}}{{println .}}{{end}}' zeus-ava-local-ai)"
+  drift=()
+  for pair in "LOCAL_TTS_BACKEND=${env_backend}" "LOCAL_TTS_VOICE=${env_voice}"; do
+    key="${pair%%=*}"; want="${pair#*=}"
+    # Only a key the env file actually sets is compared: an unset one is a
+    # compose default, and the container's value IS that default.
+    if [ -z "$want" ]; then continue; fi
+    have="$(printf '%s\n' "$live_env" | sed -n "s/^${key}=//p" | head -1)"
+    [ "$have" = "$want" ] || drift+=("${key}=${want} (running: ${have:-unset})")
+  done
+  if [ "${#drift[@]}" -gt 0 ]; then
+    fail "the running local-ai-server was created with a different voice than ${env_label} selects: ${drift[*]} — the container's own environment is not rebuilt from the file until it is recreated: docker compose --profile voice up -d --force-recreate local-ai-server"
+  fi
+  pass "the running local-ai-server speaks what ${env_label} selects (${env_backend:-compose default}${env_voice:+ ${env_voice}})"
+fi
 
 # ── host sanity: this is the box the profile targets ────────────────────────
 test_ip="$(ip -4 route get 1.1.1.1 2>/dev/null | sed -n 's/.*src \([0-9.]*\).*/\1/p' | head -1)"

@@ -17,6 +17,7 @@ Run:  python3 -m unittest discover -s scripts/tests -v
 import hashlib
 import os
 import shutil
+import stat
 import subprocess
 import tempfile
 import unittest
@@ -26,6 +27,21 @@ REPO_ROOT = os.path.abspath(os.path.join(HERE, "..", ".."))
 SCRIPT = os.path.join(REPO_ROOT, "scripts", "deploy-ava-voice.sh")
 TEMPLATE = os.path.join(REPO_ROOT, "config", "ava", "ai-agent.yaml")
 ARI_SECRET = "shared-ari-secret-between-the-two-files"
+
+#: A stand-in for the docker CLI. The deploy script asks it exactly two things:
+#: whether the local-ai-server container exists, and what environment it was
+#: created with. `FAKE_DOCKER_ENV` names a file of KEY=VALUE lines that answers
+#: the second; when it is unset or names nothing, the container does not exist.
+FAKE_DOCKER = """#!/usr/bin/env bash
+set -euo pipefail
+if [ "${1:-}" != "inspect" ]; then exit 0; fi
+container_env="${FAKE_DOCKER_ENV:-}"
+[ -n "$container_env" ] && [ -f "$container_env" ] || exit 1
+case "$*" in
+  *Config.Env*) cat "$container_env" ;;
+esac
+exit 0
+"""
 
 ENGINE_ENV = """\
 # staged for the deploy preflight
@@ -77,6 +93,20 @@ class PreflightTest(unittest.TestCase):
             shell=True, capture_output=True, text=True,
         ).stdout.strip()
 
+        # A Kokoro model tree, so a case can move .env onto that backend
+        # without the model check refusing first.
+        self.kokoro = os.path.join(self.runtime, "models", "tts", "kokoro")
+        os.makedirs(self.kokoro, exist_ok=True)
+        open(os.path.join(self.kokoro, "kokoro-v1_0.pth"), "wb").close()
+
+        self.bin = os.path.join(self.tmp, "bin")
+        os.makedirs(self.bin, exist_ok=True)
+        fake = os.path.join(self.bin, "docker")
+        with open(fake, "w", encoding="utf-8") as fh:
+            fh.write(FAKE_DOCKER)
+        os.chmod(fake, os.stat(fake).st_mode | stat.S_IXUSR | stat.S_IXGRP)
+        self.container_env_file = os.path.join(self.tmp, "container.env")
+
         self.write_env()
         self.write_pbx_env()
         self.src, self.pin = self._make_checkout()
@@ -108,7 +138,13 @@ class PreflightTest(unittest.TestCase):
         head = _git(["rev-parse", "HEAD"], cwd=src).stdout.strip()
         return src, head
 
-    def _run(self, *args):
+    def _container_env(self, lines):
+        """Set what the fake `docker inspect` reports for the running container."""
+        with open(self.container_env_file, "w", encoding="utf-8") as fh:
+            fh.write("\n".join(lines) + "\n")
+        return self.container_env_file
+
+    def _run(self, *args, live_env=None):
         return subprocess.run(
             ["bash", SCRIPT, *args],
             cwd=REPO_ROOT,
@@ -116,6 +152,10 @@ class PreflightTest(unittest.TestCase):
             text=True,
             env={
                 **os.environ,
+                # The fake docker is first on PATH; nothing else here needs the
+                # real CLI, and no case may be decided by what the host runs.
+                "PATH": self.bin + os.pathsep + os.environ.get("PATH", ""),
+                "FAKE_DOCKER_ENV": live_env or "",
                 "AVA_ENV_FILE": self.env_file,
                 "AVA_RUNTIME_DIR": self.runtime,
                 "AVA_SRC": self.src,
@@ -166,6 +206,58 @@ class PreflightTest(unittest.TestCase):
         proc = self._run("--check")
         self.assertEqual(proc.returncode, 1)
         self.assertIn("older", proc.stderr)
+
+    def test_the_running_server_matching_the_env_file_is_approved(self):
+        self.write_env(LOCAL_TTS_BACKEND="kokoro", KOKORO_MODEL_PATH=self.kokoro,
+                       LOCAL_TTS_VOICE="am_michael")
+        live = self._container_env(["LOCAL_TTS_BACKEND=kokoro", "LOCAL_TTS_VOICE=am_michael"])
+        proc = self._run("--check", live_env=live)
+        self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+        self.assertIn("speaks what", proc.stdout)
+
+    def test_a_server_created_with_another_backend_is_refused(self):
+        # The drift this guard exists for: .env says kokoro, the staged model
+        # check passes, and the container already running still says piper.
+        self.write_env(LOCAL_TTS_BACKEND="kokoro", KOKORO_MODEL_PATH=self.kokoro)
+        live = self._container_env(["LOCAL_TTS_BACKEND=piper"])
+        proc = self._run("--check", live_env=live)
+        self.assertEqual(proc.returncode, 1)
+        self.assertIn("LOCAL_TTS_BACKEND=kokoro", proc.stderr)
+        self.assertIn("--force-recreate", proc.stderr)
+        self.assertIn("local-ai-server", proc.stderr)
+
+    def test_a_server_created_with_another_voice_is_refused(self):
+        self.write_env(LOCAL_TTS_BACKEND="kokoro", KOKORO_MODEL_PATH=self.kokoro,
+                       LOCAL_TTS_VOICE="am_michael")
+        live = self._container_env(["LOCAL_TTS_BACKEND=kokoro", "LOCAL_TTS_VOICE=af_heart"])
+        proc = self._run("--check", live_env=live)
+        self.assertEqual(proc.returncode, 1)
+        self.assertIn("LOCAL_TTS_VOICE=am_michael", proc.stderr)
+
+    def test_a_container_created_before_the_voice_was_set_is_refused(self):
+        # Compose only puts a key in a container's environment if the key was
+        # in .env when it was CREATED, so "unset in the container" is the same
+        # drift as a different value, not a reason to stand down.
+        self.write_env(LOCAL_TTS_BACKEND="kokoro", KOKORO_MODEL_PATH=self.kokoro,
+                       LOCAL_TTS_VOICE="am_michael")
+        live = self._container_env(["LOCAL_TTS_BACKEND=kokoro"])
+        proc = self._run("--check", live_env=live)
+        self.assertEqual(proc.returncode, 1)
+        self.assertIn("running: unset", proc.stderr)
+
+    def test_no_running_container_is_not_a_disagreement(self):
+        self.write_env(LOCAL_TTS_BACKEND="kokoro", KOKORO_MODEL_PATH=self.kokoro)
+        proc = self._run("--check")  # no fake env: `docker inspect` fails
+        self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+        self.assertIn("not running", proc.stdout)
+
+    def test_an_env_file_that_selects_no_voice_is_not_drift(self):
+        # ENGINE_ENV names neither key, so compose's own defaults are what the
+        # container has and there is nothing for it to disagree with.
+        live = self._container_env(["LOCAL_TTS_BACKEND=piper"])
+        proc = self._run("--check", live_env=live)
+        self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+        self.assertIn("keeps compose's defaults", proc.stdout)
 
     def test_check_changes_nothing(self):
         before = _sha(self.config)
