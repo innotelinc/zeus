@@ -26,18 +26,29 @@
 #
 # Default DIR is ./data/ava/models, which compose mounts at /app/models.
 #
-# --tts picks which voice to stage, and it must agree with LOCAL_TTS_BACKEND
-# in .env: staging Kokoro while the server runs `piper` leaves it looking for
-# an .onnx that is not there (and vice versa). The default is piper, so an
-# existing install re-run is unchanged.
+# --tts picks which voice to stage, and it must agree with LOCAL_TTS_BACKEND in
+# .env: staging Kokoro while the server runs `piper` leaves it looking for an
+# .onnx that is not there, and vice versa. With no --tts the backend is read
+# from .env, so the fetch follows the deployment rather than defaulting to Piper.
 # ═══════════════════════════════════════════════════════════════════════════
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 MODELS_DIR="${ROOT_DIR}/data/ava/models"
 FORCE=0
-TTS_BACKEND="piper"
-TTS_VOICE="af_heart"
+
+# Which voice to stage follows .env, the way deploy-ava-voice.sh's model check
+# already does — same read, same piper fallback, so the check and the fetch can
+# never be looking at different backends. The disagreement is not a small one:
+# a Kokoro server with no kokoro/ tree reaches for HuggingFace on the first
+# turn, and a turn that downloads its voice is a turn the caller hears as
+# silence. `--tts` and `--tts-voice` still override, for a one-off fetch.
+ENV_FILE="${AVA_ENV_FILE:-${ROOT_DIR}/.env}"
+env_get() { python3 "${ROOT_DIR}/scripts/env_file.py" get "${ENV_FILE}" "$1" 2>/dev/null || true; }
+TTS_BACKEND="$(env_get LOCAL_TTS_BACKEND)"
+TTS_BACKEND="${TTS_BACKEND:-piper}"
+TTS_VOICE="$(env_get LOCAL_TTS_VOICE)"
+TTS_VOICE="${TTS_VOICE:-af_heart}"
 
 VOSK_NAME="vosk-model-small-en-us-0.15"
 VOSK_URL="https://alphacephei.com/vosk/models/${VOSK_NAME}.zip"
@@ -69,7 +80,12 @@ done
 
 case "$TTS_BACKEND" in
   piper|kokoro) ;;
-  *) echo "fetch-ava-models: --tts must be piper or kokoro, got '${TTS_BACKEND}'" >&2; exit 2 ;;
+  # The value now usually arrives from .env rather than the command line, so the
+  # message names both sources instead of sending the reader to a --tts they
+  # never typed.
+  *) echo "fetch-ava-models: the TTS backend must be piper or kokoro, got '${TTS_BACKEND}'" >&2
+     echo "fetch-ava-models: it came from --tts, or LOCAL_TTS_BACKEND in ${ENV_FILE}" >&2
+     exit 2 ;;
 esac
 
 say() { printf 'fetch-ava-models: %s\n' "$*" >&2; }
