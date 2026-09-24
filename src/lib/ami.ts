@@ -296,13 +296,9 @@ export class AmiClient {
         continue;
       }
 
-      // Handle action response. `Follows` is Asterisk's answer to an action
-      // whose payload is multi-line (`Command`, and anything framed like it):
-      // the `Output` arrives in the same block, so it is a completed action and
-      // must resolve like `Success` — treating it as neither is what made this
-      // client wait out the 10s timeout on every `Command` (the `module reload`
-      // in the phone route included) and reject with no output.
-      if (parsed.ActionID && (parsed.Response === "Success" || parsed.Response === "Follows")) {
+      // Handle action response — `Success`, or `Follows` (see
+      // `amiResponseCompletes`).
+      if (parsed.ActionID && amiResponseCompletes(parsed.Response)) {
         if (this.pendingActions.has(parsed.ActionID)) {
           const p = this.pendingActions.get(parsed.ActionID)!;
           this.pendingActions.delete(parsed.ActionID);
@@ -318,47 +314,7 @@ export class AmiClient {
   }
 
   private parseMessage(raw: string): Record<string, string> | null {
-    const result: Record<string, string> = {};
-    const lines = raw.split("\r\n");
-
-    for (const line of lines) {
-      // Skip empty lines
-      if (!line.trim()) continue;
-
-      // The `Command` action's output is terminated by this sentinel line,
-      // which is framing rather than data.
-      if (line.trim() === "--END COMMAND--") continue;
-
-      const colIdx = line.indexOf(":");
-      if (colIdx === -1) {
-        // AMI's multi-line values carry their continuation lines raw (no key);
-        // they belong to the last field parsed. Skipping them truncated
-        // `Command` output at its first line, which is exactly the shape
-        // `database show` uses.
-        if (result._lastKey) result[result._lastKey] += "\n" + line;
-        continue;
-      }
-
-      const key = line.slice(0, colIdx).trim();
-      let value = line.slice(colIdx + 1);
-
-      // Trim leading space after colon (AMI standard)
-      if (value.startsWith(" ")) value = value.slice(1);
-      value = value.trimEnd();
-
-      // Multi-line values: subsequent lines start with space
-      // We handle this by appending to the last key
-      if (key === "" && result._lastKey) {
-        result[result._lastKey] += "\n" + value;
-        continue;
-      }
-
-      result[key] = value;
-      result._lastKey = key;
-    }
-
-    delete result._lastKey;
-    return Object.keys(result).length > 0 ? result : null;
+    return parseAmiMessage(raw);
   }
 
   private dispatch(event: AmiEvent): void {
@@ -384,6 +340,91 @@ export class AmiClient {
       });
     }, this.reconnectDelay);
   }
+}
+
+/**
+ * Does this `Response:` line complete the action that sent it?
+ *
+ * `Success` is the common case. `Follows` is Asterisk's answer to an action
+ * whose payload is multi-line (`Command` and its family), where the `Output`
+ * arrives in the same message block — so it is a *finished* action, not a
+ * progress note. Reading it as unfinished is what made every `Command` wait out
+ * the 10s timeout and reject with no output at all (the `module reload` in the
+ * phone route, and the AstDB read the provisioning preflight needs).
+ */
+export function amiResponseCompletes(response: string): boolean {
+  const value = (response ?? "").trim().toLowerCase();
+  return value === "success" || value === "follows";
+}
+
+/**
+ * Parse one AMI message block (already split on the blank-line terminator).
+ *
+ * Two shapes matter beyond the obvious `Key: value` loop, and both were wrong
+ * before they were needed:
+ *
+ *   * a **continuation line** (no colon) belongs to the field above it, and
+ *   * `Output:` — the field a `Command` answers in — is a **verbatim block**:
+ *     every line after it belongs to it until the `--END COMMAND--` sentinel,
+ *     colons included. That last part is not a nicety: `database show` prints
+ *     `/AMPUSER/1001/callwaiting : enabled`, so a parser that keyed on the
+ *     colon would read those lines as *fields* and keep only the first as
+ *     `Output` — the provisioning preflight would then see "no leftover state"
+ *     on a number that has some, which is the unsafe direction to be wrong.
+ *
+ * The sentinel is framing, not data, so it is stripped.
+ *
+ * Returns `null` for a block with no fields (a keep-alive blank), rather than an
+ * empty object the caller would have to tell apart.
+ */
+export function parseAmiMessage(raw: string): Record<string, string> | null {
+  const result: Record<string, string> = {};
+  let inOutput = false;
+
+  for (const line of raw.split("\r\n")) {
+    // Skip empty lines
+    if (!line.trim()) continue;
+
+    // The `Command` action's output is terminated by this sentinel line.
+    if (line.trim() === "--END COMMAND--") {
+      inOutput = false;
+      continue;
+    }
+
+    // Inside an `Output` block, every line is data — colons and all.
+    if (inOutput) {
+      result[result._lastKey] += "\n" + line;
+      continue;
+    }
+
+    const colIdx = line.indexOf(":");
+    if (colIdx === -1) {
+      // A continuation line: it belongs to the last field parsed.
+      if (result._lastKey) result[result._lastKey] += "\n" + line;
+      continue;
+    }
+
+    const key = line.slice(0, colIdx).trim();
+    let value = line.slice(colIdx + 1);
+
+    // Trim leading space after colon (AMI standard)
+    if (value.startsWith(" ")) value = value.slice(1);
+    value = value.trimEnd();
+
+    // Multi-line values: subsequent lines start with space
+    // We handle this by appending to the last key
+    if (key === "" && result._lastKey) {
+      result[result._lastKey] += "\n" + value;
+      continue;
+    }
+
+    result[key] = value;
+    result._lastKey = key;
+    if (key === "Output") inOutput = true;
+  }
+
+  delete result._lastKey;
+  return Object.keys(result).length > 0 ? result : null;
 }
 
 // ─── Singleton ───
