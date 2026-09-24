@@ -19,7 +19,7 @@ import {
   SparklesIcon,
   FileTextIcon,
 } from "@/components/icons";
-import type { User, FreePBXExtension } from "@/lib/types";
+import type { User, FreePBXExtension, PhoneNumber } from "@/lib/types";
 import type { AddonSku, AddonUiState } from "@/lib/addons";
 import { planLabel } from "@/lib/client-api";
 import { ToastProvider } from "@/components/ToastProvider";
@@ -34,6 +34,7 @@ const SoftphoneSection = dynamic(
 interface Props {
   user: User;
   extensions: FreePBXExtension[];
+  phoneNumbers: PhoneNumber[];
   /** White-label brand name (reseller domain override) — null = platform brand. */
   brand?: string | null;
   /**
@@ -103,7 +104,7 @@ function ThemeToggle() {
   );
 }
 
-export function DashboardShell({ user, extensions, brand, voiceAddons, children }: Props) {
+export function DashboardShell({ user, extensions, phoneNumbers, brand, voiceAddons, children }: Props) {
   const pathname = usePathname();
 
   // Add-on-gated entries are dropped when the add-on is not enabled. An
@@ -296,7 +297,7 @@ export function DashboardShell({ user, extensions, brand, voiceAddons, children 
       </div>
 
       {/* Softphone panel */}
-      <SoftphoneSection extensions={extensions} />
+      <SoftphoneSection extensions={extensions} phoneNumbers={phoneNumbers} />
     </div>
     </ToastProvider>
     </ThemeProvider>

@@ -2,13 +2,14 @@
 
 import { useState, useEffect, useRef, useMemo } from "react";
 import { UserAgent, Registerer, SessionState } from "sip.js";
-import type { FreePBXExtension } from "@/lib/types";
+import type { FreePBXExtension, PhoneNumber } from "@/lib/types";
 import { api } from "@/lib/client-api";
 import { PhoneIcon } from "@/components/icons";
 import { useToast } from "@/components/ToastProvider";
 
 interface Props {
   extensions: FreePBXExtension[];
+  phoneNumbers: PhoneNumber[];
 }
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -24,12 +25,13 @@ interface ActiveCall {
   muted: boolean;
 }
 
-export default function SoftphoneSection({ extensions }: Props) {
+export default function SoftphoneSection({ extensions, phoneNumbers }: Props) {
   const { toast } = useToast();
   const [expanded, setExpanded] = useState(false);
   const [callState, setCallState] = useState<CallState>("disconnected");
   const [selectedExtId, setSelectedExtId] = useState("");
   const [dialNumber, setDialNumber] = useState("");
+  const [outboundDid, setOutboundDid] = useState("");
   const [incomingCaller, setIncomingCaller] = useState("");
   const [activeRemoteId, setActiveRemoteId] = useState("");
   const [callDuration, setCallDuration] = useState(0);
@@ -264,6 +266,7 @@ export default function SoftphoneSection({ extensions }: Props) {
           body: JSON.stringify({
             extension_id: selectedExt.id,
             destination: targetNumber,
+            ...(outboundDid ? { caller_id: outboundDid } : {}),
           }),
         },
       );
@@ -726,6 +729,23 @@ export default function SoftphoneSection({ extensions }: Props) {
                 {/* Dial pad */}
                 {canDial && (
                   <div className="space-y-4">
+                    {phoneNumbers.length > 0 && (
+                      <label className="mx-auto block max-w-[280px] space-y-1.5 text-xs text-white/50">
+                        <span>Outgoing line</span>
+                        <select
+                          className="w-full rounded-xl border px-3 py-2 text-sm outline-none transition bg-[var(--input-bg)] border-[var(--input-border)] text-[var(--foreground)] focus:border-[var(--input-focus-border)]"
+                          value={outboundDid}
+                          onChange={(e) => setOutboundDid(e.target.value)}
+                        >
+                          <option value="">Default line</option>
+                          {phoneNumbers.map((number) => (
+                            <option key={number.id} value={number.did}>
+                              {number.did}
+                            </option>
+                          ))}
+                        </select>
+                      </label>
+                    )}
                     <div className="mx-auto max-w-[280px] rounded-2xl border border-white/[0.08] bg-white/[0.03] px-5 py-4 text-center">
                       <div className="min-h-[32px] font-mono text-2xl font-semibold tracking-wider text-white">
                         {dialNumber || <span className="text-white/20">Enter number</span>}

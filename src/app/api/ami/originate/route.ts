@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { requireUser } from "@/lib/api-helpers";
 import { getAmiClient } from "@/lib/ami";
 import db from "@/lib/db";
+import { resolveOwnedCallerId } from "@/lib/outbound-caller-id";
 import { z } from "zod";
 
 export const dynamic = "force-dynamic";
@@ -56,6 +57,21 @@ export async function POST(req: Request) {
     );
   }
 
+  const callerId = resolveOwnedCallerId(
+    caller_id,
+    (
+      db
+        .prepare("SELECT did FROM phone_numbers WHERE user_id = ? AND status = 'active'")
+        .all(user.id) as Array<{ did: string }>
+    ).map((number) => number.did),
+  );
+  if (callerId === null) {
+    return NextResponse.json(
+      { error: "Caller ID must be an active phone number on your account" },
+      { status: 400 },
+    );
+  }
+
   const client = getAmiClient();
   if (!client.isConnected) {
     return NextResponse.json(
@@ -71,13 +87,15 @@ export async function POST(req: Request) {
       Context: "from-internal",
       Exten: cleanDest,
       Priority: "1",
-      CallerID: caller_id ?? cleanDest,
+      ...(callerId ? { CallerID: callerId } : {}),
       Timeout: "30000",
       Async: "true",
     });
 
     console.log(
-      `AMI Originate: ${ext.extension_id} → ${cleanDest} (user: ${user.id})`,
+      `AMI Originate: ${ext.extension_id} → ${cleanDest}` +
+        (callerId ? ` (caller ID: ${callerId})` : " (route caller ID)") +
+        ` (user: ${user.id})`,
     );
 
     return NextResponse.json({

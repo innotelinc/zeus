@@ -5,7 +5,7 @@ import { brandNameFor } from "@/lib/resellers";
 import { addonStatuses } from "@/lib/addons";
 import db from "@/lib/db";
 import { DashboardShell } from "@/components/dashboard/DashboardShell";
-import type { FreePBXExtension } from "@/lib/types";
+import type { FreePBXExtension, PhoneNumber } from "@/lib/types";
 
 export const metadata: Metadata = { title: "Dashboard — Zeus" };
 
@@ -26,6 +26,9 @@ export default async function DashboardLayout({
   const extensions = db
     .prepare("SELECT * FROM freepbx_extensions WHERE user_id = ? ORDER BY created_at DESC")
     .all(user.id) as FreePBXExtension[];
+  const phoneNumbers = db
+    .prepare("SELECT * FROM phone_numbers WHERE user_id = ? AND status = 'active' ORDER BY created_at DESC")
+    .all(user.id) as PhoneNumber[];
 
   // Resolved here, server-side, so the Voice and Capstone entries appear only
   // for accounts that actually hold the add-ons — and from the same helper
@@ -40,6 +43,7 @@ export default async function DashboardLayout({
     <DashboardShell
       user={user}
       extensions={extensions}
+      phoneNumbers={phoneNumbers}
       brand={brand}
       voiceAddons={voiceAddons}
     >
