@@ -49,12 +49,15 @@ export async function GET() {
     );
   }
 
-  const active = result.data.sessions ?? result.data.active_calls ?? [];
+  const active = result.data.sessions;
+  const sessionsUnavailable = ["unreachable", "error"].includes(result.data.sessionsState ?? "");
   return NextResponse.json({
     configured: true,
     ava_state: result.state,
+    sessions_state: result.data.sessionsState,
+    ...(sessionsUnavailable ? { error: "AVA active-session probe is unreachable" } : {}),
     active,
     recorded,
-    count: result.data.count ?? active.length,
+    count: result.data.count,
   });
 }
