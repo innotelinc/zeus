@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import db from "@/lib/db";
 import { getAmiClient } from "@/lib/ami";
 import { avaAdminBase, avaConfigured, listAgents } from "@/lib/ava";
+import { voiceSettingsDetail } from "@/lib/ava-voice-settings";
 import { preflightReadiness, preflightReadinessError } from "@/lib/extension-preflight-live";
 
 export const dynamic = "force-dynamic";
@@ -18,6 +19,8 @@ interface EngineHealth {
   ari_connected?: boolean;
   default_ready?: boolean;
   audiosocket?: { listening?: boolean };
+  /** `pipelines.<name>.tts` is the TTS provider that pipeline resolves. */
+  pipelines?: Record<string, { tts?: unknown }>;
 }
 
 /**
@@ -98,6 +101,66 @@ async function probeExtensionPreflight(): Promise<ProbeResult> {
 }
 
 /**
+ * What the engine loaded for barge-in and for TTS — the two voice settings an
+ * operator has no way to see today without curling `:15000/metrics` by hand.
+ *
+ * `degraded`, never `down`: these are settings, and a row that can take a
+ * working phone system down (the aggregate counts `down`) because it could not
+ * read a *preference* is the mistake the Stripe probe already had to be
+ * rescued from. A reachable engine that has not published its gauges yet is
+ * `ok` with the reason in the detail — `_export_config_metrics` runs at the
+ * first call since the process started, so a freshly restarted engine is
+ * exactly that state, and calling it a fault would alarm on every deploy.
+ */
+async function probeAvaVoiceSettings(): Promise<ProbeResult> {
+  const t0 = Date.now();
+  // LOCAL_TTS_BACKEND/LOCAL_TTS_VOICE are the local-ai-server's own variables,
+  // which the portal only holds when it shares the stack's env_file — so when
+  // they are absent the detail simply names the engine's TTS provider and says
+  // nothing about the voice behind it, rather than guessing.
+  const env = {
+    backend: (process.env.LOCAL_TTS_BACKEND ?? "").trim() || null,
+    voice: (process.env.LOCAL_TTS_VOICE ?? "").trim() || null,
+  };
+  try {
+    const [metricsRes, healthRes] = await Promise.all([
+      fetch(`${AVA_ENGINE_URL}/metrics`, {
+        cache: "no-store",
+        signal: AbortSignal.timeout(3_000),
+      }),
+      fetch(`${AVA_ENGINE_URL}/health`, {
+        cache: "no-store",
+        signal: AbortSignal.timeout(3_000),
+      }),
+    ]);
+    if (!metricsRes.ok) throw new Error(`engine metrics returned ${metricsRes.status}`);
+    const metrics = await metricsRes.text();
+    // The pipelines are a bonus, not a requirement: an unparseable /health
+    // must not turn a perfectly readable metrics body into a failure.
+    let pipelines: Record<string, { tts?: unknown }> | null = null;
+    if (healthRes.ok) {
+      try {
+        pipelines = ((await healthRes.json()) as EngineHealth).pipelines ?? null;
+      } catch {
+        pipelines = null;
+      }
+    }
+    return {
+      status: "ok",
+      latency_ms: Date.now() - t0,
+      detail: voiceSettingsDetail(metrics, pipelines, env),
+    };
+  } catch (e) {
+    return {
+      status: "degraded",
+      latency_ms: Date.now() - t0,
+      error: `could not read the engine's loaded voice settings from ${AVA_ENGINE_URL} (${e instanceof Error ? e.message : String(e)})`,
+      detail: voiceSettingsDetail("", null, env),
+    };
+  }
+}
+
+/**
  * Reachability is not usability: on a first run AVA mints a one-time admin
  * password and answers 403 to everything until it is rotated, so the console
  * can be up while the Voice screens read nothing. The authenticated call is
@@ -130,6 +193,13 @@ interface ProbeResult {
   status: "ok" | "degraded" | "down";
   latency_ms: number;
   error?: string;
+  /**
+   * A short factual readout for a probe whose *answer* is data rather than a
+   * state — what the engine loaded, not whether it is healthy. Rendered as
+   * neutral text beside the status, so a healthy row is not painted as a
+   * failure just for having something to say.
+   */
+  detail?: string;
 }
 
 interface HealthResponse {
@@ -146,6 +216,7 @@ interface HealthResponse {
     ava_engine: ProbeResult;
     ava_admin: ProbeResult;
     extension_preflight: ProbeResult;
+    ava_voice_settings: ProbeResult;
   };
 }
 
@@ -179,7 +250,7 @@ export async function GET() {
   //    screens use, so the two agree about whether AVA is in play here.
   const voiceExpected = avaConfigured();
 
-  const [dbResult, freepbxResult, amiResult, stripeResult, avantfaxResult, engineResult, adminResult, preflightResult] =
+  const [dbResult, freepbxResult, amiResult, stripeResult, avantfaxResult, engineResult, adminResult, preflightResult, voiceSettingsResult] =
     await Promise.all([
       // ── Database (SQLite) ──────────────────────────────────
       probe("database", async () => {
@@ -285,9 +356,19 @@ export async function GET() {
       voiceExpected ? probeAvaAdmin() : Promise.resolve<ProbeResult>({ status: "ok", latency_ms: 0 }),
 
       // ── Extension provisioning readiness ──────────────────
-      // Last on purpose: the array above is destructured by position (see the
-      // note on the AVA probes) — inserting here shifts nothing.
+      // Placed after the AVA probes on purpose: this array is destructured by
+      // position (see the note there) — appending at the end shifts nothing.
       probeExtensionPreflight(),
+
+      // ── Voice settings the engine loaded ──────────────────
+      // Last, for the same position reason as above.
+      voiceExpected
+        ? probeAvaVoiceSettings()
+        : Promise.resolve<ProbeResult>({
+            status: "ok",
+            latency_ms: 0,
+            detail: "voice engine not configured on this deployment",
+          }),
     ]);
 
   // ── VoIP.ms REST API credentials ───────────────────────────
@@ -319,6 +400,7 @@ export async function GET() {
     ava_engine: engineResult,
     ava_admin: adminResult,
     extension_preflight: preflightResult,
+    ava_voice_settings: voiceSettingsResult,
   };
 
   const downCount = Object.values(services).filter((s) => s.status === "down").length;

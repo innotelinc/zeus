@@ -7,6 +7,8 @@ interface ProbeResult {
   status: "ok" | "degraded" | "down";
   latency_ms: number;
   error?: string;
+  /** A factual readout for a probe whose answer is data, not a state. */
+  detail?: string;
 }
 
 interface HealthResponse {
@@ -23,6 +25,7 @@ interface HealthResponse {
     ava_engine: ProbeResult;
     ava_admin: ProbeResult;
     extension_preflight: ProbeResult;
+    ava_voice_settings: ProbeResult;
   };
 }
 
@@ -74,6 +77,11 @@ const serviceMeta: Record<
     label: "Extension provisioning",
     desc: "FreePBX API, AMI and the Asterisk config mount the create gate reads",
     icon: "🧾",
+  },
+  ava_voice_settings: {
+    label: "Voice settings",
+    desc: "Barge-in windows and TTS the engine loaded",
+    icon: "🎚️",
   },
 };
 
@@ -327,6 +335,16 @@ export default function HealthPage() {
                         {statusLabel(svc.status)}
                       </span>
                     </div>
+
+                    {/* Factual readout (what the engine loaded), neutral so a
+                        healthy row is not painted as a failure for it. */}
+                    {svc.detail && (
+                      <div className="mt-4 rounded-lg border border-white/[0.08] bg-white/[0.03] px-3.5 py-3">
+                        <p className="text-xs leading-relaxed text-white/50">
+                          {svc.detail}
+                        </p>
+                      </div>
+                    )}
 
                     {/* Error detail */}
                     {svc.error && (
