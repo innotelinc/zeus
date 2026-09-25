@@ -12,3 +12,4 @@ export { EmptyState } from "./EmptyState";
 export { PageHeader } from "./PageHeader";
 export { Button } from "./Button";
 export { Tabs, type TabItem } from "./Tabs";
+export { Select, type SelectOption } from "./Select";
