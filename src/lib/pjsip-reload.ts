@@ -7,7 +7,7 @@
  * caller:
  *
  * **Only reload when our settings are in the file FreePBX loads.** Since the
- * endpoint decision (`docs/ava-capstone-convergence.md` §11.5) that is
+ * endpoint decision (`docs/voice-convergence.md` §11.5) that is
  * `pjsip.endpoint_custom_post.conf`, which FreePBX includes itself — so
  * `state.provisioned` is exactly "Asterisk will read this at the next load".
  * Reloading when it is not (a write that failed, an unmounted config directory)

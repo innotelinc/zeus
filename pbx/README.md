@@ -16,11 +16,9 @@ operational shape.
 | `setup-cloudonix-trunk.sh` | Peer a Cloudonix domain with this PBX (`pjsip_custom_cloudonix.conf` + `extensions_custom_cloudonix.conf`), **script-owned** — `bootstrap-zeus-pbx.sh` skips both files, and `docker-entrypoint-full.sh` calls this on boot. `--check` drift mode |
 | `bootstrap-zeus-pbx.sh` | Render + apply the fragments idempotently; `--check` drift mode |
 | `asterisk_converge.py` | Per-section merge for the **shared** `extensions_custom.conf` / `ari.conf` (ownership markers) |
-| `ava_routes.py` | Converge each platform DID's FreePBX inbound route onto `zeus-ai-router,s,1`, from the same plan that renders `[zeus-ai-accounts]` — see [One ingress](#one-ingress-every-platform-did-reaches-the-router). `--check` / `--apply`, `--routes-tsv` to judge off-host, `--create-missing` to create a route for a DID that has none (via FreePBX's own API). Exit 1 = an apply converges it, 3 = only a person can |
-| `ava_ari_check.py` | Does the engine and the PBX share one ARI secret? `--require-engine-env` is the mode the compose preflight runs — see [Voice plane gates](#voice-plane-gates-and-d7-assertions) |
-| `pjsip_owner_check.py` | Who owns the PJSIP endpoint for an extension — the load tree, the duplicate ids, and who carries the `#include`. Read-only, `--json` for the raw measurement, exit 1 on a two-owner state — see [Who owns a PJSIP endpoint](#who-owns-a-pjsip-endpoint) |
+| `dograh_routes.py` | Judge whether every DID the portal sells reaches a `dograh-inbound,<workflow>,1` row in FreePBX's own `incoming` table — see [One ingress](#one-ingress-every-platform-did-names-a-workflow). **Read-only, deliberately:** which workflow a DID should reach is a portal decision and the row is FreePBX's, so the tool names the disagreement instead of inventing a route. A DID the portal marks `fax_enabled` is excused the fax service's own destination, and `--incoming-tsv` judges a route table dumped by `p0-snapshot.sh` with no PBX reachable. Exit 1 = a DID is off the workflow or unrouted, 2 = cannot tell || `pjsip_owner_check.py` | Who owns the PJSIP endpoint for an extension — the load tree, the duplicate ids, and who carries the `#include`. Read-only, `--json` for the raw measurement, exit 1 on a two-owner state — see [Who owns a PJSIP endpoint](#who-owns-a-pjsip-endpoint) |
 | `provision_extension.py` | **The one owner of extension/device creation** (D6): check-then-create through FreePBX's own `addDevice`/`addUser`, with a preflight that refuses on an orphaned `sip`/`pjsip` row, leftover `AMPUSER` state, a half-created extension or a two-owner endpoint. `--check` / `--apply`, `--observed-json` to judge off-host, exit 1 = an apply converges it, 3 = only a person can — see [One provisioning path](#one-provisioning-path-for-extensions) |
-| `d7_assert.py` | The three D7 claims about the live stack (call recorded, both ARI apps registered, one gateway serving **both** pinned models — the call path's `AVA_LLM_MODEL` and the summary path's `VOICEMAIL_SUMMARY_MODEL`). `--call` places a self-contained probe call. Exit 2 = nothing could be evaluated |
+| `d7_assert.py` | The three D7 claims about the live stack (call recorded, Dograh's ARI app registered, one gateway serving the model pins this repo still holds — the summary path's `VOICEMAIL_SUMMARY_MODEL`, since the call path's belongs to Dograh). `--call` places a self-contained probe call. Exit 2 = nothing could be evaluated |
 | `p0-snapshot.sh` | Records the live pre-state (containers, PBX files with hashes, routes, units, CDR watermark) before a change, in the `/root/revert-to-1510/` shape |
 | `patch-freepbx-trunk-next-id.py` | The `Core::addTrunk` next-id fix, with a `--container` mode the host can use without an image rebuild — see [docs/freepbx-trunk-repair.md](../docs/freepbx-trunk-repair.md) |
 | `MSTeams-DR-Wizard.sh` | MS Teams Direct Routing wizard (vendored from [Vince-0/MSTeams-FreePBX](https://github.com/Vince-0/MSTeams-FreePBX), MIT) — configures the native `external_signaling_hostname` PJSIP transport (Asterisk 20.21+/22.11+/23.5+/24+), endpoint/AOR/identify for the Microsoft SIP proxies, RSA cert wiring, `--check` audit |
@@ -329,7 +327,7 @@ generate (`<ext>-webrtc`) — loses because the rest of the PBX addresses
 `PJSIP/<ext>`: inbound routes, ring groups, voicemail and this console's own
 device-state poll cannot reach a second endpoint, so a registration on it reads
 Offline for ever. Reasoning recorded in `src/lib/pjsip-endpoint.ts` and
-[docs/ava-capstone-convergence.md](../docs/ava-capstone-convergence.md) §11.5.
+[docs/voice-convergence.md](../docs/voice-convergence.md) §11.5.
 
 What still exists is the *old* shape, on boxes provisioned before the decision:
 `pjsip_ext_<ext>.conf` defining `[<ext>](webrtc-template)`, a **duplicate object
@@ -366,7 +364,7 @@ person to read them, not a timer that will alarm every run until the last box is
 migrated. It is a measurement to run and read. The decision it fed is now made —
 FreePBX keeps the endpoint and the portal extends it via
 `pjsip.endpoint_custom_post.conf` — and is recorded in
-[docs/ava-capstone-convergence.md](../docs/ava-capstone-convergence.md) §11.5.
+[docs/voice-convergence.md](../docs/voice-convergence.md) §11.5.
 
 ## One provisioning path (for extensions)
 
@@ -401,14 +399,15 @@ sixty-odd columns this tool does not model are FreePBX's to fill — and the
 result is **verified by re-reading the PBX**, because a framework call returning
 0 is not evidence that the objects exist.
 
-The way back is PHP, not the SQL `ava_routes.py` writes: `delUser`/`delDevice`
+The way back is PHP, not a raw `DELETE`: `delUser`/`delDevice`
 clear the technology rows, the voicemail box and the AstDB subtree, and a raw
 `DELETE` is exactly the orphan this preflight refuses to create over.
 
 **Three legs of D6 belong to somebody else, and are reported rather than
-duplicated:** inbound routes (`ava_routes.py`, below), the account's voice
+duplicated:** inbound routes (`dograh_routes.py`, below — judged, never
+written), the account's voice
 mapping (`PUT /api/voice/agent-mapping`), and the WebRTC endpoint, whose owner is
-still an open decision (`docs/ava-capstone-convergence.md` §11.5) — the tool
+still an open decision (`docs/voice-convergence.md` §11.5) — the tool
 creates the framework's endpoint and never the portal's fragment. The portal's
 own `freepbx.addExtension` path (the FreePBX API, from the Phone screen) used to
 be a second writer; it now consults the same judgement —
@@ -612,165 +611,87 @@ Config* cannot silently disable the security log. The host daemon then reads
 > capstone twin at **100 % CPU with 72 restarts**. The entrypoint now converges
 > the DB value onto the real secret and bounces UCP only when it changed.
 
-## One ingress: every platform DID reaches the router
+## One ingress: every platform DID names a workflow
 
-P1 of [docs/ava-capstone-convergence.md](../docs/ava-capstone-convergence.md) is
-*one ingress*: AVA answers every DID the platform sells, and Capstone becomes a
-capability AVA can reach rather than the front door. That is two independent
-halves, and rendering one of them looks finished while calls still land wrong:
+P1 of [docs/voice-convergence.md](../docs/voice-convergence.md) is *one
+ingress*: every DID the platform sells is answered by an agent, and the DID's own
+FreePBX inbound route is what names the one it reaches. There is no router
+context and no per-account dialplan any more — those went with the AVA engine —
+so the whole ingress is one row per DID in FreePBX's `incoming` table whose
+destination is `dograh-inbound,<workflow>,1`.
 
-1. **`[zeus-ai-accounts]`** — one entry per active DID, carrying `AI_AGENT`,
-   `AI_PROVIDER` and the `ZEUS_CAPSTONE_ADDON` gate. `bootstrap-zeus-pbx.sh`
-   renders it on every run from the portal's own answer
-   (`GET /api/admin/voice-routing`, which re-checks the gate against Magnate)
-   and falls back to the portal's cached database when the portal is down —
-   never the other way round, because the cache freezes the plan at whatever it
-   was when someone last opened the screen.
-2. **The inbound route per DID** — a row in FreePBX's `incoming` table. A route
-   that points somewhere else still answers a call, just as the wrong thing;
-   that is how a deployment came to have every DID unwired while both products
-   believed the numbers were routed. `pbx/ava_routes.py` owns this half.
-3. **The destination those routes name** — FreePBX points a route at a
-   *destination* its registry knows, not at a bare dialplan target, so a route
-   row naming `zeus-ai-router,s,1` while nothing is registered under that name
-   is a **bad destination**: it still answers calls, so the caller cannot see
-   it, but the GUI cannot name what the DID dials and Apply Config reads it as
-   invalid. The same tool writes both halves (the `customappsreg` kvstore row,
-   exactly the shape capstone's `pbx/bootstrap_dograh_route.py` writes for
-   `[dograh-inbound]`), because it is the route rows that name it.
+The failure mode is therefore a *destination*, not an outage. A route pointing at
+another context still answers a call, just as the wrong thing; a route with no row
+of its own is answered by FreePBX's catch-all, as whatever that reaches. Both look
+like a working phone from the inside — which is how this estate came to have every
+DID unwired while both products believed the numbers were routed.
+
+**Which workflow a DID should reach is a portal decision** (`voice_bindings`, and
+the account → agent view at `GET /api/admin/voice-routing`), and the row itself
+belongs to FreePBX's own create path. So nothing in this repo writes one: the
+judgement is `pbx/dograh_routes.py`, and it is deliberately read-only.
 
 ```bash
-# judge / converge the routes on the live PBX (reads the same plan the accounts
-# block is rendered from — --db or --accounts-json, exactly like ava_routing.py)
-python3 pbx/ava_routes.py --db /var/lib/docker/volumes/zeus-portal-data/_data/pbx.db --check
-python3 pbx/ava_routes.py --db … --apply --revert-out /root/zeus-route-revert.sql
+# the live PBX, read-only: the portal's DID list against the live route table
+python3 pbx/dograh_routes.py --db /var/lib/docker/volumes/zeus-portal-data/_data/pbx.db --check
 
-# a DID the plan names but FreePBX has no route for at all: the absent row is
-# created through FreePBX's own create path (below), never an INSERT of ours
-python3 pbx/ava_routes.py --db … --apply --create-missing
-
-# off-host, against a route table dumped by pbx/p0-snapshot.sh (check-only)
-python3 pbx/ava_routes.py --db … --routes-tsv routes/incoming.tsv --check
+# off-host, against a route table dumped by pbx/p0-snapshot.sh
+python3 pbx/dograh_routes.py --db … --incoming-tsv routes/incoming.tsv --check
 ```
 
-`bootstrap-zeus-pbx.sh` calls it on **both** paths: `--check` reports route drift
-and fails the run, and an apply converges the routes **before** `fwconsole
-reload` — they are rows FreePBX builds its dialplan from, so a change is live
-only once the dialplan is rebuilt. Judging and applying are separate steps on
-purpose (`judge_routes` / `converge_routes` in the bootstrap), because the timer
-runs *check, then apply when that fails*: an apply that judged only the fragments
-would answer "already in sync" on a PBX whose files match and whose DIDs all
-point elsewhere, and would never have cleared itself.
-
-The destination is registered **before** the routes that name it, and it is the
-one thing an apply writes without an opt-in flag. That is deliberate: unlike a
-route row — the operator's data, which a default apply never invents — this is
-the tool's own constant target, so ensuring it is idempotent, displaces nobody's
-phone service, and undoes as one `DELETE`. Hiding it behind a flag would mean the
-timer could never clear a bad destination, and the flag would have to be
-remembered again after every rebuild of the PBX. An offline run
-(`--routes-tsv`/`--sql-out`) never registers it and says so out loud, because a
-registry is module state rather than a column of a dump.
-
-The tool's status is carried through whole, because three of them mean three
-different things to a caller:
+Its status is carried through whole, because the three mean three different things
+to a caller:
 
 | status | meaning | what the caller does |
 | --- | --- | --- |
-| `0` | every platform DID reaches the router, and the router is a registered Custom Destination | nothing |
-| `1` | routes off it, or the destination unregistered | apply — it converges both |
-| `3` | a platform DID with no route (or two), or no Custom Destinations module to register into | nothing a *default* apply can do; add the route in FreePBX / enable the module, or run `--create-missing` (the check keeps failing until then) |
-| `2` | no PBX reachable / table unreadable | nothing — a host running part of the group is not a drifted host |
+| `0` | every DID the portal sells reaches a `dograh-inbound` workflow | nothing |
+| `1` | a DID is off the workflow, or has no route row at all | add or repoint the row in FreePBX's Inbound Routes — only a person can |
+| `2` | no portal database, no PBX, or no active DID in the plan | nothing — a host running part of the group is not a drifted host |
 
-A `3` deliberately does **not** send the bootstrap down its apply path: an apply
-for it rewrites no row and still reloads a live phone system, so a 15-minute
-timer would do exactly that forever. It is not quiet either — `--check` fails on
-it (with a message naming the FreePBX step rather than the apply), and the
-wrapper puts the apply's own output in the journal when it refuses.
+A DID the portal marks `fax_enabled` is excused exactly one destination — the fax
+service's own ring group (`FAX_DEST_RE` in the tool) — and the line it excused is
+printed rather than dropped, because an unreported "left alone" and a clean route
+look identical. The flag is *not* "this number is not a voice line": measured on
+this estate, the Denovo interview line is fax-enabled **and** reaches
+`dograh-inbound,8005,1`. So it never skips a line and never excuses a missing row.
+
+`scripts/zeus-pbx-sync.sh` runs the judgement on **every** tick, including the
+ones where the fragments are already in sync, and puts it in the journal without
+failing the unit: a DID route is a row a person adds in FreePBX, and a timer that
+went red over it would be red forever. `./scripts/smoke-test.sh pbx` runs the same
+judgement and *does* fail on it, because the smoke test is the run an operator
+actually reads.
 
 What the tool will not do, deliberately:
 
-- **A default apply never invents a route.** A DID with no inbound route at all
-  (or two) is refused by name: a hand-written `incoming` row means guessing its
+- **It never writes a route.** A hand-written `incoming` row means guessing its
   other fifteen columns, and a half-written row on a live phone system is worse
-  than a named gap. It stays visible — `--check` keeps failing until the route
-  exists.
-- **`--create-missing` is the one, deliberate exception, and it is not a
-  guess.** It calls FreePBX's *own* create path (`FreePBX::Core()->addDID`) inside
-  the PBX container, so the columns this tool does not model are filled by the
-  same code the GUI's "Add Inbound Route" page runs, hooks included. It needs an
-  explicit `--apply`, is refused offline (`--routes-tsv`/`--sql-out` cannot call
-  a framework), and its undo is a `DELETE` in the same revert script — so a mixed
-  run still undoes as one thing. The timer never passes it: a row this tool had
-  no evidence for belongs in a one-off run, not a periodic one.
-- **It only touches DIDs the plan names.** A ring group, a partner's number and
-  a pattern route like `_2XX` are somebody else's phone service, and the tool
-  reports them as *left alone* so that is evidence rather than an assumption.
-- **It writes the undo before it writes anything.** The revert script is
-  produced first and its failure is fatal, because an apply with no way back is
-  what P0's snapshot discipline exists to prevent.
-- **It reads the application context, never the Stasis app name.** The route
-  targets a Custom Destination (`zeus-ai-router,s,1`) that the same tool
-  registers, so nothing in the dialplan depends on Capstone's runtime-generated
-  `Stasis(dograh_<suffix>)`.
-
-An apply that cannot finish (a refused row) warns and continues rather than
-failing the fragment apply, for the same reason the core-module repair does: the
-phone system is already answered by the fragments, and stopping there would take
-calls down over a row the operator can add. The drift check is what keeps it
-from going quiet.
+  than a named gap: the row is FreePBX's own create path's to make, and which
+  workflow it should name is the portal's to decide.
+- **It judges no DID the plan does not name.** A ring group, a partner's number
+  and a pattern route like `_2XX` are somebody else's phone service, and this
+  check says nothing about them.
+- **It never claims a pass it cannot support.** No portal database, no PBX, or a
+  plan that names no active DID exits `2` rather than reporting a clean ingress —
+  an empty plan is the one answer worse than "cannot tell".
 
 ## Voice plane gates and D7 assertions
 
-Two things about the voice plane fail *silently* — a PBX that looks healthy while
-it drops its calls, and a check that reports success because it never ran. Both
-gates below exist for that reason, and both are runnable from the host without a
-rebuild.
+One thing about the voice plane fails *silently*: a check that reports success
+because it never ran. It is runnable from the host without a rebuild.
 
-### `voice-preflight` — the ARI credential must agree before the engine starts
-
-The engine authenticates to Asterisk with `AVA_ARI_SECRET`, which two unrelated
-things write: `bootstrap-zeus-pbx.sh` renders it into `ari.conf` from
-`scripts/pbx.env`, and `.env` hands it to the container. Nothing reconciles them,
-and a blank `pbx.env` value is *regenerated* on every bootstrap run — so a
-`--profile voice up` can start an engine whose password Asterisk will never
-accept, and the only symptom is calls that are never answered (to Asterisk a
-wrong password is just a failed login, so nothing names the credential).
-
-`docker-compose.yml`'s `voice-preflight` is a one-shot container that asserts the
-two agree, and `ai-engine` declares
-`depends_on: voice-preflight: condition: service_completed_successfully` — the
-engine is not started unless the gate exits 0:
-
-```bash
-docker compose --profile voice up -d      # gate runs first, engine starts only if it passes
-docker compose logs voice-preflight       # on failure: which file, which key, what to do
-python3 pbx/ava_ari_check.py --require-engine-env   # the same assertion, by hand
-```
-
-Three details that are load-bearing:
-
-- **The gate runs as root (`user: "0:0"`).** `.env` is curated `0600` root-owned
-  and `pbx.env` is written by the bootstrap. The engine image's own user is
-  `appuser`, and inheriting it made the gate fail on a *consistent* host — the
-  uid was wrong, not the configuration. The check reports a permission problem
-  in its own words (`Unreadable`) rather than misreporting it as a missing file.
-- **`--require-engine-env` is what makes it a gate.** Without it, "there is no
-  `.env` here" is a pass — correct for a deploy-script check that also runs on
-  portal-only hosts, wrong for a container that only exists because somebody
-  asked for the voice profile.
-- **A missing bind source reads as absent, not as a crash.** Docker creates a
-  *directory* where a bind source does not exist, so "the operator never created
-  `.env`" arrives as `IsADirectoryError`; the check treats that as the absent file
-  it is (`_read` in `pbx/ava_ari_check.py`).
-
-The same assertion stands in front of the **apply**, not just the engine's
-start-up: `systemd/zeus-pbx-sync.service` runs `scripts/zeus-pbx-sync.sh`, which
-checks the credential first and exits 1 rather than re-applying fragments over a
-secret the PBX will refuse (see [docs/ava-runbook.md](../docs/ava-runbook.md)).
-The unit used to call `pbx/bootstrap-zeus-pbx.sh` directly, so the gate was
-documented and never ran on the path that actually writes the fragments;
-`scripts/tests/test_pbx_sync_unit.py` pins the wiring now.
+The *credential* half of this section went with the AVA engine, and it is worth
+knowing why it existed. The engine authenticated to Asterisk with an ARI secret
+that two unrelated things wrote — `bootstrap-zeus-pbx.sh` rendered it into
+`ari.conf` from `scripts/pbx.env` while `.env` handed the container its own copy,
+with nothing reconciling the two — and to Asterisk a wrong password is just a
+failed login, so the only symptom was calls that were never answered. A compose
+`voice-preflight` service and `pbx/ava_ari_check.py` existed to gate that, and
+both are gone with the engine. What survives is the shape: the timer runs
+`scripts/zeus-pbx-sync.sh` rather than `pbx/bootstrap-zeus-pbx.sh` directly, so a
+judgement can sit in front of the apply without the unit having to know about it,
+and `scripts/tests/test_pbx_sync_unit.py` pins that wiring — the wrapper now uses
+it for the DID ingress above.
 
 ### `d7_assert.py` — the three claims, asserted rather than assumed
 
@@ -784,9 +705,9 @@ D7_CALL=1 ./scripts/smoke-test.sh voice          # …including the probe call
 
 | Assertion | Why it is not a style check |
 |---|---|
-| Both Stasis apps registered (`asterisk-ai-voice-agent`, `dograh_*`) | An engine that is up but unregistered answers no calls, and looks identical to an idle one |
+| Dograh's Stasis app registered (`dograh_*`) | An engine that is up but unregistered answers no calls, and looks identical to an idle one |
 | CDR backend wired **and** writing | `odbc show` proves the DSN is connected; only a call proves rows are written. CDR was dead on this estate for nine days with every other indicator green |
-| The gateway offers `AVA_LLM_MODEL` | A gateway that 502s a model returns an HTML page, so the pipeline dies on its first turn with nothing naming the cause |
+| The gateway offers the pinned models this repo holds (`VOICEMAIL_SUMMARY_MODEL`) | A gateway that 502s a model returns an HTML page, so the feature dies on its first turn with nothing naming the cause |
 
 The probe call is `Local/12@default`: it matches FreePBX's `_X.` catch-all,
 answers, plays the voicemail goodbye prompt and hangs up. No trunk, no phone, no
@@ -794,6 +715,77 @@ agent — a probe that could reach a real agent would not be a probe. Exit codes
 are three-valued on purpose: `0` holds, `1` is false, and `2` means *nothing was
 evaluated* (no docker, no PBX container, no `.env`), which is not evidence of
 health and is why the summary line repeats what it did not evaluate.
+
+### Voicemail: the mailbox behind `*97`
+
+`*97` is FreePBX's My Voicemail, and no file in this repo defines it — the feature
+code comes from the module-generated dialplan. What the estate owned was the
+mailbox, and it never created one. FreePBX's own create path is why, and both
+halves are in the vendored source (`vendor/freepbx-17.0.19.32.tgz`):
+
+* `Core::addUser()` sets the user row's voicemail **from the box that already
+exists** — `Voicemail::getMailbox($ext)` reads `voicemail.conf`, and when it
+returns null the row is written with `voicemail = "novm"`. `Core`'s
+`generateDefaultUserSettings()` carries no `voicemail` key at all, so the D6
+provisioner's sequence (`generateDefaultUserSettings` → `addUser`) lands there.
+* The GraphQL `addExtension(vmEnable, vmPassword)` turns those fields into
+`$input['vm']` / `$input['vmpwd']` in `core/Api/Gql/Extensions.php` — and `vmpwd`
+appears **nowhere** in `Core.class.php`. The mutation accepts them, answers
+"Extension has been created Successfully", and creates no box.
+
+So every extension the platform creates — the portal's
+`POST /api/phone/extensions`, `legacy_voice_migrate.py`, `provision_extension.py`
+— is a desk phone that rings and a mailbox that does not exist. The voicemail
+module's `app-vmmain` does `Macro(get-vmcontext,${AMPUSER})` →
+`VoiceMailMain(${AMPUSER}@novm)`, finds no such box, and leaves the caller at a
+bare login prompt while the PBX looks healthy from every other angle.
+
+`pbx/voicemail_mailbox.py` is the writer for that fifth thing (an extension is a
+user row, a device row, a technology row, AstDB state — and a mailbox):
+
+```bash
+python3 pbx/voicemail_mailbox.py plan  --intent mailboxes.json   # also the verify
+python3 pbx/voicemail_mailbox.py apply --intent mailboxes.json
+```
+
+It creates the box through FreePBX's own `Voicemail::addMailbox`, re-points the
+`users.voicemail` row and the AstDB key `Macro(get-vmcontext)` reads, and reads
+the result back out of **what Asterisk loaded** (`voicemail show users`), so a
+`plan` run after an `apply` is the verification. The intent carries a PIN
+(`vm.pin` in the migration snapshot, `voicemail_pin` in the portal), and a row
+without one is refused by name rather than given a generated one.
+
+The gate *before* the mailbox is judged first, because it is the one a
+box-shaped check cannot see. `macro-user-callerid` does not trust the caller id
+it was handed: it re-derives the extension from AstDB's `DEVICE/<callerid>/user`
+and then reads `AMPUSER/<ext>/cidname` — both written by FreePBX's own create
+path (`Core::addDevice`, `Core::addUser`), and both absent on every extension
+that reached the tables another way (the portal's GraphQL `addExtension`,
+`legacy_voice_migrate.py`'s direct writes). `DEVICE/<ext>/user` missing means
+`AMPUSER` is blanked, `*97` calls `macro-get-vmcontext` with no argument, and
+the call ends on the priority after that lookup: one second, `ANSWERED`, and
+`lastapp=Set, lastdata=VMCONTEXT=default` as the only trace. Seven of this
+estate's eight extensions were in that state, with their mailboxes present and
+every other indicator green — so `plan` reports it as `no-caller-id`, and
+`apply` writes the pair from the PBX's own rows (`devices`, `users`), never
+overwriting a mapping a person set.
+
+The storage class is a separate, smaller thing: `res_odbc_custom.conf` registers
+`[asteriskvoicemail]` against `MySQL-asteriskvoicemail`, while `/etc/odbc.ini`
+(which lives in the image, not on a volume — the reason
+`docker-entrypoint-full.sh` patches it every boot) defines only the CDR DSN. That
+is a connection that cannot be made rather than a feature that is off, so the
+entrypoint now adds any section a class names and the file lacks, and
+`scripts/tests/test_odbc_dsn_parity.py` holds setup.sh's two files to the same
+DSN list. `./scripts/smoke-test.sh pbx` asserts three things about `*97` — the
+feature code resolving in the context a phone dials from, every extension with a
+mailbox resolving from its caller id (`DEVICE/<ext>/user` and
+`AMPUSER/<ext>/cidname`), and every DSN the classes name being defined — because
+they fail identically at the phone. The first of those used to ask
+`dialplan show *97`, which reads its argument as a *context* name and answers
+"There is no existence of `'*97'` context" on every PBX there is: a string
+containing `'*97'`, which the check grepped for. It passed on its own error
+message and could not fail.
 
 ### `p0-snapshot.sh` — record the pre-state before touching a live box
 

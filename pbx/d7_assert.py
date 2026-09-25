@@ -15,12 +15,14 @@ has already been false on this estate without anything raising its voice:
     extensions registered, calls answered. Only the *absence* of rows said
     otherwise, and nothing was watching for an absence.
 
-  * **Both agents are on the PBX.** AVA and Capstone register as separate ARI
-    applications. An engine that is running but has not registered looks exactly
-    like one that is answering calls — until a call arrives and nobody picks up.
+  * **The agent is on the PBX.** Dograh registers as an ARI application
+    (`dograh_<suffix>`). An engine that is running but has not registered looks
+    exactly like one that is answering calls — until a call arrives and nobody
+    picks up.
 
-  * **Reasoning comes from one gateway.** AVA asks the estate gateway, never a
-    cloud API directly. A gateway that 502s a model returns an HTML *page*, so
+  * **Reasoning comes from one gateway.** The pipeline asks the estate gateway,
+    never a cloud API directly. A gateway that 502s a model returns an HTML
+    *page*, so
     the pipeline dies on its first turn with nothing naming the cause (the
     symptom was "Gateway responded 502", discovered from a call, not a check).
     The voicemail summary path asks the same gateway on its **own** model pin
@@ -67,8 +69,6 @@ ROOT = os.path.dirname(HERE)
 sys.path.insert(0, os.path.join(ROOT, "scripts"))
 from env_file import read_key  # noqa: E402
 
-# The AVA engine's Stasis app, as config/ava/ai-agent.yaml declares it.
-ENGINE_APP = "asterisk-ai-voice-agent"
 # Capstone's app is `dograh_<suffix>`, and the suffix is not stable: it is the
 # container identity, so it changes on recreate. Only the prefix is meaningful.
 AGENT_APP_PREFIX = "dograh_"
@@ -79,20 +79,18 @@ CDR_DSN = "asteriskcdrdb"
 # the goodbye prompt, and hangs up. Deliberately not an extension, a DID, or an
 # inbound route — a probe that could reach a real agent is not a probe.
 CALL_TARGET = "12@default"
-GATEWAY_BASE_KEY = "AVA_LLM_BASE_URL"
-GATEWAY_MODEL_KEY = "AVA_LLM_MODEL"
+GATEWAY_BASE_KEY = "OMNIROUTE_BASE_URL"
+# The estate's canonical gateway door, used when the env names no override.
+GATEWAY_BASE_DEFAULT = "http://192.168.1.46:20129/v1"
 GATEWAY_TOKEN_KEY = "OMNIROUTE_API_KEY"
-# The voicemail summary path pins its own model (the portal's
-# src/app/api/voicemail/summary/route.ts), deliberately not the call path's:
-# the gateway's free routes cooldown per model, so sharing one id would let a
-# busy call path silence summaries — and a busy voicemail box starve calls.
-# Two pins only help if both are checked, which is why this one is here: an
-# unlisted pin is a feature that answers 502 and says nothing until someone
-# clicks the ✨ button.
+# The voicemail summary path pins its model in the portal's env (see
+# src/app/api/voicemail/summary/route.ts). It is the only model pin this repo
+# still holds: the call path belongs to Dograh, which owns its own config on the
+# voice host and which this check cannot see. An unlisted pin is a feature that
+# answers 502 and says nothing until someone clicks the ✨ button.
 GATEWAY_SUMMARY_MODEL_KEY = "VOICEMAIL_SUMMARY_MODEL"
-# What a missing model costs, per consumer. Named because "does not offer the
-# configured model" does not say which feature just went dark.
-CALL_CONSEQUENCE = "every call would fail on its first turn"
+# What a missing model costs. Named because "does not offer the configured
+# model" does not say which feature just went dark.
 SUMMARY_CONSEQUENCE = "voicemail summaries would stop answering"
 
 CHECKS = ("ari", "cdr", "gateway")
@@ -201,25 +199,17 @@ def parse_watermark(text: str) -> Watermark | None:
 # ── verdicts (pure) ─────────────────────────────────────────────────────────
 def verdict_ari(
     apps: set[str],
-    engine_app: str = ENGINE_APP,
     agent_prefix: str = AGENT_APP_PREFIX,
 ) -> list[Finding]:
     listed = ", ".join(sorted(apps)) or "none"
     agents = sorted(app for app in apps if app.startswith(agent_prefix))
     return [
         Finding(
-            engine_app in apps,
-            f"AVA's Stasis app {engine_app} is registered"
-            if engine_app in apps
-            else f"AVA's Stasis app {engine_app} is NOT registered (registered: {listed}) "
-            f"— an engine that is up but unregistered answers no calls",
-        ),
-        Finding(
             bool(agents),
-            f"Capstone's Stasis app is registered ({', '.join(agents)})"
+            f"Dograh's Stasis app is registered ({', '.join(agents)})"
             if agents
             else f"no {agent_prefix}* Stasis app is registered (registered: {listed}) "
-            f"— the hand-off target does not exist",
+            f"— nothing is listening for a call, so an inbound DID would go unanswered",
         ),
     ]
 
@@ -266,18 +256,13 @@ def verdict_cdr(before: Watermark, after: Watermark) -> list[Finding]:
 def verdict_gateway(
     status: int,
     payload: object,
-    model: str,
     url: str,
     *,
     summary_model: str = "",
 ) -> list[Finding]:
-    """One finding per consumer's pin: the call path, then the summary path.
+    """One finding per configured pin — today that is the summary path only.
 
-    The call path is the pre-existing assertion and its wording is part of the
-    contract (`test_d7_assert.py` pins the consequence text), so a run that
-    configures only `AVA_LLM_MODEL` produces exactly what it always did. The
-    summary pin is asserted only when it is configured *and* differs from the
-    call path's — the same pin twice is one finding, and an unset pin falls back
+    The summary pin is asserted when it is configured; an unset one falls back
     to `OLLAMA_MODEL`, which this check cannot see.
     """
     if status != 200:
@@ -293,9 +278,7 @@ def verdict_gateway(
         return [Finding(False, f"the gateway answered 200 for {url}/models but listed no models")]
 
     wanted: list[tuple[str, str]] = []
-    if model:
-        wanted.append((model, CALL_CONSEQUENCE))
-    if summary_model and summary_model != model:
+    if summary_model:
         wanted.append((summary_model, SUMMARY_CONSEQUENCE))
     if not wanted:
         return [Finding(True, f"the gateway answered 200 for {url}/models with {len(ids)} model(s)")]
@@ -461,7 +444,7 @@ def probe_gateway(url: str, token: str, timeout: float = 10.0) -> tuple[int, obj
         return status, None
 
 
-def check_gateway(url: str, model: str, token: str, summary_model: str = "") -> list[Finding]:
+def check_gateway(url: str, token: str, summary_model: str = "") -> list[Finding]:
     status, payload = probe_gateway(url, token)
     if status == 0:
         return [Finding(False, f"the gateway did not answer at {url}/models")]
@@ -473,7 +456,7 @@ def check_gateway(url: str, model: str, token: str, summary_model: str = "") -> 
                 f"parse — a proxy or error page, not the model catalogue",
             )
         ]
-    return verdict_gateway(status, payload, model, url.rstrip("/"), summary_model=summary_model)
+    return verdict_gateway(status, payload, url.rstrip("/"), summary_model=summary_model)
 
 
 # ── CLI ─────────────────────────────────────────────────────────────────────
@@ -496,7 +479,8 @@ def main(argv: list[str]) -> int:
     parser.add_argument("--env", default=os.path.join(ROOT, ".env"))
     parser.add_argument("--call", action="store_true", help="place the CDR test call")
     parser.add_argument("--wait", type=float, default=20.0, help="seconds to wait for the CDR row")
-    parser.add_argument("--gateway-url", default="", help="override AVA_LLM_BASE_URL")
+    parser.add_argument("--gateway-url", default="",
+                        help="override OMNIROUTE_BASE_URL")
     parser.add_argument("--quiet", action="store_true")
     args = parser.parse_args(argv[1:])
 
@@ -539,19 +523,16 @@ def main(argv: list[str]) -> int:
         if os.path.exists(args.env):
             with open(args.env, "r", encoding="utf-8") as handle:
                 text = handle.read()
-        base = args.gateway_url or (read_key(text, GATEWAY_BASE_KEY) or "")
-        model = read_key(text, GATEWAY_MODEL_KEY) or ""
-        token = read_key(text, GATEWAY_TOKEN_KEY) or ""
-        summary_model = read_key(text, GATEWAY_SUMMARY_MODEL_KEY) or ""
-        if not base:
-            reason = (
-                f"{args.env} does not set {GATEWAY_BASE_KEY}"
-                if text
-                else f"no {args.env}"
-            )
-            findings.append(Finding(None, f"gateway: {reason}"))
+        if not text:
+            # A missing .env is not "no gateway configured": on the voice host it
+            # is the deployment being absent, and probing the default door
+            # instead would report a green gateway over a host with no config.
+            findings.append(Finding(None, f"gateway: no {args.env}"))
         else:
-            findings.extend(check_gateway(base, model, token, summary_model))
+            base = args.gateway_url or read_key(text, GATEWAY_BASE_KEY) or GATEWAY_BASE_DEFAULT
+            token = read_key(text, GATEWAY_TOKEN_KEY) or ""
+            summary_model = read_key(text, GATEWAY_SUMMARY_MODEL_KEY) or ""
+            findings.extend(check_gateway(base, token, summary_model=summary_model))
 
     for finding in findings:
         _emit(finding, args.quiet)

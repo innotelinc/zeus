@@ -2,7 +2,7 @@
  * The portal's OTLP exporter, pinned without a collector.
  *
  * `src/lib/otel.ts` is the only thing that puts the portal on the estate's one
- * trace spine (docs/ava-capstone-convergence.md, D7). Three properties matter
+ * trace spine (docs/voice-convergence.md, D7). Three properties matter
  * and none is visible to a typecheck:
  *
  *   1. **Off means off.** With no `OTEL_EXPORTER_OTLP_ENDPOINT` the tracer must

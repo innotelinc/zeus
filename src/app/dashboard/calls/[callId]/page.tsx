@@ -22,7 +22,7 @@ export const metadata = { title: "Call — Zeus" };
  * engine's run — and an operator asking "what happened on this call?" used to
  * have to know which product answered, and read both. `voice_calls` exists to
  * be the join: one row, keyed on the id every product already carries
- * (`docs/ava-capstone-convergence.md` §2.6). This screen is that row, spelled
+ * (`docs/voice-convergence.md` §2.6). This screen is that row, spelled
  * out, with the engine's run and the transcript's handle beside it.
  *
  * Two boundaries are deliberate and stated on the page rather than hidden:

@@ -18,7 +18,6 @@ import d7_assert as d7  # noqa: E402
 # Verbatim `docker exec zeus-freepbx asterisk -rx "ari show apps"`, 2026-09-22.
 ARI_SHOW_APPS = """Application Name         
 =========================
-asterisk-ai-voice-agent
 dograh_72e590ef66eb
 """
 
@@ -41,7 +40,7 @@ class ParseAriAppsTest(unittest.TestCase):
     def test_real_output(self):
         self.assertEqual(
             d7.parse_ari_apps(ARI_SHOW_APPS),
-            {"asterisk-ai-voice-agent", "dograh_72e590ef66eb"},
+            {"dograh_72e590ef66eb"},
         )
 
     def test_none_registered_is_an_empty_set_not_a_phantom_app(self):
@@ -105,26 +104,21 @@ class ParseWatermarkTest(unittest.TestCase):
 
 
 class VerdictAriTest(unittest.TestCase):
-    def test_both_apps(self):
-        findings = d7.verdict_ari({"asterisk-ai-voice-agent", "dograh_abc"})
-        self.assertTrue(all(f.ok for f in findings), findings)
-
-    def test_engine_missing_names_what_was_listed(self):
+    def test_the_agent_app_registered(self):
         findings = d7.verdict_ari({"dograh_abc"})
-        engine = findings[0]
-        self.assertFalse(engine.ok)
-        self.assertIn("asterisk-ai-voice-agent", engine.detail)
-        self.assertIn("dograh_abc", engine.detail)
+        self.assertEqual(len(findings), 1)
+        self.assertTrue(findings[0].ok, findings)
 
-    def test_no_agent_app(self):
-        findings = d7.verdict_ari({"asterisk-ai-voice-agent"})
-        self.assertTrue(findings[0].ok)
-        self.assertFalse(findings[1].ok)
-        self.assertIn("dograh_", findings[1].detail)
+    def test_a_foreign_app_alone_does_not_pass(self):
+        """A registered Stasis app that is not Dograh's answers none of our calls."""
+        findings = d7.verdict_ari({"some-other-app"})
+        self.assertFalse(findings[0].ok)
+        self.assertIn("dograh_", findings[0].detail)
+        self.assertIn("some-other-app", findings[0].detail)
 
-    def test_nothing_registered_is_two_failures(self):
+    def test_nothing_registered_fails_and_says_so(self):
         findings = d7.verdict_ari(set())
-        self.assertEqual([f.ok for f in findings], [False, False])
+        self.assertEqual([f.ok for f in findings], [False])
         self.assertIn("none", findings[0].detail)
 
 
@@ -169,72 +163,57 @@ class VerdictGatewayTest(unittest.TestCase):
     CATALOGUE = {"object": "list", "data": [{"id": "gemini/gemini-3.1-flash-lite"}, {"id": "auto/best"}]}
 
     def test_configured_model_offered(self):
-        findings = d7.verdict_gateway(200, self.CATALOGUE, "gemini/gemini-3.1-flash-lite", "http://gw/v1")
+        findings = d7.verdict_gateway(
+            200, self.CATALOGUE, "http://gw/v1", summary_model="gemini/gemini-3.1-flash-lite"
+        )
         self.assertTrue(findings[0].ok, findings)
 
     def test_200_without_the_configured_model_fails(self):
-        findings = d7.verdict_gateway(200, self.CATALOGUE, "gemini/gemini-9", "http://gw/v1")
+        findings = d7.verdict_gateway(
+            200, self.CATALOGUE, "http://gw/v1", summary_model="gemini/gemini-9"
+        )
         self.assertFalse(findings[0].ok)
         self.assertIn("gemini/gemini-9", findings[0].detail)
 
     def test_502_fails_and_names_the_status(self):
-        findings = d7.verdict_gateway(502, None, "gemini/gemini-3.1-flash-lite", "http://gw/v1")
+        findings = d7.verdict_gateway(502, None, "http://gw/v1")
         self.assertFalse(findings[0].ok)
         self.assertIn("502", findings[0].detail)
 
     def test_200_with_no_models_fails(self):
-        findings = d7.verdict_gateway(200, {"object": "list", "data": []}, "m", "http://gw/v1")
+        findings = d7.verdict_gateway(200, {"object": "list", "data": []}, "http://gw/v1")
         self.assertFalse(findings[0].ok)
         self.assertIn("listed no models", findings[0].detail)
 
     def test_no_model_configured_still_asserts_the_gateway_answers(self):
-        findings = d7.verdict_gateway(200, self.CATALOGUE, "", "http://gw/v1")
+        findings = d7.verdict_gateway(200, self.CATALOGUE, "http://gw/v1")
         self.assertTrue(findings[0].ok, findings)
 
-    # ── the second pin: voicemail summaries ─────────────────────
-    # The summary path pins its own model so a cooldown on one consumer cannot
-    # silence the other. Two pins are only worth having if both are checked —
-    # an unlisted one answers 502 and says nothing until someone clicks ✨.
-    def test_the_summary_pin_is_asserted_beside_the_call_pin(self):
+    # ── the summary path's own pin ─────────────────────────────
+    # The summary path pins its own model so a cooldown on the call path cannot
+    # silence it. It is the only model pin this repo configures — the call
+    # path's belongs to Dograh — so an unlisted one is the whole check's concern.
+    def test_the_summary_pin_is_asserted(self):
         findings = d7.verdict_gateway(
             200,
             self.CATALOGUE,
-            "gemini/gemini-3.1-flash-lite",
             "http://gw/v1",
             summary_model="gemini/gemini-2.5-flash",
         )
-        self.assertEqual(len(findings), 2)
-        self.assertTrue(findings[0].ok, findings)
-        self.assertFalse(findings[1].ok)
-        self.assertIn("gemini/gemini-2.5-flash", findings[1].detail)
-        # The *right* consequence: naming which consumer went dark is the point.
-        self.assertIn(d7.SUMMARY_CONSEQUENCE, findings[1].detail)
-        self.assertNotIn(d7.CALL_CONSEQUENCE, findings[1].detail)
-
-    def test_a_shared_pin_is_one_finding_not_two(self):
-        findings = d7.verdict_gateway(
-            200,
-            self.CATALOGUE,
-            "gemini/gemini-3.1-flash-lite",
-            "http://gw/v1",
-            summary_model="gemini/gemini-3.1-flash-lite",
-        )
-        self.assertEqual(len(findings), 1)
-        self.assertTrue(findings[0].ok, findings)
-
-    def test_a_summary_pin_alone_is_still_asserted(self):
-        """No call pin configured (AVA not deployed here) is not a reason to
-        skip the summary pin — that is the check's only reason to exist."""
-        findings = d7.verdict_gateway(
-            200, self.CATALOGUE, "", "http://gw/v1", summary_model="gemini/gemini-9"
-        )
         self.assertEqual(len(findings), 1)
         self.assertFalse(findings[0].ok)
+        self.assertIn("gemini/gemini-2.5-flash", findings[0].detail)
+        # The *right* consequence: naming which consumer went dark is the point.
         self.assertIn(d7.SUMMARY_CONSEQUENCE, findings[0].detail)
+
+    def test_an_unset_summary_pin_still_asserts_the_gateway_answers(self):
+        findings = d7.verdict_gateway(200, self.CATALOGUE, "http://gw/v1")
+        self.assertEqual(len(findings), 1)
+        self.assertTrue(findings[0].ok, findings)
 
     def test_the_summary_pin_passes_when_the_gateway_offers_it(self):
         findings = d7.verdict_gateway(
-            200, self.CATALOGUE, "", "http://gw/v1", summary_model="auto/best"
+            200, self.CATALOGUE, "http://gw/v1", summary_model="auto/best"
         )
         self.assertTrue(findings[0].ok, findings)
 
@@ -282,7 +261,7 @@ class MainTest(unittest.TestCase):
 
         env = os.path.join(self._tmp(), "gateway.env")
         with open(env, "w", encoding="utf-8") as fh:
-            fh.write("AVA_LLM_BASE_URL=http://127.0.0.1:1/v1\n")
+            fh.write("OMNIROUTE_BASE_URL=http://127.0.0.1:1/v1\n")
         out = io.StringIO()
         with contextlib.redirect_stdout(out), contextlib.redirect_stderr(io.StringIO()):
             # Nothing listens on :1, so the gateway check itself fails; the

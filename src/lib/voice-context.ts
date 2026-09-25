@@ -2,7 +2,7 @@
  * The read side of the call-context envelope.
  *
  * (Design notes live in docs/unified-console.md and, historically,
- * docs/ava-capstone-convergence.md D2.)
+ * docs/voice-convergence.md D2.)
  *
  * The dialplan stamps the channel once, at ingress, with the small facts both
  * agents need (AI_CALL_ID, AI_ACCOUNT, AI_AGENT, the caller, the Capstone
@@ -105,8 +105,8 @@ export function isCallToken(value: string): boolean {
 }
 
 // `normalizeDid` moved to ./dialplan-values (with the Capstone target's rule)
-// so the pair can be checked against pbx/ava_routing.py without importing this
-// module's AMI/AVA/database dependencies. Re-exported, so existing callers keep
+// so the rule can be exercised on its own, without importing this module's
+// AMI/database dependencies. Re-exported, so existing callers keep
 // importing it from here.
 export { normalizeDid };
 
@@ -215,7 +215,8 @@ async function channelFacts(token: string): Promise<Lookup> {
   }
 
   // The envelope's own marker: a channel carrying none of these never went
-  // through [zeus-ai-accounts], so it is not a call we have context for.
+  // through the dialplan's account context, so it is not a call we have context
+  // for.
   if (!values.AI_ACCOUNT && !values.FROM_DID && !values.AI_AGENT) return { state: "none" };
 
   return {
@@ -341,8 +342,8 @@ interface AccountRow {
  *
  * The channel's AI_ACCOUNT is preferred because the dialplan wrote it for this
  * exact call; the DID join is the fallback for a call whose channel is gone.
- * An unentitled binding is dropped here for the same reason
- * `pbx/ava_routing.py` drops it: the row that names a workflow must not
+ * An unentitled binding is dropped here for the same reason the write path
+ * refuses to store one: the row that names a workflow must not
  * outlive the row that says the account may reach one.
  */
 export function accountContextFor(facts: CallFacts): {

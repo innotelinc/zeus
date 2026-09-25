@@ -4,12 +4,12 @@ node_modules
 .next
 .turbo
 data
-# Pinned build inputs (scripts/fetch-vendor.sh, scripts/fetch-ava.sh).
+# Pinned build inputs (scripts/fetch-vendor.sh).
 # Dockerfile.full COPYs the three FreePBX tarballs by name, so those stay;
-# everything else under vendor/ is excluded — most importantly the AVA source
-# tree, which is a whole application. Copying it in made the portal's
-# `npm run build` typecheck AVA's own frontend (axios, vitest, react-router
-# are not deps here) and fail the image build.
+# everything else under vendor/ is excluded — a vendored application tree
+# copied in would be typechecked by the portal's `npm run build` (its own
+# frontend deps, such as axios/vitest/react-router, are not deps here) and
+# fail the image build.
 vendor/*
 !vendor/*.tgz
 !vendor/*.tgz.gpg

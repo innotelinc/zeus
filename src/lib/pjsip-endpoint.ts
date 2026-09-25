@@ -5,7 +5,7 @@
  * ## The decision (2026-09-25)
  *
  * A softphone needs a PJSIP endpoint with WebRTC media. This estate has two
- * ways to give it one, and `docs/ava-capstone-convergence.md` §11.5 left the
+ * ways to give it one, and `docs/voice-convergence.md` §11.5 left the
  * choice open until now:
  *
  *   * **(decided)** FreePBX owns the endpoint. The portal *extends* the endpoint
@@ -153,7 +153,7 @@ export function renderSection(extensionId: string): string {
     `; duplicate id and no include to write: FreePBX includes this file itself.`,
     `; Do not add \`type\`, \`auth\`, \`aors\`, \`username\` or \`password\` here; those are`,
     `; FreePBX's, and the softphone registers with the secret it renders`,
-    `; (docs/ava-capstone-convergence.md §11, src/lib/pjsip-secret.ts).`,
+    `; (docs/voice-convergence.md §11, src/lib/pjsip-secret.ts).`,
     sectionHeader(extensionId),
     ...WEBRTC_MEDIA_SETTINGS.map(([key, value]) => `${key}=${value}`),
     "",

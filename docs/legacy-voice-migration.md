@@ -5,7 +5,7 @@ the record of moving its accounts across, and the two tools that do it:
 
 | Tool | Moves |
 |---|---|
-| `pbx/legacy_voice_migrate.py` | extensions, device secrets, voicemail, User Management password hashes, ring groups, inbound routes |
+| `pbx/legacy_voice_migrate.py` | extensions, device secrets, User Management password hashes, ring groups, inbound routes |
 | `scripts/legacy_portal_merge.py` | portal accounts, phone numbers and extension rows |
 
 Both are idempotent and take `plan`, `apply` and (PBX side) `verify`. `plan`
@@ -62,6 +62,31 @@ exist on the target, so the source's `from-external,824,1` — extension 824 was
 translated to `dograh-inbound,8000,1`, which is where Zeus already sends its own
 PSTN DID. The translation is declared in `DESTINATION_TRANSLATION` and printed
 with `(was …)` so it is visible in the plan.
+
+### Voicemail did not move: nothing here created a mailbox
+
+Found later, from a desk phone dialing `*97`, and it is in FreePBX's own create
+path — both halves are in `vendor/freepbx-17.0.19.32.tgz`:
+
+* `Core::addUser()` writes the user row's voicemail **from the mailbox that
+already exists**. `Voicemail::getMailbox($ext)` reads `voicemail.conf`, and when
+it returns null the row is written with `voicemail = "novm"`.
+* The GraphQL `addExtension(vmEnable, vmPassword)` this migration uses turns those
+fields into `$input['vm']` / `$input['vmpwd']` in
+`core/Api/Gql/Extensions.php`, and `vmpwd` appears **nowhere** in
+`Core.class.php`: the mutation accepts the fields, answers "Extension has been
+created Successfully", and creates no box.
+
+So the six accounts above whose source row said *Voicemail: yes* arrived with an
+extension and no mailbox, `users.voicemail` and AstDB's
+`AMPUSER/<ext>/voicemail` both reading `novm`, and `*97`
+(`Macro(get-vmcontext,${AMPUSER})` → `VoiceMailMain(${AMPUSER}@novm)`) leaves the
+caller at a bare login prompt. `verify` never saw it because it read back the
+extension, the generated credential and the portal row — not the mailbox.
+`pbx/voicemail_mailbox.py` is the writer for the missing fifth thing: its
+`plan`/`apply` create the box through `Voicemail::addMailbox` and re-point both
+keys, and `plan` run again is the verification. The source PINs are in
+`accounts.json` as `vm.pin`.
 
 ## What landed
 
@@ -128,6 +153,9 @@ nothing new was needed there.
 
 ## Still open
 
+* **Mailboxes** — the six accounts that had voicemail on the source have none on
+  the target (see above). `pbx/voicemail_mailbox.py` creates them; render the
+  intent from `accounts.json` so each box keeps the source PIN.
 * **The four fax ATAs** must be reprovisioned from IAX2 to SIP (item 2 above).
 * **Outbound routes** — whether to adopt the legacy normalisation and fax route,
   and at what priority.

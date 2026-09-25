@@ -1,18 +1,18 @@
 #!/usr/bin/env python3
-"""Pin the wiring that puts the ARI credential gate in front of an apply.
+"""Pin the wiring between the timer's unit and the wrapper it runs.
 
-P0 of docs/ava-capstone-convergence.md makes the voice plane's two silent
-failures loud, and one of them is a credential: the engine authenticates to
-Asterisk with AVA_ARI_SECRET, which `bootstrap-zeus-pbx.sh` renders into
-`ari.conf` from `scripts/pbx.env` and `.env` hands to the container, with
-nothing reconciling the two. To Asterisk a wrong password is just a failed
-login, so the only symptom is calls that are never answered.
+P0 of docs/voice-convergence.md makes the voice plane's silent failures loud.
+One of them was a credential: the AVA engine authenticated to Asterisk with a
+secret `bootstrap-zeus-pbx.sh` rendered into `ari.conf` from `scripts/pbx.env`,
+while `.env` handed the container its own copy and nothing reconciled the two —
+and to Asterisk a wrong password is just a failed login, so the only symptom was
+calls that were never answered. That gate went with the engine.
 
-`scripts/zeus-pbx-sync.sh` is where the assertion lives. That makes the timer's
-entry point load-bearing: `systemd/zeus-pbx-sync.service` called
-`pbx/bootstrap-zeus-pbx.sh` directly, which re-applies fragments without ever
-asking the credential question — so the gate existed, was documented in
-docs/ava-runbook.md, and never ran on the path that actually re-applies.
+`scripts/zeus-pbx-sync.sh` is still where an assertion in front of the apply
+belongs, and that still makes the timer's entry point load-bearing:
+`systemd/zeus-pbx-sync.service` called `pbx/bootstrap-zeus-pbx.sh` directly
+once, so a gate could exist, be documented, and never run on the path that
+actually re-applies.
 
 These tests pin the wiring rather than the behaviour, because the failure mode
 is a one-line edit (point ExecStart back at bootstrap) that nothing else would
@@ -61,15 +61,14 @@ class WrapperGatesBeforeItApplies(unittest.TestCase):
     def setUp(self):
         self.text = WRAPPER.read_text(encoding="utf-8")
 
-    def test_the_credential_check_runs_before_bootstrap(self):
-        gate = self.text.index("ava_ari_check.py")
-        apply_ = self.text.index("BOOTSTRAP\" --check")
-        self.assertLess(
-            gate,
-            apply_,
-            "the ARI check must come first — applying over a credential the "
-            "engine cannot use hides the disagreement instead of surfacing it",
-        )
+    def test_it_has_no_ava_credential_gate(self):
+        """The ARI-credential gate went with the AVA engine.
+
+        `pbx/ava_ari_check.py` is deleted, so a wrapper that still called it would
+        fail the unit before the apply on every tick — and the failure would read
+        as a credential disagreement rather than as a missing file.
+        """
+        self.assertNotIn("ava_ari_check", self.text)
 
     def test_bootstrap_is_called_by_an_absolute_path(self):
         """A relative call makes the apply depend on the caller's CWD."""

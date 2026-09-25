@@ -120,6 +120,70 @@ if [ -f /etc/odbc.ini ]; then
   fi
 fi
 
+# ── The DSNs res_odbc_custom.conf names and odbc.ini does not define ───────
+# The block above repairs the DSN /etc/odbc.ini *has* — a driver from another
+# distribution, a socket this container does not listen on. It cannot repair
+# one that is missing, and the estate names exactly that:
+# res_odbc_custom.conf registers [asteriskvoicemail] — the class app_voicemail
+# stores messages through — against MySQL-asteriskvoicemail, while odbc.ini
+# defines only the CDR DSN. A res_odbc class whose DSN is absent is not an
+# inert one: every voicemail retrieve fails to connect with "Data source name
+# not found and no default driver specified", and `*97` (FreePBX's My
+# Voicemail) plays nothing at all. That section added by hand — the fix the
+# upstream deploy README documents — is what does not survive this container
+# being recreated, because /etc/odbc.ini lives in the image, which is why this
+# file patches it on every boot in the first place.
+#
+# So derive it rather than restate it: for every class in res_odbc_custom.conf
+# whose `dsn=>` names a section odbc.ini lacks, add that section by mirroring
+# the first one odbc.ini does define — same driver, host, credentials and
+# socket as the connection the block above just made resolvable — and take the
+# `database` name from the class that asked for it. Nothing here assumes which
+# classes exist or which are in use: "configured but unreachable" is the
+# failure, so making it reachable is the whole repair. The boot's `fwconsole
+# reload` below is what makes res_odbc pick it up, the same reload that applies
+# the driver and socket fix above.
+ODBC_INI="${ODBC_INI:-/etc/odbc.ini}"
+RES_ODBC_CUSTOM="${RES_ODBC_CUSTOM:-/etc/asterisk/res_odbc_custom.conf}"
+if [ -f "$RES_ODBC_CUSTOM" ] && [ -f "$ODBC_INI" ] && grep -q '^[[:space:]]*\[' "$ODBC_INI"; then
+  # One `class <TAB> dsn <TAB> database` line per class in the file. FreePBX
+  # writes `=>` and a hand edit leaves `=` behind, so both are read.
+  while IFS="$(printf '\t')" read -r odbc_class odbc_dsn odbc_db; do
+    [ -n "$odbc_dsn" ] || continue
+    [ -n "$odbc_db" ] || continue
+    if grep -qF "[$odbc_dsn]" "$ODBC_INI"; then
+      continue
+    fi
+    odbc_body="$(awk -v db="$odbc_db" '
+      /^[[:space:]]*\[/ { if (seen) exit; seen = 1; next }
+      seen != 1 { next }
+      length($0) == 0 || /^[[:space:]]*[;#]/ { next }
+      /^[[:space:]]*[Dd]escription[[:space:]]*=/ { print "Description=MySQL connection to \047" db "\047 database"; next }
+      /^[[:space:]]*[Dd]atabase[[:space:]]*=/ { print "database=" db; next }
+      { print }
+    ' "$ODBC_INI")"
+    if [ -n "$odbc_body" ]; then
+      {
+        printf '\n[%s]\n' "$odbc_dsn"
+        printf '%s\n' "$odbc_body"
+      } >> "$ODBC_INI"
+      echo ">>> [odbc] ${odbc_class}: $odbc_dsn was not defined — added it (database=$odbc_db)"
+    fi
+  done < <(awk '
+    /^[[:space:]]*\[/ {
+      if (cls != "") print cls "\t" dsn "\t" db
+      cls = $0
+      sub(/^[[:space:]]*\[/, "", cls)
+      sub(/\][[:space:]]*$/, "", cls)
+      dsn = ""; db = ""
+      next
+    }
+    cls != "" && /^[[:space:]]*dsn[[:space:]]*=>?/ { d = $0; sub(/^[^=]*=>?[[:space:]]*/, "", d); sub(/[[:space:]]+$/, "", d); dsn = d; next }
+    cls != "" && /^[[:space:]]*database[[:space:]]*=>?/ { d = $0; sub(/^[^=]*=>?[[:space:]]*/, "", d); sub(/[[:space:]]+$/, "", d); db = d; next }
+    END { if (cls != "") print cls "\t" dsn "\t" db }
+  ' "$RES_ODBC_CUSTOM")
+fi
+
 # ── Adopt an existing database's credentials ───────────────────────────────
 # FreePBX's installer generates AMPDBPASS *randomly at image build time*, but
 # the database lives on the shared pbx-mariadb-data volume and outlives every

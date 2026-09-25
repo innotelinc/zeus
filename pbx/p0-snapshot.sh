@@ -2,7 +2,7 @@
 # ═══════════════════════════════════════════════════════════════════
 # p0-snapshot.sh — record the live state before a converge phase changes it.
 #
-# P0 of docs/ava-capstone-convergence.md is "re-establish and instrument:
+# P0 of docs/voice-convergence.md is "re-establish and instrument:
 # no behaviour change", and every phase after it is only revertible if the
 # state it started from was recorded. This is that record, and it is a script
 # rather than a shell history so the next phase takes the same one: the

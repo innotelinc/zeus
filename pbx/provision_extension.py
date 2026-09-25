@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """pbx/provision_extension.py — the one owner of extension/device creation.
 
-D6 of docs/ava-capstone-convergence.md: today two products create PBX objects by
+D6 of docs/voice-convergence.md: today two products create PBX objects by
 writing tables directly, with no single owner, no idempotency and no integrity
 check — and that is how `(1,'maxchans')`, a MySQL `1062` on `pjsip`'s primary
 key, came to break an unrelated feature in a GUI dialog nobody could act on.
@@ -18,8 +18,8 @@ built in this order:
     forwarding. All four are measured, and each has its own refusal.
   * **FreePBX's own API, not our INSERT.** The create is
     `FreePBX::Core()->addUser()` / `addDevice()` in the container (the same
-    sequence `Core::doConfigPageInit` runs, and the same technique
-    `pbx/ava_routes.py` uses for a missing route), so the sixty-odd columns this
+    sequence `Core::doConfigPageInit` runs, and the same technique the retired
+    `pbx/ava_routes.py` used for a missing route), so the sixty-odd columns this
     tool does not model are the framework's to fill. Where the framework provably
     cannot do it, this file says so rather than guessing — see *What this does
     not do* below.
@@ -30,12 +30,13 @@ Three things in D6 belong to somebody else, and duplicating them here would
 re-create the defect D6 exists to remove. They are *reported*, by name, so one
 command still answers the whole question:
 
-  * **Inbound routes** — `pbx/ava_routes.py` owns them (P1). Pass a plan export
-    with `--accounts-json` to have the route leg reported.
+  * **Inbound routes** — nobody in this repo writes them: which workflow a DID
+    reaches is a portal decision and the row is FreePBX's. `pbx/dograh_routes.py`
+    judges them (P1), read-only.
   * **The account's voice mapping** (`voice_agents`, `voice_bindings`) — the
     portal API owns those (`PUT /api/voice/agent-mapping`, one transaction).
   * **The WebRTC endpoint** — its owner is DECIDED
-    (docs/ava-capstone-convergence.md §11.5): FreePBX owns the endpoint and the
+    (docs/voice-convergence.md §11.5): FreePBX owns the endpoint and the
     portal extends it from `pjsip.endpoint_custom_post.conf`, appending
     `[<ext>](+)` so the softphone registers as the object the PBX routes to.
     This tool creates the framework's endpoint and never the portal's settings;
@@ -86,7 +87,7 @@ from dataclasses import asdict, dataclass, field
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
-import ava_routes as routes  # noqa: E402
+import pbx_db as routes  # noqa: E402  (the shared container/MySQL plumbing)
 import pjsip_owner_check as owner  # noqa: E402
 
 # A FreePBX extension number: digits only. The GUI accepts more (it will build a
@@ -370,7 +371,7 @@ def judge(intents: list[Intent], observed: Observed) -> Report:
                     "(a duplicate object id in the load tree)",
                     "settle the endpoint's owner first — `python3 "
                     "pbx/pjsip_owner_check.py --live --extension " + ext + "` names "
-                    "the two files (docs/ava-capstone-convergence.md §11.5)",
+                    "the two files (docs/voice-convergence.md §11.5)",
                 )
             )
             continue
@@ -433,8 +434,8 @@ def parse_astdb(text: str, family: str = ASTDB_FAMILY) -> frozenset[str]:
 def render_revert(created: list[Intent], container: str) -> str:
     """The way back: the framework's own delete, for each extension created.
 
-    A PHP script rather than the SQL `ava_routes.py` writes, because a DELETE
-    would leave the AstDB state this tool's preflight exists to protect: the
+    A PHP script rather than a plain `DELETE`, because a `DELETE` would leave
+    the AstDB state this tool's preflight exists to protect: the
     delete has to be FreePBX's (`delUser`/`delDevice` clean the technologies,
     the voicemail box and the `AMPUSER` subtree).
     """
@@ -657,7 +658,7 @@ def main(argv: list[str] | None = None) -> int:
     if args.observed_json and args.apply:
         parser.error(
             "--observed-json is a measurement, not the PBX — an apply needs the "
-            "live box (this is the same rule as --routes-tsv in ava_routes.py)"
+            "live box (this is the same rule as --incoming-tsv in dograh_routes.py)"
         )
 
     try:

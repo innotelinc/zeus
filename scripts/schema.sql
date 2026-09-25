@@ -156,9 +156,9 @@ CREATE TABLE IF NOT EXISTS billing_invoices (
   paid_at TEXT
 );
 
--- Per-account AVA voice agent: which agent answers this account's calls, plus
--- any audio/provider override. Read by pbx/ava_routing.py (--db) and the
--- portal's Voice screen; written only through the portal API.
+-- Per-account voice agent: which agent answers this account's calls, plus any
+-- audio/provider override. Read by the portal's Voice screen; written only
+-- through the portal API.
 CREATE TABLE IF NOT EXISTS voice_agents (
   user_id TEXT PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
   agent_slug TEXT NOT NULL,
@@ -170,10 +170,10 @@ CREATE TABLE IF NOT EXISTS voice_agents (
 
 -- WHICH Capstone workflow this account's interview line reaches. The add-on
 -- flag says an account bought Capstone; this says which interview it is, and
--- it is what pbx/ava_routing.py renders as ZEUS_CAPSTONE_TARGET. Per DID
+-- it is what the dialplan interpolates as ZEUS_CAPSTONE_TARGET. Per DID
 -- rather than per account because one account may hold several numbers with
 -- different jobs (a support line and an interview line). A row here without a
--- capstone_addons entitlement is inert: the renderer writes the target only
+-- capstone_addons entitlement is inert: the write path stores the target only
 -- beside the entitlement, so a lapsed subscription cannot keep naming a
 -- workflow.
 CREATE TABLE IF NOT EXISTS voice_bindings (
@@ -186,8 +186,8 @@ CREATE TABLE IF NOT EXISTS voice_bindings (
 );
 
 -- Last entitlement decision the portal observed for an account's voice
--- add-ons. A CACHE of a Magnate decision, not the authority: the routing
--- renderer treats a missing row as NOT entitled (fail closed), so this cache
+-- add-ons. A CACHE of a Magnate decision, not the authority: the write path
+-- treats a missing row as NOT entitled (fail closed), so this cache
 -- can only ever be behind billing, never ahead of it.
 CREATE TABLE IF NOT EXISTS account_addons (
   user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,

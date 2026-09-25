@@ -9,28 +9,27 @@
  * decision (may this account reach Capstone at all), this one records the
  * customer's own choice (which workflow answers it).
  *
- * The two are enforced in that order at render time: `pbx/ava_routing.py` (and
- * `/api/admin/voice-routing`) publish a binding **only beside a true
- * entitlement**, so a row left behind by a cancelled subscription is inert
- * rather than a way back in. That also means this module does not have to be
- * the gate — but it still checks the add-on, because accepting a choice the
- * routing will silently discard is how an operator comes to believe they
- * configured something.
+ * The two are enforced in that order: the write path publishes a binding
+ * **only beside a true entitlement**, so a row left behind by a cancelled
+ * subscription is inert rather than a way back in. That also means this module
+ * does not have to be the gate — but it still checks the add-on, because
+ * accepting a choice the routing will silently discard is how an operator comes
+ * to believe they configured something.
  *
- * ## The target's rule is the renderer's rule
+ * ## The target's rule is the write path's rule
  *
  * The stored value is interpolated into the dialplan as
  * `DIALPLAN_EXISTS(dograh-inbound,${ZEUS_CAPSTONE_TARGET},1)`, so a value
- * containing `)` or `}` can close that call and inject the rest. The same
- * charset the renderer enforces on the way *out*
- * (`pbx/ava_routing.py`'s `SAFE_TOKEN_RE`, mirrored in `./dialplan-values`) is
- * therefore enforced on the way *in*, so a bad target cannot be stored by the
- * API and discovered by the renderer. One rule, one place, two readers.
+ * containing `)` or `}` can close that call and inject the rest. The charset
+ * (`CAPSTONE_TARGET_RE` in `./dialplan-values`) is therefore enforced on the
+ * way *in*, so a bad target cannot be stored by the API at all. One rule, one
+ * place, one reader — the renderer that used to enforce it a second time went
+ * with the AVA engine.
  *
- * The rule is about *syntax*, not existence: whether Capstone actually carries
- * a workflow with that extension is Capstone's own context
- * (`[dograh-inbound]`) and is resolved by the dialplan, which refuses to the
- * operator rather than guessing.
+ * The rule is about *syntax*, not existence: whether the engine actually carries
+ * a workflow with that extension is asked of the engine itself
+ * (`/api/voice/agent-mapping`), which refuses to the operator rather than
+ * guessing.
  */
 import db from "./db";
 import { normalizeDid } from "./dialplan-values";
@@ -45,7 +44,7 @@ export interface InterviewLine {
  * The account's active numbers with their bindings.
  *
  * The join is on the DID as stored (`phone_numbers.did`), which is also what
- * `pbx/ava_routing.py` keys its bindings by — normalizing one side here would
+ * the plan lookup keys its bindings by — normalizing one side here would
  * only add a way for the two to disagree.
  */
 export function accountLines(userId: string): InterviewLine[] {

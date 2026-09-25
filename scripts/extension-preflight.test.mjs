@@ -248,7 +248,7 @@ describe("endpoint ownership parity with pbx/pjsip_owner_check.py", () => {
       expected: [],
     },
     {
-      // The endpoint decision (docs/ava-capstone-convergence.md §11): the portal
+      // The endpoint decision (docs/voice-convergence.md §11): the portal
       // appends `[<ext>](+)` to `pjsip.endpoint_custom_post.conf`, which extends
       // FreePBX's endpoint instead of defining a second one. `(+)` is Asterisk's
       // append-to-existing syntax, so it is deliberately untyped — and the two

@@ -17,7 +17,7 @@
  * it is instead of printing a 401 and leaving the operator to guess.
  *
  * Reading is all it does. Nothing here writes an endpoint. The owner decision is
- * made (`docs/ava-capstone-convergence.md` §11.5): FreePBX owns `[<ext>]` and the
+ * made (`docs/voice-convergence.md` §11.5): FreePBX owns `[<ext>]` and the
  * portal appends to it from `pjsip.endpoint_custom_post.conf`, which is exactly
  * why this read exists — the softphone has to register as FreePBX's object, so
  * FreePBX's rendered secret is the credential and there is no portal-issued one

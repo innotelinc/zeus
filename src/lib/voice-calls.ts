@@ -1,6 +1,6 @@
 /**
  * `voice_calls` — one row per call, one id across products (P4/D7 in
- * docs/ava-capstone-convergence.md).
+ * docs/voice-convergence.md).
  *
  * The id is Asterisk's `UNIQUEID`, which is also what the dialplan stamps on the
  * channel as `AI_CALL_ID` and `AI_CONTEXT_TOKEN`. That is deliberate: §2.6 of the
@@ -219,7 +219,7 @@ export function activeVoiceCalls(): VoiceCall[] {
 /**
  * Which hand-off, if any, an Asterisk context names.
  *
- * Derived from the contexts `pbx/ava_routing.py` renders, so this reads the
+ * Derived from the contexts the dialplan actually loads, so this reads the
  * dialplan's own vocabulary rather than keeping a second copy of it:
  *
  *   * `dograh-inbound` — Capstone's context. D3 makes the dialplan name the

@@ -14,7 +14,7 @@ to and reports device state for, with the device secret FreePBX renders
 
 The rejected alternative — a portal-owned endpoint under an id FreePBX will not
 generate (`<ext>-webrtc`) — is recorded in
-[docs/ava-capstone-convergence.md](../docs/ava-capstone-convergence.md) §11. It
+[docs/voice-convergence.md](../docs/voice-convergence.md) §11. It
 loses because the rest of the PBX addresses `PJSIP/<ext>`: a second endpoint is
 one that inbound routes, ring groups and the console's own device-state poll
 cannot reach.
@@ -431,7 +431,7 @@ def verdict_endpoint(
                     True,
                     f"{appended} carries [{ext}](+), which extends that endpoint with "
                     f"WebRTC media instead of defining a second object — the endpoint "
-                    f"decision (docs/ava-capstone-convergence.md §11)",
+                    f"decision (docs/voice-convergence.md §11)",
                 )
             )
     elif endpoint_defs:

@@ -1,10 +1,11 @@
 #!/usr/bin/env python3
 """Unit tests for scripts/env_file.py — the .env reader/writer.
 
-The deploy path writes the rotated AVA admin password into `.env`. That file
-holds the estate's other secrets and is hand-curated, so the contract that
-matters is narrow and unforgiving: set one key, change nothing else, and refuse
-anything that would corrupt the file rather than write it and hope.
+The deploy path rotates secrets into `.env` (the FreePBX AMI/ARI secrets, the
+portal's voice-context secret). That file holds the estate's other secrets and
+is hand-curated, so the contract that matters is narrow and unforgiving: set one
+key, change nothing else, and refuse anything that would corrupt the file rather
+than write it and hope.
 
 Run:  python3 -m unittest discover -s scripts/tests -v
 """
@@ -19,13 +20,13 @@ import env_file as ef  # noqa: E402
 
 class ReadTest(unittest.TestCase):
     def test_reads_a_plain_value(self):
-        self.assertEqual(ef.read_key("A=1\nAVA_ADMIN_PASSWORD=abc\n", "AVA_ADMIN_PASSWORD"), "abc")
+        self.assertEqual(ef.read_key("A=1\nVOICE_CONTEXT_SECRET=abc\n", "VOICE_CONTEXT_SECRET"), "abc")
 
     def test_missing_key_is_none_not_empty(self):
-        self.assertIsNone(ef.read_key("A=1\n", "AVA_ADMIN_PASSWORD"))
+        self.assertIsNone(ef.read_key("A=1\n", "VOICE_CONTEXT_SECRET"))
 
     def test_empty_value_reads_as_empty_string(self):
-        self.assertEqual(ef.read_key("AVA_ADMIN_PASSWORD=\n", "AVA_ADMIN_PASSWORD"), "")
+        self.assertEqual(ef.read_key("VOICE_CONTEXT_SECRET=\n", "VOICE_CONTEXT_SECRET"), "")
 
     def test_strips_quotes(self):
         self.assertEqual(ef.read_key('K="abc"\n', "K"), "abc")
@@ -40,7 +41,7 @@ class ReadTest(unittest.TestCase):
         self.assertEqual(ef.read_key("K=one\nK=two\n", "K"), "two")
 
     def test_a_prefix_of_another_key_is_not_a_match(self):
-        self.assertIsNone(ef.read_key("AVA_ADMIN_PASSWORD_OLD=x\n", "AVA_ADMIN_PASSWORD"))
+        self.assertIsNone(ef.read_key("VOICE_CONTEXT_SECRET_OLD=x\n", "VOICE_CONTEXT_SECRET"))
 
 
 class UpsertTest(unittest.TestCase):

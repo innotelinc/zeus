@@ -227,7 +227,7 @@ class RenderRevertTest(unittest.TestCase):
         self.assertIn("'1002'", script)
         self.assertIn("docker exec -i zeus-freepbx php", script)
         # A raw table delete would leave the AstDB subtree behind — the whole
-        # reason the undo is PHP and not the SQL ava_routes.py writes.
+        # reason the undo is PHP and not a `DELETE`.
         self.assertNotIn("DELETE FROM", script)
 
     def test_an_empty_run_is_an_empty_list_not_a_bare_delete(self):

@@ -19,7 +19,7 @@
  *     `[<ext>](webrtc-template)` fragment count as an endpoint;
  *   * the portal's current `[<ext>](+)` is *not* an endpoint here, and that is
  *     the point: `(+)` appends to the object FreePBX generates
- *     (`docs/ava-capstone-convergence.md` §11), so counting it would make the
+ *     (`docs/voice-convergence.md` §11), so counting it would make the
  *     preflight refuse to create over an extension the portal just provisioned.
  *     It resolves to no type because `(+)` names no template, and only a
  *     resolved `type = endpoint` can conflict;

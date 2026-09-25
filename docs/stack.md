@@ -67,7 +67,7 @@ Dograh ARI connects to Zeus/FreePBX):**
       The structural-parity checklist is the gate, and it is now written down
       rather than referred to: twelve layers with the check that says each is
       supplied on the shared plane, in
-      [`docs/ava-capstone-convergence.md`](ava-capstone-convergence.md) §8 ("The
+      [`docs/voice-convergence.md`](voice-convergence.md) §8 ("The
       structural-parity checklist"). **Zeus-side progress (2026-09-24):** rows 1,
       2, and 12 are covered off-host by `pbx/tests/test_parity_checklist.py`; the
       ARI replacement policy now has a byte-idempotence regression for trailing
@@ -126,7 +126,7 @@ Dograh ARI connects to Zeus/FreePBX):**
       spans need Capstone's collector configured to forward before the trace
       holds both products. The default target also needs Capstone's
       `otel-collector` to join `pbx-net`. See
-      `docs/ava-capstone-convergence.md` §D7 and §8 P4.
+      `docs/voice-convergence.md` §D7 and §8 P4.
 4. ~~**SMS trunk docs into the smoke test** — `docs/ops-sms-trunk.md` is manual;
       add the trunk check to `scripts/smoke-test.sh` so a dead trunk surfaces in
       the same pass as the portal and PBX checks.~~
