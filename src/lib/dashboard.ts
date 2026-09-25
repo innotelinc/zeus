@@ -1,4 +1,5 @@
 import db from "./db";
+import { withSoftphoneReadiness } from "./extension-readiness-server";
 import type {
   UserDashboard,
   User,
@@ -25,11 +26,17 @@ export function getUserDashboard(userId: string): UserDashboard {
     )
     .all(userId) as PhoneNumber[];
 
-  const extensions = db
-    .prepare(
-      "SELECT * FROM freepbx_extensions WHERE user_id = ? ORDER BY created_at DESC",
-    )
-    .all(userId) as FreePBXExtension[];
+  // Readiness is attached here rather than in the screen: the judgement is made
+  // against the PBX's own config directory, so it belongs with the read that
+  // already happens server-side, and the Softphone panel and this list then
+  // describe the same extension the same way.
+  const extensions = withSoftphoneReadiness(
+    db
+      .prepare(
+        "SELECT * FROM freepbx_extensions WHERE user_id = ? ORDER BY created_at DESC",
+      )
+      .all(userId) as FreePBXExtension[],
+  );
 
   const conversations = db
     .prepare(
