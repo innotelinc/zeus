@@ -342,6 +342,16 @@ export const CONSOLE_SURFACES: ConsoleSurface[] = [
     href: "/dashboard/health",
   },
   {
+    id: "operations",
+    label: "Operations",
+    group: "estate",
+    product: "zeus",
+    kind: "owned",
+    answers: "The estate's services, the tools that watch it, and a door into every product",
+    href: "/dashboard/operations",
+    adminOnly: true,
+  },
+  {
     id: "pbx-admin",
     label: "FreePBX Admin",
     group: "estate",

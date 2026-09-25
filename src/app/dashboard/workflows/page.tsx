@@ -1,3 +1,4 @@
+import Link from "next/link";
 import { requireDashboardUser } from "@/lib/dashboard-auth";
 import { addonStatus } from "@/lib/addons";
 import { dograhConfigured } from "@/lib/dograh";
@@ -158,8 +159,12 @@ export default async function WorkflowsPage() {
           />
         ) : (
           <ul className="divide-y divide-white/[0.05]">
-            {data.runs.map((run) => (
-              <li key={`${run.workflow_id}-${run.id}`} className="py-3 text-sm">
+            {data.runs.map((run) => {
+              // A run whose call id is missing has no drill-down to open — the
+              // portal's call store is keyed on that id. Rendered as a plain
+              // row rather than a link that 404s.
+              const body = (
+                <>
                 <div className="flex items-center justify-between gap-3">
                   <span className="text-white/70">
                     {run.nodes_visited[0] ?? run.name ?? "call"}
@@ -178,8 +183,24 @@ export default async function WorkflowsPage() {
                     <span>{run.nodes_visited.length} step(s) reached</span>
                   ) : null}
                 </div>
-              </li>
-            ))}
+                </>
+              );
+              const classes = "block rounded-lg py-3 text-sm";
+              return (
+                <li key={`${run.workflow_id}-${run.id}`}>
+                  {run.call_id ? (
+                    <Link
+                      href={`/dashboard/calls/${encodeURIComponent(run.call_id)}`}
+                      className={`${classes} transition hover:bg-white/[0.03]`}
+                    >
+                      {body}
+                    </Link>
+                  ) : (
+                    <div className={classes}>{body}</div>
+                  )}
+                </li>
+              );
+            })}
           </ul>
         )}
       </Card>
