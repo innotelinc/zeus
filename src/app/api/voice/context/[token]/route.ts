@@ -23,10 +23,10 @@ export const dynamic = "force-dynamic";
  *   curl -s -H "Authorization: Bearer $VOICE_CONTEXT_SECRET" \
  *     http://zeus-portal:3000/api/voice/context/1758500000.1234
  *
- * Not a session route. Its callers are machines — Capstone at the hand-off and
- * AVA at the hand-back — so it authenticates with `VOICE_CONTEXT_SECRET`
- * instead of an operator cookie, and it returns no caller data that the
- * account's own calls do not already contain.
+ * Not a session route. Its callers are machines — the answering agent at the
+ * hand-off, and whatever answers the hand-back — so it authenticates with
+ * `VOICE_CONTEXT_SECRET` instead of an operator cookie, and it returns no
+ * caller data that the account's own calls do not already contain.
  *
  * Status codes are chosen so the caller can act: 401 wrong credential, 503
  * this deployment has not enabled the route (or neither source could be
@@ -69,7 +69,7 @@ async function readContext(req: Request, token: string, span: Span): Promise<Res
         error:
           "VOICE_CONTEXT_SECRET is not set, so context reads are off. Set it in " +
           ".env and give the same value to the agents that fetch context " +
-          "(docs/ava-capstone-convergence.md, D2).",
+          "(see docs/unified-console.md).",
       },
       { status: 503 },
     );
@@ -85,7 +85,7 @@ async function readContext(req: Request, token: string, span: Span): Promise<Res
     return badRequest("token must be an Asterisk channel id (e.g. 1758500000.1234)");
   }
 
-  const { lookup, calls } = await resolveCallFacts(token);
+  const { lookup, storeReadable } = await resolveCallFacts(token);
   span.setAttribute("zeus.context.resolved_from", lookup.state === "found" ? lookup.facts.source : lookup.state);
   if (lookup.state === "unavailable") {
     span.setStatus("error", lookup.reason);
@@ -99,8 +99,8 @@ async function readContext(req: Request, token: string, span: Span): Promise<Res
       {
         error: "unknown_call",
         message:
-          "No live channel and no AVA record carries this id — it is not a call " +
-          "this platform routed.",
+          "No live channel and no row in this portal's call store carries this " +
+          "id — it is not a call this platform routed.",
       },
       { status: 404 },
     );
@@ -127,7 +127,7 @@ async function readContext(req: Request, token: string, span: Span): Promise<Res
     );
   }
 
-  const body = buildCallContext(facts, calls);
+  const body = buildCallContext(facts, storeReadable);
   // Whether the account resolved is the fact a hand-off's correctness turns
   // on: an unentitled binding is dropped here exactly as the dialplan drops it.
   span.setAttributes({

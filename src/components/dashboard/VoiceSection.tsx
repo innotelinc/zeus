@@ -2,124 +2,146 @@
 
 import { useCallback, useEffect, useState } from "react";
 import { api, fmtDate } from "@/lib/client-api";
-import { SparklesIcon, PhoneIcon, RefreshIcon, PlusIcon, CheckCircleIcon } from "@/components/icons";
+import { SparklesIcon, PhoneIcon, RefreshIcon, CheckCircleIcon } from "@/components/icons";
 import { useToast } from "@/components/ToastProvider";
-import { INTERVIEW_AGENT_PROMPT } from "@/lib/agent-prompts";
-import type { AvaAgent, AvaCall } from "@/lib/ava";
+// `import type` is erased entirely at compile time, so these shapes reach the
+// browser without pulling `lib/dograh.ts` — and the API key it reads — into the
+// client bundle. The one *value* this component needs from the engine's
+// vocabulary lives in its own module for the same reason.
+import type { DograhTurnConfig, DograhVoiceStack, DograhWorkflow } from "@/lib/dograh";
+import { describeOutcome } from "@/lib/voice-labels";
 import type { InterviewLine } from "@/lib/voice-bindings";
 
-interface Props {
-  agents: AvaAgent[];
-  calls: AvaCall[];
-  /** Slug currently answering this account's calls, if set. */
-  mappedAgent: string | null;
-  avaState: string;
-  /** This account's numbers and the Capstone workflow each reaches. */
-  lines: InterviewLine[];
-  /** The Capstone add-on's state for this account, as the routing path sees it. */
-  capstone: { state: string; reason: string };
-}
-
-interface LiveCall {
-  caller_number?: string | null;
-  from_number?: string | null;
-  agent_slug?: string | null;
-  state?: string | null;
-  duration_seconds?: number | null;
+/** One agent, as this screen needs it: the workflow plus how it takes turns. */
+export interface AgentRow extends DograhWorkflow {
+  turn: DograhTurnConfig | null;
 }
 
 /**
- * One `voice_calls` row, as `/api/voice/live` serves it (P4).
+ * One of the agent's calls, as `/api/voice/calls` serves it.
  *
- * Deliberately a mirror of the API's shape rather than an import of the server
- * module: this is a client component, and the server module reaches the
- * database.
+ * Deliberately a mirror of the screen's needs rather than an import of the
+ * server module: this is a client component, and the server module reaches the
+ * engine and the database.
  */
-interface TranscriptTurn {
-  role?: string;
-  content?: string | null;
-  text?: string | null;
+export interface RunRow {
+  id: number;
+  workflow_id: number;
+  name: string | null;
+  created_at: string | null;
+  duration_seconds: number | null;
+  outcome: string | null;
+  nodes_visited: string[];
+  call_id: string | null;
 }
 
-interface CallRecord {
+interface RecordedCall {
   call_id: string;
-  account_id: string | null;
   did: string | null;
-  agent_slug: string | null;
   capstone_binding: string | null;
   started_at: string;
   disposition: string;
   handoffs: Array<{ to: string; at: string }>;
 }
 
-/** The path a call took, in the operator's words. */
-function pathLabel(record: CallRecord): string {
-  if (record.handoffs.length === 0) return "no hand-off";
-  const hops = [record.agent_slug ?? "agent", ...record.handoffs.map((hop) => hop.to)];
-  return hops.join(" → ");
+interface Props {
+  agents: AgentRow[];
+  /** `ok`, or why the agents could not be read. */
+  agentsState: string;
+  agentsError: string | null;
+  /** What the agents actually run on, read from the engine. */
+  voice: DograhVoiceStack | null;
+  voiceError?: string | null;
+  /** This account's numbers and the workflow each reaches. */
+  lines: InterviewLine[];
+  /** Recent calls, for the workflows these lines reach. */
+  runs: RunRow[];
+  /** The Capstone add-on's state for this account, as the routing path sees it. */
+  capstone: { state: string; reason: string };
 }
+
+const POLL_MS = 15_000;
 
 /**
- * Did this call reach Capstone? The switch's own hand-off list is the evidence,
- * so the transcript handle is offered on what *happened*, not on what the
- * account is merely entitled to do.
+ * How the agent takes turns, in the operator's words.
  *
- * Capstone keys a transcript by its workflow run and a signed token it mints at
- * call time, neither of which the portal holds — so this is a **handle**, not a
- * link: the call id an operator searches Capstone (or the grader's Grist sheet)
- * by, plus the workflow that answered. It is the same key the context read
- * publishes (`capstone_transcript`), so the screen and the API name one thing.
+ * These four values are the whole of the interruption behaviour — whether the
+ * agent yields when the caller starts talking, and how long it waits before
+ * deciding they have finished. Every workflow shipped with an *empty* config,
+ * which fell back to a plain speech timeout: the agent heard a pause, assumed
+ * the turn was over, and talked over the caller. That is why they are on the
+ * screen and not buried in Dograh.
  */
-function reachedCapstone(record: CallRecord): boolean {
-  return record.handoffs.some((hop) => hop.to === "capstone");
+function turnSummary(turn: DograhTurnConfig | null): string {
+  if (!turn || !turn.turn_stop_strategy) {
+    return "Default turn detection — the agent waits out a silence, so it can talk over a pause";
+  }
+  const parts: string[] = [];
+  if (turn.turn_stop_strategy === "turn_analyzer") {
+    parts.push(
+      `Listens for the end of a thought${
+        turn.smart_turn_stop_secs ? ` (${turn.smart_turn_stop_secs}s)` : ""
+      }`,
+    );
+  } else {
+    parts.push(`Turn stop: ${turn.turn_stop_strategy.replace(/_/g, " ")}`);
+  }
+  if (turn.max_call_duration) {
+    parts.push(`calls capped at ${Math.round(turn.max_call_duration / 60)} min`);
+  }
+  return parts.join(" · ");
 }
 
-const POLL_MS = 10_000;
+/** One line naming the voice that will speak, for a screen with no room. */
+function voiceLine(voice: DograhVoiceStack | null): string {
+  if (!voice) return "The engine did not report its voice configuration";
+  const part = (label: string, config: DograhVoiceStack["stt"]) =>
+    config
+      ? `${label} ${config.model ?? config.provider ?? "unknown"}${config.voice ? `/${config.voice}` : ""}`
+      : `${label} not configured`;
+  return [part("Hears with", voice.stt), part("speaks with", voice.tts)].join(", ");
+}
+
+/** The path a call took, in the operator's words. */
+function pathLabel(record: RecordedCall): string {
+  if (record.handoffs.length === 0) return "no hand-off";
+  return ["agent", ...record.handoffs.map((hop) => hop.to)].join(" → ");
+}
 
 export default function VoiceSection({
-  agents: initialAgents,
-  calls,
-  mappedAgent: initialMapped,
-  avaState,
+  agents,
+  agentsState,
+  agentsError,
+  voice,
+  voiceError,
   lines: initialLines,
+  runs,
   capstone,
 }: Props) {
   const { toast } = useToast();
-  const [agents, setAgents] = useState(initialAgents);
-  const [mapped, setMapped] = useState(initialMapped);
   const [lines, setLines] = useState(initialLines);
   const [drafts, setDrafts] = useState<Record<string, string>>({});
-  const [live, setLive] = useState<LiveCall[]>([]);
-  const [recorded, setRecorded] = useState<CallRecord[]>([]);
-  const [transcriptCallId, setTranscriptCallId] = useState<string | null>(null);
-  const [transcript, setTranscript] = useState<TranscriptTurn[] | null>(null);
-  const [transcriptLoading, setTranscriptLoading] = useState(false);
+  const [recorded, setRecorded] = useState<RecordedCall[]>([]);
   const [liveError, setLiveError] = useState<string | null>(null);
+  const [engine, setEngine] = useState<string>("ok");
   const [busy, setBusy] = useState(false);
-  const [showCreate, setShowCreate] = useState(false);
-  const [newAgent, setNewAgent] = useState({ slug: "", display_name: "", prompt: "" });
 
   const poll = useCallback(async () => {
     try {
       const data = (await api("/api/voice/live")) as {
-        active?: LiveCall[];
-        recorded?: CallRecord[];
-        error?: string;
+        recorded?: RecordedCall[];
+        error?: string | null;
+        engine?: string;
       };
       // The portal's own record is kept even on the engine's error path: it is
       // written by the switch, so a borked engine is precisely when an operator
       // wants to see which calls are still up.
       setRecorded(data.recorded ?? []);
-      if (data.error) {
-        // A broken engine must not look like a quiet one.
-        setLiveError(data.error);
-        setLive([]);
-        return;
-      }
-      setLiveError(null);
-      setLive(data.active ?? []);
+      setEngine(data.engine ?? "ok");
+      setLiveError(data.error ?? null);
     } catch (e) {
       setLiveError(e instanceof Error ? e.message : "Live status unavailable");
+      setEngine("unreachable");
     }
   }, []);
 
@@ -134,51 +156,11 @@ export default function VoiceSection({
     };
   }, [poll]);
 
-  async function openTranscript(call: AvaCall) {
-    const id = call.call_id ?? call.record_id ?? call.id;
-    if (!id) return;
-    if (transcriptCallId === id) {
-      setTranscriptCallId(null);
-      setTranscript(null);
-      return;
-    }
-
-    setTranscriptCallId(id);
-    setTranscript(null);
-    setTranscriptLoading(true);
-    try {
-      const data = (await api(`/api/voice/calls/${encodeURIComponent(id)}`)) as {
-        transcript?: TranscriptTurn[] | null;
-      };
-      setTranscript(data.transcript ?? []);
-    } catch (e) {
-      setTranscript([]);
-      toast.error(e instanceof Error ? e.message : "Could not load that transcript");
-    } finally {
-      setTranscriptLoading(false);
-    }
-  }
-
-  async function mapAgent(slug: string) {
-    setBusy(true);
-    try {
-      await api("/api/voice/agent-mapping", {
-        method: "PUT",
-        body: JSON.stringify({ agent_slug: slug }),
-      });
-      setMapped(slug);
-      toast.success(`Calls are now answered by “${slug}”.`);
-    } catch (e) {
-      toast.error(e instanceof Error ? e.message : "Could not change the agent");
-    } finally {
-      setBusy(false);
-    }
-  }
-
   /**
-   * One number's interview workflow. The add-on gate, the number's ownership
-   * and the target's charset are all enforced server-side — this only reports
-   * what the API said, so the UI cannot accept a value the PBX would refuse.
+   * One number's agent. The add-on gate, the number's ownership, the target's
+   * charset and whether Dograh actually carries that workflow are all enforced
+   * server-side — this only reports what the API said, so the UI cannot accept
+   * a value the PBX would refuse.
    */
   async function saveBinding(did: string, value: string) {
     setBusy(true);
@@ -187,39 +169,21 @@ export default function VoiceSection({
         method: "PUT",
         body: JSON.stringify({ did, capstone_binding: value }),
       })) as { lines?: InterviewLine[] };
-      setLines(data.lines ?? lines);
+      if (data.lines) setLines(data.lines);
       setDrafts((prev) => ({ ...prev, [did]: "" }));
       toast.success(
         value
-          ? `Hand-offs from ${did} now reach workflow ${value}.`
-          : `Hand-offs from ${did} will refuse to an operator.`,
+          ? `${did} now reaches “${value}”.`
+          : `${did} will refuse to an operator when the agent transfers.`,
       );
     } catch (e) {
-      toast.error(e instanceof Error ? e.message : "Could not change the interview line");
+      toast.error(e instanceof Error ? e.message : "Could not change the agent");
     } finally {
       setBusy(false);
     }
   }
 
-  async function createAgent(e: React.FormEvent) {
-    e.preventDefault();
-    setBusy(true);
-    try {
-      await api("/api/voice/agents", {
-        method: "POST",
-        body: JSON.stringify(newAgent),
-      });
-      const refreshed = (await api("/api/voice/agents")) as { agents: AvaAgent[] };
-      setAgents(refreshed.agents ?? []);
-      setShowCreate(false);
-      setNewAgent({ slug: "", display_name: "", prompt: "" });
-      toast.success("Agent created.");
-    } catch (err) {
-      toast.error(err instanceof Error ? err.message : "Could not create the agent");
-    } finally {
-      setBusy(false);
-    }
-  }
+  const broken = agentsState !== "ok" || engine !== "ok";
 
   return (
     <div className="space-y-6">
@@ -227,232 +191,66 @@ export default function VoiceSection({
         <div>
           <h1 className="flex items-center gap-2 text-xl font-semibold text-white">
             <SparklesIcon size={20} className="text-brand-300" />
-            Voice agent
+            Voice Agents
           </h1>
           <p className="mt-1 text-sm text-white/50">
-            AVA answers your inbound calls, runs the IVR, and transfers to your team.
+            Dograh answers your calls and runs the conversations. Which agent answers is chosen per
+            number, below.
           </p>
         </div>
         <button
           type="button"
-          onClick={poll}
+          onClick={() => void poll()}
           className="inline-flex items-center gap-2 rounded-lg border border-white/[0.08] bg-white/[0.03] px-3 py-2 text-sm text-white/60 transition hover:bg-white/[0.06] hover:text-white"
         >
           <RefreshIcon size={16} /> Refresh
         </button>
       </header>
 
-      {avaState !== "ok" && (
+      {broken && (
         <div className="rounded-xl border border-amber-500/30 bg-amber-500/10 px-4 py-3 text-sm text-amber-200">
-          The voice engine reported <strong>{avaState}</strong>. Calls may not be answered
-          until it is healthy.
+          {agentsError ?? liveError ?? "The voice engine could not be read."} Calls may not be
+          answered until it is healthy.
         </div>
       )}
 
-      {/* ── Live calls ─────────────────────────────────────────── */}
-      <section className="rounded-2xl border border-white/[0.06] bg-white/[0.02] p-5">
-        <h2 className="flex items-center gap-2 text-sm font-semibold uppercase tracking-wide text-white/40">
-          <PhoneIcon size={16} /> Live now
-        </h2>
-        {liveError ? (
-          <p className="mt-3 text-sm text-amber-300">Live status unavailable: {liveError}</p>
-        ) : live.length === 0 ? (
-          <p className="mt-3 text-sm text-white/40">No calls in progress.</p>
-        ) : (
-          <ul className="mt-3 divide-y divide-white/[0.05]">
-            {live.map((call, i) => (
-              <li key={i} className="flex items-center justify-between py-2 text-sm">
-                <span className="text-white/70">
-                  {call.caller_number ?? call.from_number ?? "Unknown caller"}
-                </span>
-                <span className="text-white/40">
-                  {call.agent_slug ?? "agent"} · {call.state ?? "in progress"}
-                </span>
-              </li>
-            ))}
-          </ul>
-        )}
-
-        {/*
-          The portal's own record, beside the engine's list on purpose. They
-          answer different questions: the engine only knows the calls whose media
-          it is carrying, while these rows exist from the moment the dialplan
-          stamped the channel — so a call that has been handed to Capstone is
-          absent from the list above and present here, which is exactly the call
-          an operator is looking for. Written by the switch (AMI), never by the
-          agents, so it survives an agent that dies mid-interview.
-        */}
-        <h3 className="mt-5 text-xs font-semibold uppercase tracking-wide text-white/30">
-          Call record
-        </h3>
-        {recorded.length === 0 ? (
-          <p className="mt-2 text-sm text-white/40">
-            No calls have reached the voice plane yet.
-          </p>
-        ) : (
-          <ul className="mt-2 divide-y divide-white/[0.05]">
-            {recorded.map((record) => (
-              <li key={record.call_id} className="py-2 text-sm">
-                <div className="flex items-center justify-between gap-3">
-                  <span className="text-white/70">
-                    {record.did ?? "unknown number"}
-                    {record.capstone_binding ? (
-                      <span className="text-white/40"> · interview {record.capstone_binding}</span>
-                    ) : null}
-                  </span>
-                  <span className="shrink-0 text-white/40">
-                    {record.disposition.replace("_", " ")} · {pathLabel(record)}
-                  </span>
-                </div>
-                <div className="mt-0.5 flex flex-wrap items-center gap-x-3 gap-y-0.5 text-xs text-white/30">
-                  {/* The id both products carry — the thing to quote in a log search. */}
-                  <span className="font-mono">{record.call_id}</span>
-                  <span>started {fmtDate(record.started_at)}</span>
-                  {reachedCapstone(record) ? (
-                    <span
-                      className="text-white/45"
-                      title={
-                        "Capstone owns this call's transcript. Find the workflow run by " +
-                        "this call id — the portal never receives Capstone's signed token."
-                      }
-                    >
-                      Capstone transcript · workflow {record.capstone_binding ?? "unknown"}
-                    </span>
-                  ) : null}
-                </div>
-              </li>
-            ))}
-          </ul>
-        )}
-      </section>
-
-      {/* ── Agents ─────────────────────────────────────────────── */}
-      <section className="rounded-2xl border border-white/[0.06] bg-white/[0.02] p-5">
-        <div className="flex items-center justify-between">
-          <h2 className="text-sm font-semibold uppercase tracking-wide text-white/40">
-            Agents
-          </h2>
-          <button
-            type="button"
-            onClick={() => setShowCreate((v) => !v)}
-            className="inline-flex items-center gap-1.5 text-sm text-brand-300 transition hover:text-brand-200"
-          >
-            <PlusIcon size={16} /> New agent
-          </button>
-        </div>
-
-        {showCreate && (
-          <form onSubmit={createAgent} className="mt-4 space-y-3 rounded-xl border border-white/[0.06] p-4">
-            <input
-              className="w-full rounded-lg border border-white/[0.08] bg-white/[0.03] px-3 py-2 text-sm text-white placeholder:text-white/30"
-              placeholder="slug (lowercase, e.g. receptionist)"
-              value={newAgent.slug}
-              onChange={(e) => setNewAgent({ ...newAgent, slug: e.target.value })}
-              required
-            />
-            <input
-              className="w-full rounded-lg border border-white/[0.08] bg-white/[0.03] px-3 py-2 text-sm text-white placeholder:text-white/30"
-              placeholder="Display name"
-              value={newAgent.display_name}
-              onChange={(e) => setNewAgent({ ...newAgent, display_name: e.target.value })}
-              required
-            />
-            <textarea
-              className="h-28 w-full rounded-lg border border-white/[0.08] bg-white/[0.03] px-3 py-2 text-sm text-white placeholder:text-white/30"
-              placeholder="What should this agent do? The prompt shapes every call."
-              value={newAgent.prompt}
-              onChange={(e) => setNewAgent({ ...newAgent, prompt: e.target.value })}
-              required
-            />
-            {/*
-              The interview template, offered rather than assumed: an empty box
-              and a blank prompt are not the same thing to AVA, and an operator
-              who does not want it can edit whatever is inserted. Seeding the
-              prompt is what makes the interview line sound like an interview
-              line instead of a generic front desk (lib/agent-prompts.ts).
-            */}
-            <button
-              type="button"
-              disabled={busy}
-              onClick={() => setNewAgent({ ...newAgent, prompt: INTERVIEW_AGENT_PROMPT })}
-              className="text-xs text-brand-300 underline-offset-2 transition hover:text-brand-200 hover:underline disabled:opacity-50"
-            >
-              Use the interview-line template
-            </button>
-            <button
-              type="submit"
-              disabled={busy}
-              className="rounded-lg bg-brand-500/90 px-4 py-2 text-sm font-medium text-white transition hover:bg-brand-500 disabled:opacity-50"
-            >
-              {busy ? "Creating…" : "Create agent"}
-            </button>
-          </form>
-        )}
-
-        <ul className="mt-4 space-y-2">
-          {agents.length === 0 && (
-            <li className="text-sm text-white/40">
-              No agents yet. Create one to start answering calls.
-            </li>
-          )}
-          {agents.map((agent) => (
-            <li
-              key={agent.slug}
-              className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-white/[0.06] px-4 py-3"
-            >
-              <div className="min-w-0">
-                <p className="truncate text-sm font-medium text-white">
-                  {agent.display_name ?? agent.slug}
-                </p>
-                <p className="truncate text-xs text-white/40">
-                  {agent.role_label ?? "voice agent"} · {agent.provider ?? "default provider"}
-                </p>
-              </div>
-              {mapped === agent.slug ? (
-                <span className="inline-flex items-center gap-1.5 text-xs text-mint-400">
-                  <CheckCircleIcon size={14} /> Answering your calls
-                </span>
-              ) : (
-                <button
-                  type="button"
-                  disabled={busy}
-                  onClick={() => mapAgent(agent.slug)}
-                  className="rounded-lg border border-white/[0.08] bg-white/[0.03] px-3 py-1.5 text-xs text-white/70 transition hover:bg-white/[0.06] hover:text-white disabled:opacity-50"
-                >
-                  Use for my calls
-                </button>
-              )}
-            </li>
-          ))}
-        </ul>
-      </section>
-
-      {/* ── Interview line ─────────────────────────────────────── */}
+      {/* ── What the agent runs on ─────────────────────────────── */}
       <section className="rounded-2xl border border-white/[0.06] bg-white/[0.02] p-5">
         <h2 className="text-sm font-semibold uppercase tracking-wide text-white/40">
-          Interview line
+          The voice on the line
+        </h2>
+        <p className="mt-2 text-sm text-white/70">{voiceLine(voice)}</p>
+        <p className="mt-1 text-xs text-white/30">
+          {voiceError
+            ? voiceError
+            : "Read from the engine, not from this deployment's config — this is the value in force."}
+        </p>
+      </section>
+
+      {/* ── Which agent answers which number ───────────────────── */}
+      <section className="rounded-2xl border border-white/[0.06] bg-white/[0.02] p-5">
+        <h2 className="text-sm font-semibold uppercase tracking-wide text-white/40">
+          Which agent answers
         </h2>
         <p className="mt-2 text-sm text-white/50">
-          A hand-off from AVA sends the call to one Capstone interview workflow, and
-          which one is a property of the number — so it is chosen per line. The value is
-          the workflow&rsquo;s extension in Capstone; a workflow this PBX cannot reach
-          refuses to an operator instead of guessing.
+          A workflow is a property of the <em>number</em>: one account can hold a support line and
+          an interview line, and they do not have to reach the same agent. This is the same value
+          the PBX reads when the call comes in, so what you set here is what the dialplan does.
         </p>
 
         {capstone.state !== "enabled" ? (
           <p className="mt-3 text-sm text-amber-300">
             {capstone.state === "unknown"
-              ? `Could not verify the Capstone interviews add-on (${capstone.reason}). Nothing is shown as off.`
-              : "The Capstone interviews add-on is not enabled for this account."}
+              ? `Could not verify the interviews add-on (${capstone.reason}). Nothing is shown as off.`
+              : "The interviews add-on is not enabled for this account."}
           </p>
         ) : lines.length === 0 ? (
-          <p className="mt-3 text-sm text-white/40">
-            No active numbers on this account yet.
-          </p>
+          <p className="mt-3 text-sm text-white/40">No active numbers on this account yet.</p>
         ) : (
           <ul className="mt-4 space-y-2">
             {lines.map((line) => {
               const draft = drafts[line.did] ?? line.capstone_binding ?? "";
+              const changed = draft.trim() !== (line.capstone_binding ?? "");
               return (
                 <li
                   key={line.did}
@@ -462,38 +260,44 @@ export default function VoiceSection({
                     <p className="text-sm font-medium text-white">{line.did}</p>
                     <p className="truncate text-xs text-white/40">
                       {line.capstone_binding
-                        ? `hand-offs reach workflow ${line.capstone_binding}`
-                        : "no interview workflow — hand-offs refuse to an operator"}
+                        ? `transfers reach “${line.capstone_binding}”`
+                        : "no agent bound — transfers refuse to an operator"}
                     </p>
                   </div>
                   <div className="flex items-center gap-2">
-                    <input
-                      aria-label={`Capstone workflow for ${line.did}`}
-                      className="w-44 rounded-lg border border-white/[0.08] bg-white/[0.03] px-3 py-1.5 text-sm text-white placeholder:text-white/30"
-                      placeholder="workflow extension"
+                    {/* A select, not a text field: the value has to be a workflow
+                        that exists, and a free-text box invites the operator to
+                        discover that at call time instead of here. */}
+                    <select
+                      aria-label={`Agent for ${line.did}`}
+                      className="w-56 rounded-lg border px-3 py-1.5 text-sm outline-none transition focus:border-brand-500/50"
+                      style={{
+                        background: "var(--input-bg)",
+                        borderColor: "var(--input-border)",
+                        color: "var(--foreground)",
+                      }}
                       value={draft}
                       onChange={(e) =>
                         setDrafts((prev) => ({ ...prev, [line.did]: e.target.value }))
                       }
-                    />
+                    >
+                      <option value="">No agent — refuse to an operator</option>
+                      {agents
+                        .filter((agent) => agent.status === "active")
+                        .map((agent) => (
+                          <option key={agent.id} value={String(agent.id)}>
+                            {agent.name}
+                          </option>
+                        ))}
+                    </select>
                     <button
                       type="button"
-                      disabled={busy || draft.trim() === (line.capstone_binding ?? "")}
-                      onClick={() => saveBinding(line.did, draft.trim())}
+                      disabled={busy || !changed}
+                      onClick={() => void saveBinding(line.did, draft.trim())}
                       className="rounded-lg border border-white/[0.08] bg-white/[0.03] px-3 py-1.5 text-xs text-white/70 transition hover:bg-white/[0.06] hover:text-white disabled:opacity-40"
                     >
                       Save
                     </button>
-                    {line.capstone_binding && (
-                      <button
-                        type="button"
-                        disabled={busy}
-                        onClick={() => saveBinding(line.did, "")}
-                        className="rounded-lg border border-white/[0.08] bg-white/[0.03] px-3 py-1.5 text-xs text-white/50 transition hover:bg-white/[0.06] hover:text-white disabled:opacity-40"
-                      >
-                        Clear
-                      </button>
-                    )}
                   </div>
                 </li>
               );
@@ -502,64 +306,125 @@ export default function VoiceSection({
         )}
       </section>
 
+      {/* ── Live now ───────────────────────────────────────────── */}
+      <section className="rounded-2xl border border-white/[0.06] bg-white/[0.02] p-5">
+        <h2 className="flex items-center gap-2 text-sm font-semibold uppercase tracking-wide text-white/40">
+          <PhoneIcon size={16} /> Live now
+        </h2>
+        {liveError ? (
+          <p className="mt-3 text-sm text-amber-300">The engine is not answering: {liveError}</p>
+        ) : null}
+        {recorded.length === 0 ? (
+          <p className="mt-3 text-sm text-white/40">No calls in progress.</p>
+        ) : (
+          <ul className="mt-3 divide-y divide-white/[0.05]">
+            {recorded.map((record) => (
+              <li key={record.call_id} className="py-2 text-sm">
+                <div className="flex items-center justify-between gap-3">
+                  <span className="text-white/70">
+                    {record.did ?? "unknown number"}
+                    {record.capstone_binding ? (
+                      <span className="text-white/40"> · {record.capstone_binding}</span>
+                    ) : null}
+                  </span>
+                  <span className="shrink-0 text-white/40">
+                    {record.disposition.replace(/_/g, " ")} · {pathLabel(record)}
+                  </span>
+                </div>
+                <div className="mt-0.5 flex flex-wrap items-center gap-x-3 text-xs text-white/30">
+                  {/* The id both products carry — the thing to quote in a log search. */}
+                  <span className="font-mono">{record.call_id}</span>
+                  <span>started {fmtDate(record.started_at)}</span>
+                </div>
+              </li>
+            ))}
+          </ul>
+        )}
+      </section>
+
+      {/* ── Agents ─────────────────────────────────────────────── */}
+      <section className="rounded-2xl border border-white/[0.06] bg-white/[0.02] p-5">
+        <h2 className="text-sm font-semibold uppercase tracking-wide text-white/40">Agents</h2>
+        <p className="mt-2 text-sm text-white/50">
+          These are your interviewer and reception agents, exactly as the engine has them. Editing
+          one — its prompts, its nodes, its branching — happens in Dograh; the System Map links
+          straight to it.
+        </p>
+
+        <ul className="mt-4 space-y-2">
+          {agents.length === 0 && (
+            <li className="text-sm text-white/40">
+              No agents on the voice engine yet. Create one in Dograh and it appears here.
+            </li>
+          )}
+          {agents.map((agent) => (
+            <li
+              key={agent.id}
+              className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-white/[0.06] px-4 py-3"
+            >
+              <div className="min-w-0">
+                <p className="flex items-center gap-2 truncate text-sm font-medium text-white">
+                  {agent.name}
+                  {agent.status !== "active" ? (
+                    <span className="rounded-full border border-white/[0.08] bg-white/[0.03] px-2 py-0.5 text-[10px] text-white/35">
+                      {agent.status}
+                    </span>
+                  ) : null}
+                  {lines.some(
+                    (line) =>
+                      line.capstone_binding === String(agent.id) ||
+                      line.capstone_binding === agent.name,
+                  ) ? (
+                    <span className="inline-flex items-center gap-1 text-xs text-mint-400">
+                      <CheckCircleIcon size={13} /> Answering a line
+                    </span>
+                  ) : null}
+                </p>
+                <p className="truncate text-xs text-white/40">{turnSummary(agent.turn)}</p>
+              </div>
+              <span className="shrink-0 text-xs text-white/30">
+                {agent.total_runs ?? 0} call{agent.total_runs === 1 ? "" : "s"}
+              </span>
+            </li>
+          ))}
+        </ul>
+      </section>
+
       {/* ── Recent calls ───────────────────────────────────────── */}
       <section className="rounded-2xl border border-white/[0.06] bg-white/[0.02] p-5">
         <h2 className="text-sm font-semibold uppercase tracking-wide text-white/40">
           Recent calls
         </h2>
-        {calls.length === 0 ? (
-          <p className="mt-3 text-sm text-white/40">No calls answered yet.</p>
+        {runs.length === 0 ? (
+          <p className="mt-3 text-sm text-white/40">
+            No calls yet — none of these agents has handled one.
+          </p>
         ) : (
           <ul className="mt-3 divide-y divide-white/[0.05]">
-            {calls.map((call, i) => {
-              const record = recorded.find((item) => item.call_id === call.call_id);
-              const transcriptId = call.call_id ?? call.record_id ?? call.id ?? "";
-              const isTranscriptOpen = transcriptCallId === transcriptId;
-              return (
-                <li key={call.record_id ?? call.id ?? i} className="py-3">
-                  <div className="flex items-center justify-between gap-3 text-sm">
-                    <span className="text-white/70">
-                      {call.caller_number ?? call.from_number ?? "Unknown caller"}
-                    </span>
-                    <span className="text-white/40">
-                      {call.started_at ? fmtDate(call.started_at) : ""}
-                      {call.duration_seconds ? ` · ${call.duration_seconds}s` : ""}
-                    </span>
-                  </div>
-                  {(call.summary ?? call.outcome) && (
-                    <p className="mt-1 text-xs text-white/50">{call.summary ?? call.outcome}</p>
-                  )}
-                  {record && (
-                    <p className="mt-1 text-xs text-white/35">
-                      Voice record: {record.disposition.replace("_", " ")} · {pathLabel(record)}
-                    </p>
-                  )}
-                  {transcriptId && (
-                    <button
-                      type="button"
-                      onClick={() => void openTranscript(call)}
-                      className="mt-2 text-xs text-brand-300 transition hover:text-brand-200"
-                    >
-                      {isTranscriptOpen ? "Hide transcript" : "View transcript"}
-                    </button>
-                  )}
-                  {isTranscriptOpen && (
-                    <div className="mt-2 rounded-lg border border-white/[0.06] bg-white/[0.02] p-3">
-                      {transcriptLoading && <p className="text-xs text-white/40">Loading transcript…</p>}
-                      {!transcriptLoading && transcript?.length === 0 && (
-                        <p className="text-xs text-white/40">No transcript was recorded.</p>
-                      )}
-                      {!transcriptLoading && transcript?.map((turn, turnIndex) => (
-                        <p key={turnIndex} className="mb-1.5 text-xs text-white/65">
-                          <span className="mr-2 uppercase text-white/30">{turn.role ?? "turn"}</span>
-                          {turn.content ?? turn.text ?? ""}
-                        </p>
-                      ))}
-                    </div>
-                  )}
-                </li>
-              );
-            })}
+            {runs.map((run) => (
+              <li key={`${run.workflow_id}-${run.id}`} className="py-3 text-sm">
+                <div className="flex items-center justify-between gap-3">
+                  <span className="text-white/70">
+                    {run.nodes_visited[0] ?? run.name ?? "call"}
+                  </span>
+                  <span className="shrink-0 text-white/40">
+                    {run.created_at ? fmtDate(run.created_at) : ""}
+                    {run.duration_seconds ? ` · ${run.duration_seconds}s` : ""}
+                  </span>
+                </div>
+                <p className="mt-1 text-xs text-white/50">{describeOutcome(run.outcome)}</p>
+                <div className="mt-1 flex flex-wrap items-center gap-x-3 text-xs text-white/30">
+                  {run.call_id ? (
+                    /* The id both products carry — what to search the engine, the
+                       PBX log and the control panel by. */
+                    <span className="font-mono">{run.call_id}</span>
+                  ) : null}
+                  {run.nodes_visited.length > 0 ? (
+                    <span>{run.nodes_visited.length} step(s) reached</span>
+                  ) : null}
+                </div>
+              </li>
+            ))}
           </ul>
         )}
       </section>

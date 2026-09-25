@@ -1,6 +1,8 @@
 /**
- * The read side of the call-context envelope (D2 in
- * docs/ava-capstone-convergence.md).
+ * The read side of the call-context envelope.
+ *
+ * (Design notes live in docs/unified-console.md and, historically,
+ * docs/ava-capstone-convergence.md D2.)
  *
  * The dialplan stamps the channel once, at ingress, with the small facts both
  * agents need (AI_CALL_ID, AI_ACCOUNT, AI_AGENT, the caller, the Capstone
@@ -16,23 +18,24 @@
  *      and an unset secret refuses every read rather than opening the route.
  *      That is also why the channel carries no account id inside the token.
  *   2. **A call is readable while it is live, and for five minutes after.**
- *      The hand-off itself is the reason for the window: AVA's session ends
- *      when the channel leaves Stasis, so at the moment Capstone answers, the
- *      call is *just* over — the grace is what makes the hand-off fetchable.
- *      The hand-back is the same channel returning (so the same token), which
- *      is live again by the time AVA asks. Outside the window the context is
- *      not served: a call id that stays readable forever is a call id that can
- *      be replayed by anyone who read a log.
+ *      The hand-off itself is the reason for the window: the answering agent's
+ *      session ends when the channel leaves Stasis, so at the moment the next
+ *      system answers, the call is *just* over — the grace is what makes the
+ *      hand-off fetchable. The hand-back is the same channel returning (so the
+ *      same token), which is live again by the time it asks. Outside the window
+ *      the context is not served: a call id that stays readable forever is a
+ *      call id that can be replayed by anyone who read a log.
  *
  * Where the facts come from, in order: the live channel through AMI (the
  * envelope the dialplan stamped, authoritative while the channel exists), then
- * AVA's call record (written when the call ends, and the only source left
- * afterwards — it carries the dialled number, which is what names the account).
+ * this portal's own `voice_calls` store, which the switch fills from AMI events
+ * and which answers after a hangup. Neither source is an agent: a call no agent
+ * picked up is still a call this platform routed, and both sources know it.
  */
 import crypto from "crypto";
 import { normalizeDid } from "./dialplan-values";
 import { getAmiClient } from "./ami";
-import { avaConfigured, listCalls, type AvaCall } from "./ava";
+import { getVoiceCall, priorCallsForDid } from "./voice-calls";
 import db from "./db";
 import { cachedAddonDecision } from "./addon-cache";
 
@@ -48,8 +51,6 @@ export const CONTEXT_GRACE_MS = 5 * 60 * 1000;
 /** The add-on row that says an account may reach Capstone at all. */
 export const CAPSTONE_ADDON = "capstone";
 
-/** How many AVA records to scan — the current call sits at the head. */
-const RECENT_CALLS = 50;
 
 /** What the dialplan reads off the channel its envelope was stamped on. */
 const ENVELOPE_VARS = [
@@ -111,7 +112,14 @@ export { normalizeDid };
 
 export interface CallFacts {
   call_id: string;
-  /** AVA's record id for the call, when a record exists — the transcript key. */
+  /**
+   * Always null. It was the voice engine's record id — the key into that
+   * engine's transcript store. With one engine there is no second transcript
+   * store and so no second id; the transcript is the answering engine's, and
+   * `capstone_transcript` carries the handle the portal actually holds (the
+   * call id plus the workflow). Kept in the shape so callers do not have to
+   * change in the same release.
+   */
   record_id: string | null;
   /** The number the caller dialled — what names the account. */
   did: string | null;
@@ -229,83 +237,81 @@ async function channelFacts(token: string): Promise<Lookup> {
   };
 }
 
-/** AVA's records, or null when they could not be read at all. */
-async function recentCalls(): Promise<AvaCall[] | null> {
-  if (!avaConfigured()) return null;
-  const result = await listCalls(RECENT_CALLS);
-  return result.state === "ok" ? result.data.calls : null;
-}
-
 /**
- * AVA's record for the call — written when it ends, and the only source after.
+ * This portal's own store for the call, as `CallFacts`.
  *
- * Matched on `call_id` only: that is the channel's own id (what the token is),
- * whereas `record_id`/`id` are AVA's keys for the same record and would let a
- * record for a different channel answer.
+ * Keyed on `call_id`, which is the channel's own id and therefore what the
+ * token is. A row this portal never wrote is not a call it routed, so a miss
+ * returns null rather than a synthesised record — the distinction
+ * `resolveCallFacts` turns into "not one of ours".
  */
-function recordFacts(token: string, calls: AvaCall[]): CallFacts | null {
-  const record = calls.find((call) => call.call_id === token);
-  if (!record) return null;
+function storedFacts(token: string): CallFacts | null {
+  const row = getVoiceCall(token);
+  if (!row) return null;
 
   return {
-    call_id: token,
-    record_id: record.record_id ?? record.id ?? null,
-    did: normalizeDid(record.called_number),
-    agent: record.agent_slug ?? null,
-    account_id: null,
-    caller_number: record.caller_number ?? record.from_number ?? null,
-    caller_name: record.caller_name ?? null,
-    started_at: record.start_time ?? record.started_at ?? null,
-    ended_at: record.end_time ?? null,
-    live: false,
+    call_id: row.call_id,
+    record_id: null,
+    did: normalizeDid(row.did),
+    agent: null,
+    account_id: row.account_id ?? null,
+    // The switch records the number it was asked to serve, not who asked; the
+    // caller's own number is not a column this table keeps.
+    caller_number: null,
+    caller_name: null,
+    started_at: row.started_at ?? null,
+    ended_at: row.ended_at ?? null,
+    live: !row.ended_at,
     source: "record",
-    return_outcome: null,
+    return_outcome: row.disposition ?? null,
   };
 }
 
 export interface CallResolution {
   lookup: Lookup;
-  /** AVA's recent records, fetched once and shared with the prior-call count. */
-  calls: AvaCall[] | null;
+  /**
+   * Whether the local store could be read. There is no longer a remote record
+   * list to scan, so this is the whole of what a caller needs to tell "no prior
+   * calls" apart from "could not look" — see `priorCallsFor`.
+   */
+  storeReadable: boolean;
 }
 
 /**
  * The call, from the first source that has it.
  *
  * The live channel is tried first because it is the envelope this call's own
- * dialplan wrote; AVA's record is the fallback, and it is what answers after a
- * hangup. Only when *both* sources were unreachable is the answer
- * "unavailable" — one working source that does not know the token means the
- * call is not one of ours.
+ * dialplan wrote; this portal's `voice_calls` store is the fallback, and it is
+ * what answers after a hangup. Both are local, so "unavailable" now means the
+ * channel could not be asked *and* the local read threw — one working source
+ * that does not know the token means the call is not one of ours.
  */
 export async function resolveCallFacts(token: string): Promise<CallResolution> {
   const channel = await channelFacts(token);
-  if (channel.state === "found") return { lookup: channel, calls: await recentCalls() };
+  if (channel.state === "found") return { lookup: channel, storeReadable: true };
 
-  const calls = await recentCalls();
-  if (calls === null) {
+  let stored: CallFacts | null = null;
+  try {
+    stored = storedFacts(token);
+  } catch (error) {
     return {
-      lookup:
-        channel.state === "unavailable"
-          ? {
-              state: "unavailable",
-              reason: `channel: ${channel.reason}; record: the AVA admin API is not configured or unreachable`,
-            }
-          : {
-              state: "unavailable",
-              reason: "the AVA admin API is not configured or unreachable",
-            },
-      calls: null,
+      lookup: {
+        state: "unavailable",
+        reason: `channel: ${channel.state === "unavailable" ? channel.reason : "token not found"}; store: ${describeError(error)}`,
+      },
+      storeReadable: false,
     };
   }
 
-  const facts = recordFacts(token, calls);
-  if (facts) return { lookup: { state: "found", facts }, calls };
+  if (stored) return { lookup: { state: "found", facts: stored }, storeReadable: true };
 
-  // A source that worked and did not know the token settles it: this is not a
-  // call this platform routed. (A record older than the scan window reads the
-  // same way, which is the correct answer for a call we will not serve.)
-  return { lookup: { state: "none" }, calls };
+  // The store answered and did not know the token. That settles it: this is not
+  // a call this platform routed.
+  return { lookup: { state: "none" }, storeReadable: true };
+}
+
+function describeError(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
 }
 
 // ── the account's half ────────────────────────────────────────────
@@ -391,30 +397,24 @@ export interface PriorCalls {
 /**
  * What we know about this caller from previous calls.
  *
- * Computed from the records already fetched rather than a second AVA query, so
- * a context read costs one round trip no matter how many consumers ask. A
- * `null` return means "not knowable" (AVA unreachable), which is a different
- * answer from zero prior calls — the distinction the voice screens make between
- * "quiet" and "broken".
+ * Read from this portal's own `voice_calls` store (see `priorCallsForDid`),
+ * which the switch fills from AMI events — so a context read no longer depends
+ * on a voice engine being reachable. A `null` return still means "not
+ * knowable", which is a different answer from zero prior calls: the
+ * distinction the voice screens make between "quiet" and "broken".
  */
-export function priorCallsFor(facts: CallFacts, calls: AvaCall[] | null): PriorCalls | null {
-  if (calls === null) return null;
-  if (!facts.caller_number) return { count: 0, last_at: null, last_record_id: null };
+export function priorCallsFor(facts: CallFacts, storeReadable: boolean): PriorCalls | null {
+  if (!storeReadable) return null;
+  // The number the caller dialled names this platform's side of the call, and
+  // it is the only column `voice_calls` carries that describes the call's
+  // destination. Without it there is nothing to match on.
+  if (!facts.did) return { count: 0, last_at: null, last_record_id: null };
 
-  const mine = calls.filter(
-    (call) =>
-      call.call_id !== facts.call_id &&
-      (call.caller_number ?? call.from_number ?? null) === facts.caller_number,
-  );
-  if (mine.length === 0) return { count: 0, last_at: null, last_record_id: null };
-
-  const startOf = (call: AvaCall) => call.start_time ?? call.started_at ?? "";
-  const latest = mine.reduce((a, b) => (startOf(b) > startOf(a) ? b : a));
-
+  const prior = priorCallsForDid(facts.did, facts.call_id);
   return {
-    count: mine.length,
-    last_at: startOf(latest) || null,
-    last_record_id: latest.record_id ?? latest.id ?? null,
+    count: prior.count,
+    last_at: prior.last_at,
+    last_record_id: prior.last_call_id,
   };
 }
 
@@ -432,12 +432,16 @@ export interface CallContext {
   interview: InterviewContext;
   prior_calls: PriorCalls | null;
   /**
-   * A handle, not a link: the transcript lives in AVA, keyed by its record id,
-   * and only exists once the call has ended. Handing over an id means the
-   * consumer fetches what it actually needs, instead of this route copying a
-   * transcript into every answer.
+   * Always null, and deliberately so.
+   *
+   * This used to hand over the voice engine's record id, the key into that
+   * engine's transcript store. With one engine there is no portal-side
+   * transcript id to give: the transcript belongs to whoever answered, and the
+   * honest handle for it is `capstone_transcript` below — the call id plus the
+   * workflow, both of which this portal really holds. A field that always
+   * returned an id this route had invented would be worse than one that says so.
    */
-  transcript_handle: { record_id: string; source: "ava" } | null;
+  transcript_handle: null;
   /**
    * The same call in **Capstone's** store, when the account is entitled to hand
    * off at all.
@@ -454,7 +458,7 @@ export interface CallContext {
   capstone_transcript: { call_id: string; workflow: string } | null;
 }
 
-export function buildCallContext(facts: CallFacts, calls: AvaCall[] | null): CallContext {
+export function buildCallContext(facts: CallFacts, storeReadable: boolean): CallContext {
   const { account, interview } = accountContextFor(facts);
   return {
     call_id: facts.call_id,
@@ -468,10 +472,8 @@ export function buildCallContext(facts: CallFacts, calls: AvaCall[] | null): Cal
     resolved_from: facts.source,
     account,
     interview,
-    prior_calls: priorCallsFor(facts, calls),
-    transcript_handle: facts.record_id
-      ? { record_id: facts.record_id, source: "ava" as const }
-      : null,
+    prior_calls: priorCallsFor(facts, storeReadable),
+    transcript_handle: null,
     // Offered only beside a true entitlement and a configured target, the same
     // rule the dialplan and the renderer apply: an unentitled account has no
     // Capstone run to look up, and a target with no entitlement is not sent.

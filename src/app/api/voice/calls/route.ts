@@ -2,28 +2,47 @@ import { NextResponse } from "next/server";
 import { requireUser } from "@/lib/api-helpers";
 import { addonStatus } from "@/lib/addons";
 import { SPAN_KIND, withSpan, type Span } from "@/lib/otel";
-import { avaConfigured, listCalls } from "@/lib/ava";
-import { voiceCallsByCallId } from "@/lib/voice-calls";
+import { listVoiceCalls, type VoiceCall } from "@/lib/voice-calls";
+import { dograhConfigured, listRuns, listWorkflows, type DograhRun } from "@/lib/dograh";
 
 export const dynamic = "force-dynamic";
+
+/** How many of a workflow's most recent runs to scan when joining. */
+const RUNS_PER_WORKFLOW = 50;
+
+export interface CallRow extends VoiceCall {
+  /**
+   * The agent's own record of this call, when one exists.
+   *
+   * Joined on the call id, which is the thing both sides carry: the dialplan
+   * stamps it as `AI_CALL_ID`, Dograh keeps it in the run's context, and this
+   * table is keyed by it. That is the whole reason the join is possible — no
+   * name matching, no timestamp fuzz.
+   */
+  run: {
+    id: number;
+    workflow_id: number;
+    outcome: string | null;
+    duration_seconds: number | null;
+    nodes_visited: string[];
+  } | null;
+}
 
 /**
  * GET /api/voice/calls?limit=50
  *
- * Calls AVA answered, with transcripts and recordings behind
- * /api/voice/calls/[recordId].
+ * This account's calls, with what the agent did on each.
  *
- * The list is AVA's, not the PBX's: AVA is the first-response app, so its
- * record explains what the caller was asked and what the agent decided,
- * which CDRs do not carry. Read-only, so a disabled add-on still returns the
- * history — removing the data when a subscription lapses would destroy the
- * account's own call records.
+ * The list is the portal's own `voice_calls` — written by the switch from AMI
+ * events — and **not** the engine's, for two reasons. It exists whether or not
+ * an agent picked the call up, and it is already scoped to one account by
+ * `account_id`, which is the authorization boundary: the engine's run list is
+ * estate-wide, so a screen that listed it directly would show one customer
+ * another customer's calls. The runs are joined in afterwards, and only for the
+ * workflows this account's numbers actually reach.
  *
- * Each call carries its `record` — the portal's own `voice_calls` row, joined on
- * the id both sides already carry (P4). That join is the point of the screen: a
- * call AVA answered, handed to Capstone and returned is one row here, with the
- * path and the account on it, instead of three logs and a question about which
- * product answered.
+ * Read-only, and returned even when the add-on is off: removing the data when a
+ * subscription lapses would destroy the account's own call records.
  */
 export async function GET(req: Request) {
   return withSpan("voice.calls.list", (span) => listCallsFor(req, span), {
@@ -42,51 +61,84 @@ async function listCallsFor(req: Request, span: Span): Promise<Response> {
     return NextResponse.json({ error: "limit must be 1-500" }, { status: 400 });
   }
 
-  if (!avaConfigured()) {
-    // Not an error — a portal-only install has no engine to read — but the
-    // span must say so, or "empty" and "unconfigured" look the same in a trace
-    // the way they must not look the same in the dashboard.
-    span.setAttribute("zeus.ava.state", "not_configured");
-    return NextResponse.json({ configured: false, calls: [], total: null });
-  }
-
-  const result = await listCalls(parsedLimit);
+  const calls = listVoiceCalls(parsedLimit, user.id);
   const addon = await addonStatus("agents", { user: user.email });
-  span.setAttribute("zeus.ava.state", result.state);
-
-  if (result.state !== "ok") {
-    span.setStatus("error", result.error);
-    return NextResponse.json(
-      {
-        configured: true,
-        error: result.error,
-        ava_state: result.state,
-        calls: [],
-        total: null,
-        addon,
-      },
-      { status: result.state === "unreachable" ? 503 : 502 },
-    );
-  }
-
-  const records = voiceCallsByCallId(
-    result.data.calls.map((call) => call.call_id ?? ""),
-  );
-  const calls = result.data.calls.filter((call) => {
-    const record = records.get(call.call_id ?? "");
-    return record?.account_id === user.id;
-  });
   span.setAttribute("zeus.calls.count", calls.length);
 
+  const withRuns = dograhConfigured()
+    ? await joinRuns(calls, span)
+    : calls.map((call): CallRow => ({ ...call, run: null }));
+
   return NextResponse.json({
-    configured: true,
-    ava_state: result.state,
-    calls: calls.map((call) => ({
-      ...call,
-      record: records.get(call.call_id ?? "") ?? null,
-    })),
-    // AVA's total is estate-wide; the portal must report the account's view.
-    total: calls.length,
+    configured: dograhConfigured(),
+    calls: withRuns,
+    total: withRuns.length,
     addon,
+  });
+}
+
+/**
+ * Attach each call's run, by workflow.
+ *
+ * Runs are fetched **per workflow this account reaches**, not per call: a
+ * hundred calls to one interview line is one request, and the alternative —
+ * asking the engine about each call id — is both slower and impossible, since
+ * the API has no by-call-id lookup.
+ *
+ * A failure here degrades to `run: null` rather than failing the request. The
+ * portal's record is the answer to "what happened"; the run is the detail. A
+ * screen that showed nothing because the detail was unavailable would be worse
+ * than one that says what it knows.
+ */
+async function joinRuns(calls: VoiceCall[], span: Span): Promise<CallRow[]> {
+  const bindings = [
+    ...new Set(calls.map((call) => call.capstone_binding).filter((b): b is string => Boolean(b))),
+  ];
+  if (bindings.length === 0) return calls.map((call) => ({ ...call, run: null }));
+
+  const workflows = await listWorkflows();
+  if (workflows.state !== "ok") {
+    span.setAttribute("zeus.calls.runs", "unavailable");
+    return calls.map((call) => ({ ...call, run: null }));
+  }
+
+  // A binding is the workflow's *extension* as the dialplan knows it. Dograh's
+  // list carries ids and names, so match on either: an operator who typed the
+  // id, and one who typed the name, both get their runs joined.
+  const idFor = new Map<string, number>();
+  for (const workflow of workflows.data) {
+    idFor.set(String(workflow.id), workflow.id);
+    idFor.set(workflow.name, workflow.id);
+  }
+
+  const wanted = [...new Set(bindings.map((b) => idFor.get(b)).filter((id): id is number => id !== undefined))];
+  if (wanted.length === 0) return calls.map((call) => ({ ...call, run: null }));
+
+  const byCallId = new Map<string, DograhRun>();
+  await Promise.all(
+    wanted.map(async (workflowId) => {
+      const runs = await listRuns(workflowId, { limit: RUNS_PER_WORKFLOW });
+      if (runs.state !== "ok") return;
+      for (const run of runs.data) {
+        if (run.call_id) byCallId.set(run.call_id, run);
+      }
+    }),
+  );
+
+  span.setAttribute("zeus.calls.runs", byCallId.size);
+  return calls.map((call): CallRow => {
+    const run = byCallId.get(call.call_id);
+    return {
+      ...call,
+      run: run
+        ? {
+            id: run.id,
+            workflow_id: run.workflow_id,
+            outcome: run.outcome,
+            duration_seconds: run.duration_seconds,
+            nodes_visited: run.nodes_visited,
+          }
+        : null,
+    };
   });
 }
