@@ -34,12 +34,13 @@ command still answers the whole question:
     with `--accounts-json` to have the route leg reported.
   * **The account's voice mapping** (`voice_agents`, `voice_bindings`) — the
     portal API owns those (`PUT /api/voice/agent-mapping`, one transaction).
-  * **The WebRTC endpoint** — its owner is an OPEN decision
-    (docs/ava-capstone-convergence.md §11.5): either FreePBX's own generated
-    endpoint extended from `pjsip.endpoint_custom_post.conf`, or a portal-owned
-    endpoint under an id FreePBX does not generate. This tool creates the
-    framework's endpoint and never the portal's fragment, and `--webrtc` measures
-    which of the two exists so the decision can be taken from evidence.
+  * **The WebRTC endpoint** — its owner is DECIDED
+    (docs/ava-capstone-convergence.md §11.5): FreePBX owns the endpoint and the
+    portal extends it from `pjsip.endpoint_custom_post.conf`, appending
+    `[<ext>](+)` so the softphone registers as the object the PBX routes to.
+    This tool creates the framework's endpoint and never the portal's settings;
+    `--webrtc` measures which of the two shapes exists on the box, so a
+    pre-decision fragment is found rather than assumed absent.
 
 The create call is the one part of this file that needs the live box to confirm:
 the judgement layer is unit-tested (`pbx/tests/test_provision_extension.py`), and

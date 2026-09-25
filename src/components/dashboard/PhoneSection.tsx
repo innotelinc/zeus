@@ -176,7 +176,7 @@ export default function PhoneSection({ numbers: initialNumbers, extensions: init
       );
       if (res.softphone && res.softphone.state === "not-loaded") {
         toast.info(
-          `Still not loaded — add "${res.softphone.requiredInclude}" to pjsip_custom_post.conf.`,
+          `Still no WebRTC settings — add "${res.softphone.requiredSection}" to ${res.softphone.file}.`,
         );
       }
     } catch (e) {

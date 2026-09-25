@@ -1,45 +1,45 @@
 #!/usr/bin/env python3
 """pbx/pjsip_owner_check.py — who owns the PJSIP endpoint for an extension?
 
-The portal provisions a WebRTC softphone endpoint itself:
+## The endpoint decision (2026-09-25)
 
-  * `src/app/api/phone/extensions/route.ts` writes
-    `/etc/asterisk/pjsip_ext_<ext>.conf`, defining `[<ext>](webrtc-template)`
-    with a secret the portal generated and handed to the browser;
-  * and it makes Asterisk load that file by appending
-    `#include pjsip_ext_<ext>.conf` to **`pjsip.conf`**.
+**FreePBX owns the endpoint, and the portal extends it.**
+`src/lib/pjsip-endpoint.ts` appends `[<ext>](+)` — Asterisk's
+append-to-existing-section syntax — plus the WebRTC media settings to
+`pjsip.endpoint_custom_post.conf`, which FreePBX includes and never
+regenerates. There is no `#include` for the portal to write and no second
+`[<ext>]` to collide: the softphone registers as the same object the PBX routes
+to and reports device state for, with the device secret FreePBX renders
+(`src/lib/pjsip-secret.ts` reads it back out of `pjsip.auth.conf`).
 
-Two things are wrong with that shape, and neither is visible from the portal:
+The rejected alternative — a portal-owned endpoint under an id FreePBX will not
+generate (`<ext>-webrtc`) — is recorded in
+[docs/ava-capstone-convergence.md](../docs/ava-capstone-convergence.md) §11. It
+loses because the rest of the PBX addresses `PJSIP/<ext>`: a second endpoint is
+one that inbound routes, ring groups and the console's own device-state poll
+cannot reach.
 
-**1. `pjsip.conf` is not an operator-owned file.** The rule this estate already
-follows is the opposite, and it is stated twice and verified live: *"`pjsip_custom*.conf`
-are operator-owned — a `fwconsole reload` does **not** regenerate them
-(verified)"* (`docs/ops-sms-trunk.md`), *"`pjsip_custom_post.conf` /
-`extensions_custom.conf` (FreePBX never manages them, so they survive Apply
-Config)"* (`pbx/README.md`). Every other writer obeys it — `scripts/setup.sh`
-(the VoIP.ms include), `pbx/setup-cloudonix-trunk.sh`, and the vendored Teams
-wizard, which *skips* its own `pjsip.conf` write when `FREEPBX_MODE=true`
-because FreePBX reads `pjsip.endpoint_custom_post.conf` instead. The TURN
-settings are written into `kvstore_Sipsettings` for the same reason: *"an Apply
-Config rebuilds `rtp_additional.conf` from that table, so a file-only change is
-reverted the first time anyone opens the GUI"* (`pbx/README.md`). An `#include`
-in `pjsip.conf` is therefore reverted at the next Apply Config: the endpoint
-silently disappears while the portal keeps listing the extension as active.
+## What this tool still measures
 
-**2. FreePBX already generates `[<ext>]`.** The extension the portal creates
-through the API has `sip` rows, and FreePBX's PJSIP driver generates an endpoint
-for that number — `docs/legacy-voice-migration.md` reads a device secret back
-*out of the generated `pjsip.auth.conf`*. `pjsip.endpoint.conf`,
-`pjsip.auth.conf` and `pjsip.aor.conf` are all inside `pjsip.conf`'s include
-tree, so the portal's file is a **second object with the same id in the same
-load tree** — the failure `pbx/README.md` documents for `ari.conf`, where one
-duplicate makes sorcery refuse the whole file and *"costs every user"*.
+The old shape is not gone from the estate, it is only no longer written. A box
+provisioned before the decision still has `/etc/asterisk/pjsip_ext_<ext>.conf`
+defining `[<ext>](webrtc-template)` — a **second object with FreePBX's id in the
+same load tree**, the failure `pbx/README.md` documents for `ari.conf`, where one
+duplicate makes sorcery refuse the whole file and *"costs every user"*. The old
+shape also had to be made loadable by appending `#include pjsip_ext_<ext>.conf`
+to a file, and an include in a file FreePBX regenerates is reverted at the next
+Apply Config — so the fragment then sits on disk, entered by nothing, while the
+portal still lists the extension as active.
 
 The two defects cancel into silence: if the include is not currently loaded
 (because a reload dropped it), the softphone never registers and no secret
-works; if it *were* loaded, the duplicate object would take res_pjsip down with
-it. Which of those two states this box is in decides the fix, and that is what
-this tool measures. It changes nothing — every probe is a read.
+works; if it *is* loaded, the duplicate object would take res_pjsip down with
+it. Which state a given box is in is a measurement, not an assumption, and this
+tool is it. A box that has migrated reports clean: the `[<ext>](+)` append is a
+finding of its own, and it is deliberately untyped — `(+)` inherits nothing — so
+it is never counted as a second endpoint.
+
+It changes nothing — every probe is a read.
 
 ## What it answers
 
@@ -393,6 +393,7 @@ def verdict_endpoint(
     "the endpoint exists" would report that box as healthy.
     """
     fragment = f"pjsip_ext_{ext}.conf"
+    appended = portal_appends(files, ext)
     in_tree = set(closure)
     endpoint_defs = [
         (name, line)
@@ -424,6 +425,15 @@ def verdict_endpoint(
                 f"({files[name].ownership if name in files else '?'})",
             )
         )
+        if appended:
+            findings.append(
+                Finding(
+                    True,
+                    f"{appended} carries [{ext}](+), which extends that endpoint with "
+                    f"WebRTC media instead of defining a second object — the endpoint "
+                    f"decision (docs/ava-capstone-convergence.md §11)",
+                )
+            )
     elif endpoint_defs:
         where = ", ".join(f"{name}:{line}" for name, line in endpoint_defs)
         findings.append(
@@ -434,9 +444,20 @@ def verdict_endpoint(
             )
         )
     else:
-        findings.append(
-            Finding(None, f"no [{ext}] endpoint anywhere on this PBX (nothing to judge)")
-        )
+        if appended:
+            findings.append(
+                Finding(
+                    False,
+                    f"{appended} carries [{ext}](+), which appends to the endpoint FreePBX "
+                    f"generates for [{ext}] — but no [{ext}] endpoint exists in the {ENTRY} "
+                    f"include tree, so the append has nothing to extend and a softphone "
+                    f"still has no WebRTC endpoint to register against",
+                )
+            )
+        else:
+            findings.append(
+                Finding(None, f"no [{ext}] endpoint anywhere on this PBX (nothing to judge)")
+            )
 
     # The portal's own claim about this extension, judged on its own.
     if fragment in files and fragment in in_tree and not ours_loaded:
@@ -721,6 +742,31 @@ def extension_of(name: str) -> str | None:
     return match.group("ext") if match else None
 
 
+def portal_appends(files: dict[str, ConfigFile], ext: str) -> str | None:
+    """The operator file carrying `[<ext>](+)`, or None.
+
+    This is the portal's shape since the endpoint decision: it *extends*
+    FreePBX's endpoint rather than defining a second one. The append header is
+    deliberately untyped, so `definitions()` resolves it to no type and it can
+    never be mistaken for a duplicate endpoint object.
+    """
+    for name in sorted(files):
+        for section in files[name].sections:
+            if section.id == ext and section.base == "+" and not section.template:
+                return name
+    return None
+
+
+def appended_extensions(files: dict[str, ConfigFile]) -> set[str]:
+    """Every extension the portal has extended with `[<ext>](+)`."""
+    return {
+        section.id
+        for name in sorted(files)
+        for section in files[name].sections
+        if section.base == "+" and not section.template
+    }
+
+
 def main(argv: list[str]) -> int:
     parser = argparse.ArgumentParser(
         description="Who owns the PJSIP endpoint for an extension?",
@@ -738,7 +784,10 @@ def main(argv: list[str]) -> int:
         "--extension",
         action="append",
         default=[],
-        help="extension to judge (repeatable; default: every pjsip_ext_*.conf found)",
+        help=(
+            "extension to judge (repeatable; default: every `[<ext>](+)` section "
+            "and every pjsip_ext_*.conf found)"
+        ),
     )
     parser.add_argument("--json", action="store_true", help="print the measurements")
     parser.add_argument("--quiet", action="store_true")
@@ -794,17 +843,23 @@ def main(argv: list[str]) -> int:
             Finding(True, f"{ENTRY} loads {len(closure)} file(s): {', '.join(closure)}")
         )
 
-    # Which extension(s) to judge: the fragments the portal left behind are the
-    # set that claims to be provisioned, so they are the default.
+    # Which extension(s) to judge: the two shapes that claim to be provisioned
+    # are the default — the portal's current `[<ext>](+)` appends, and the
+    # pre-decision `pjsip_ext_<ext>.conf` fragments it may have left behind.
+    # Both are judged when both exist, because a box mid-migration has one of
+    # each and the duplicate only shows up if something looks at the pair.
     wanted = list(dict.fromkeys(args.extension))
     if not wanted:
-        wanted = [ext for ext in (extension_of(name) for name in sorted(raw)) if ext]
+        inferred = set(appended_extensions(files))
+        inferred.update(ext for ext in (extension_of(name) for name in sorted(raw)) if ext)
+        wanted = sorted(inferred)
         if not wanted:
             findings.append(
                 Finding(
                     None,
-                    "no pjsip_ext_*.conf on this PBX — the portal has provisioned no "
-                    "softphone endpoint here, so there is nothing it issued a secret for",
+                    "no `[<ext>](+)` section and no pjsip_ext_*.conf on this PBX — the "
+                    "portal has provisioned no softphone endpoint here, so there is "
+                    "nothing it issued a secret for",
                 )
             )
 

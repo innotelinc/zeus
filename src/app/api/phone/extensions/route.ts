@@ -3,11 +3,15 @@ import { requireUser, badRequest } from "@/lib/api-helpers";
 import db from "@/lib/db";
 import * as freepbx from "@/lib/freepbx";
 import {
-  provisionFragment,
-  readFragmentState,
-  removeFragment,
+  POST_FILE,
+  provisionWebrtc,
+  readWebrtcState,
+  removeLegacyFragment,
+  removeWebrtc,
+  sectionHeader,
   type SoftphoneState,
 } from "@/lib/pjsip-endpoint";
+import { pbxSecretFor } from "@/lib/pjsip-secret";
 import { reloadPjsipIfLive } from "@/lib/pjsip-reload";
 import { judgeExtension, isValidExtension } from "@/lib/extension-preflight";
 import { withSoftphoneReadiness } from "@/lib/extension-readiness-server";
@@ -91,7 +95,6 @@ export async function POST(req: Request) {
   }
 
   try {
-    const secret = body.secret ?? randomUUID().replace(/-/g, "").slice(0, 16);
     const vmPin = body.vmPassword ?? Math.random().toString().slice(2, 6);
 
     const result = await freepbx.addExtension({
@@ -110,6 +113,18 @@ export async function POST(req: Request) {
       );
     }
 
+    // ── The credential ─────────────────────────────────────
+    // FreePBX generates the device secret, and since the endpoint decision that
+    // is the credential the softphone must use: the browser registers as the
+    // same `[<ext>]` the PBX routes to and reports device state for, so it has
+    // to authenticate as that object. FreePBX's API will not hand the secret
+    // back (`addExtension` returns no such field), so it is read out of the
+    // rendered config (§11.5's "read path of its own" — src/lib/pjsip-secret.ts)
+    // and, failing that, a portal-issued one is stored and the readiness row
+    // reports the mismatch rather than pretending the phone will register.
+    const pbxSecret = pbxSecretFor(extensionId);
+    const secret = pbxSecret || body.secret || randomUUID().replace(/-/g, "").slice(0, 16);
+
     // ── The WebRTC half ────────────────────────────────────
     // The extension exists in FreePBX at this point, so a failure here does not
     // roll it back: it is a real extension a hardware phone can use, and
@@ -119,15 +134,15 @@ export async function POST(req: Request) {
     // authenticated nothing.
     let softphone: SoftphoneState;
     try {
-      softphone = provisionFragment(extensionId, secret);
+      softphone = provisionWebrtc(extensionId);
     } catch (e) {
       softphone = {
-        ...readFragmentState(extensionId),
+        ...readWebrtcState(extensionId),
         provisioned: false,
         reason:
-          `the extension was created, but the WebRTC fragment could not be written: ` +
-          `${e instanceof Error ? e.message : "unknown error"}. The secret below only works ` +
-          `once ${"/etc/asterisk/pjsip_ext_" + extensionId + ".conf"} exists and is included.`,
+          `the extension was created, but its WebRTC settings could not be written: ` +
+          `${e instanceof Error ? e.message : "unknown error"}. The endpoint FreePBX owns has ` +
+          `no DTLS/ICE media until ${POST_FILE} carries ${sectionHeader(extensionId)}.`,
       };
     }
     await reloadPjsipIfLive(softphone);
@@ -173,9 +188,9 @@ export async function DELETE(req: Request) {
     return NextResponse.json({ error: "Extension not found" }, { status: 404 });
   }
 
-  // Read before removing: whether a reload is warranted depends on the
-  // fragment having been loaded, not on the delete having succeeded.
-  const before = readFragmentState(ext.extension_id);
+  // Read before removing: whether a reload is warranted depends on our
+  // settings having been loaded, not on the delete having succeeded.
+  const before = readWebrtcState(ext.extension_id);
 
   try {
     // Delete from FreePBX
@@ -186,7 +201,12 @@ export async function DELETE(req: Request) {
     // Continue with local cleanup even if FreePBX fails
   }
 
-  const danglingIncludes = removeFragment(ext.extension_id);
+  // Both shapes: ours (the append settings, in a file the portal owns) and the
+  // pre-decision fragment, which is nobody's endpoint now and a duplicate id if
+  // anything ever loads it — so a delete cleans it up rather than leaving it to
+  // be found by `pjsip_owner_check.py` later.
+  removeWebrtc(ext.extension_id);
+  const removedLegacyFragment = removeLegacyFragment(ext.extension_id);
   await reloadPjsipIfLive(before);
 
   // Delete from local DB
@@ -194,10 +214,9 @@ export async function DELETE(req: Request) {
 
   return NextResponse.json({
     success: true,
-    // Reported rather than edited: the includes that still name the deleted
-    // fragment are in files the portal is not the owner of, and FreePBX drops
-    // its own copy at the next Apply Config.
-    dangling_includes: danglingIncludes,
-    recovered: before.provisioned,
+    removed_settings: before.provisioned,
+    // Named because a stale pjsip_ext_<ext>.conf is the one leftover that can
+    // break the PBX for every *other* extension too.
+    removed_leftover_endpoint_file: removedLegacyFragment,
   });
 }
