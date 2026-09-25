@@ -25,11 +25,11 @@ const INTEGRATIONS: Array<{ label: string; key: string }> = [
   { label: "VoIP.ms", key: "voipms_api" },
   { label: "FreePBX", key: "freepbx_api" },
   { label: "AvantFax", key: "avantfax" },
-  // The voice plane. Only probed where AVA is configured (see /api/health), so
-  // a portal-only install shows these as healthy rather than alarming about a
-  // profile it was never asked to run.
-  { label: "Voice engine", key: "ava_engine" },
-  { label: "Voice console", key: "ava_admin" },
+  // The voice plane. Only probed where Dograh is configured (see /api/health),
+  // so a portal-only install shows these as healthy rather than alarming about
+  // a profile it was never asked to run.
+  { label: "Voice engine", key: "dograh_engine" },
+  { label: "Voice agents", key: "dograh_agents" },
   // Whether the Phone screen's "Add extension" gate can read its three
   // authorities (FreePBX's API, AMI, the mounted `/etc/asterisk`). Reported so
   // the 503 a create would return is visible before anyone clicks.

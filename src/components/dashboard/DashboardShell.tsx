@@ -21,6 +21,7 @@ import {
 } from "@/components/icons";
 import type { User, FreePBXExtension, PhoneNumber } from "@/lib/types";
 import type { AddonSku, AddonUiState } from "@/lib/addons";
+import { proxiedUrl, groupedSurfaces, type ConsoleSurface } from "@/lib/console";
 import { planLabel } from "@/lib/client-api";
 import { ToastProvider } from "@/components/ToastProvider";
 import { ThemeProvider, useTheme } from "@/components/ThemeProvider";
@@ -47,27 +48,85 @@ interface Props {
   children: React.ReactNode;
 }
 
-interface NavItem {
-  href: string;
-  label: string;
-  icon: ({ size }: { size?: number }) => React.ReactElement;
-  /** Only shown when this add-on is enabled. */
-  addon?: AddonSku;
+type IconFn = ({ size }: { size?: number }) => React.ReactElement;
+
+/**
+ * The icon for each surface, keyed by the registry's id.
+ *
+ * The rail's structure lives in `lib/console.ts` and only its *decoration*
+ * lives here — that is what keeps the rail and `/dashboard/estate` from
+ * disagreeing about which screens exist. A surface added to the registry with
+ * no icon here still appears; it gets the neutral dot.
+ */
+const SURFACE_ICONS: Record<string, IconFn> = {
+  numbers: PhoneIcon,
+  history: HistoryIcon,
+  "live-pbx": GridIcon,
+  voice: SparklesIcon,
+  interviews: FileTextIcon,
+  workflows: FlowIcon,
+  "workflow-studio": FlowIcon,
+  voicemail: VoicemailIcon,
+  fax: FaxIcon,
+  "fax-archive": FaxIcon,
+  messages: MessageIcon,
+  contacts: UserIcon,
+  billing: CreditCardIcon,
+  settings: CogIcon,
+  estate: MapIcon,
+  health: HeartPulseIcon,
+  "pbx-admin": GridIcon,
+  "capstone-dashboard": LayoutIcon,
+  admin: ShieldIcon,
+};
+
+function DotIcon({ size = 24 }: { size?: number }) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="currentColor">
+      <circle cx="12" cy="12" r="3" />
+    </svg>
+  );
 }
 
-const navItems: NavItem[] = [
-  { href: "/dashboard", label: "Phone Numbers", icon: PhoneIcon },
-  { href: "/dashboard/messages", label: "Messages", icon: MessageIcon },
-  { href: "/dashboard/contacts", label: "Contacts", icon: UserIcon },
-  { href: "/dashboard/fax", label: "Fax", icon: FaxIcon },
-  { href: "/dashboard/voicemail", label: "Voicemail", icon: VoicemailIcon },
-  { href: "/dashboard/history", label: "Call History", icon: HistoryIcon },
-  { href: "/dashboard/voice", label: "Voice Agent", icon: SparklesIcon, addon: "agents" },
-  { href: "/dashboard/capstone", label: "Interviews", icon: FileTextIcon, addon: "capstone" },
-  { href: "/dashboard/billing", label: "Billing", icon: CreditCardIcon },
-  { href: "/dashboard/settings", label: "Settings", icon: CogIcon },
-  { href: "/dashboard/health", label: "Health", icon: HeartPulseIcon },
-];
+function FlowIcon({ size = 24 }: { size?: number }) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <rect x="3" y="3" width="6" height="6" rx="1" />
+      <rect x="15" y="15" width="6" height="6" rx="1" />
+      <path d="M9 6h6a3 3 0 0 1 3 3v6" />
+    </svg>
+  );
+}
+
+function GridIcon({ size = 24 }: { size?: number }) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <rect x="3" y="3" width="7" height="7" rx="1" />
+      <rect x="14" y="3" width="7" height="7" rx="1" />
+      <rect x="3" y="14" width="7" height="7" rx="1" />
+      <rect x="14" y="14" width="7" height="7" rx="1" />
+    </svg>
+  );
+}
+
+function LayoutIcon({ size = 24 }: { size?: number }) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <rect x="3" y="3" width="18" height="18" rx="2" />
+      <line x1="9" y1="3" x2="9" y2="21" />
+    </svg>
+  );
+}
+
+function MapIcon({ size = 24 }: { size?: number }) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M9 3 3 6v15l6-3 6 3 6-3V3l-6 3-6-3Z" />
+      <line x1="9" y1="3" x2="9" y2="18" />
+      <line x1="15" y1="6" x2="15" y2="21" />
+    </svg>
+  );
+}
 
 function ShieldIcon({ size = 24 }: { size?: number }) {
   return (
@@ -107,12 +166,18 @@ function ThemeToggle() {
 export function DashboardShell({ user, extensions, phoneNumbers, brand, voiceAddons, children }: Props) {
   const pathname = usePathname();
 
-  // Add-on-gated entries are dropped when the add-on is not enabled. An
-  // "unknown" state (billing unreachable) also hides them: the screen behind
-  // would refuse to render anyway, and a dead link is worse than no link.
-  const visibleNav = navItems.filter(
-    (item) => !item.addon || voiceAddons?.[item.addon] === "enabled",
-  );
+  // The rail is rendered from the console registry, so this component and
+  // `/dashboard/estate` cannot disagree about which screens exist. Add-on-gated
+  // entries are dropped unless the add-on is "enabled": an "unknown" state
+  // (billing unreachable) hides them too, because the screen behind would
+  // refuse to render anyway and a dead link is worse than no link.
+  const groups = groupedSurfaces({
+    isAdmin: user.role === "admin",
+    addons: {
+      agents: voiceAddons?.agents,
+      capstone: voiceAddons?.capstone,
+    },
+  });
   const [mobileOpen, setMobileOpen] = useState(false);
   const [amiConnected, setAmiConnected] = useState<boolean | null>(null);
   const [activeCalls, setActiveCalls] = useState(0);
@@ -136,10 +201,60 @@ export function DashboardShell({ user, extensions, phoneNumbers, brand, voiceAdd
     return () => clearInterval(interval);
   }, []);
 
-  const isActive = (href: string) =>
-    href === "/dashboard"
+  const isActive = (href: string | undefined) =>
+    !href ? false : href === "/dashboard"
       ? pathname === "/dashboard"
       : (pathname?.startsWith(href) ?? false);
+
+  /** One rail entry. Owned surfaces navigate; proxied ones leave, and say so. */
+  function RailLink({
+    surface,
+    size,
+    onNavigate,
+  }: {
+    surface: ConsoleSurface;
+    size: number;
+    onNavigate?: () => void;
+  }) {
+    const Icon = SURFACE_ICONS[surface.id] ?? DotIcon;
+
+    if (surface.kind === "proxied") {
+      const href = proxiedUrl(surface);
+      if (!href) return null;
+      return (
+        <a
+          href={href}
+          target="_blank"
+          rel="noreferrer"
+          onClick={onNavigate}
+          title={`${surface.answers} — opens ${surface.product}`}
+          className="flex items-center gap-3 rounded-xl px-4 py-2.5 text-sm font-medium text-white/40 transition hover:bg-white/[0.04] hover:text-white"
+        >
+          <Icon size={size} />
+          <span className="min-w-0 flex-1 truncate">{surface.label}</span>
+          {/* A proxied surface is labelled wherever it appears, so an operator
+              is never unsure which product they are looking at. */}
+          <span className="shrink-0 text-[10px] text-white/25">↗</span>
+        </a>
+      );
+    }
+
+    const active = isActive(surface.href);
+    return (
+      <Link
+        href={surface.href ?? "/dashboard"}
+        onClick={onNavigate}
+        className={`flex items-center gap-3 rounded-xl px-4 py-2.5 text-sm font-medium transition ${
+          active
+            ? "bg-brand-500/15 text-brand-300"
+            : "text-white/50 hover:bg-white/[0.04] hover:text-white"
+        }`}
+      >
+        <Icon size={size} />
+        <span className="min-w-0 flex-1 truncate">{surface.label}</span>
+      </Link>
+    );
+  }
 
   return (
     <ThemeProvider>
@@ -208,86 +323,48 @@ export function DashboardShell({ user, extensions, phoneNumbers, brand, voiceAdd
 
       {/* Sidebar + Content */}
       <div className="mx-auto flex max-w-7xl gap-8 px-5 py-8 sm:px-8">
-        {/* Desktop sidebar */}
+        {/* Desktop sidebar — grouped by the question, not by the product that
+            answers it. See lib/console.ts. */}
         <aside className="hidden w-56 shrink-0 sm:block">
-          <nav className="sticky top-24 space-y-1">
-            {visibleNav.map((item) => {
-              const active = isActive(item.href);
-              return (
-                <Link
-                  key={item.href}
-                  href={item.href}
-                  className={`flex items-center gap-3 rounded-xl px-4 py-2.5 text-sm font-medium transition ${
-                    active
-                      ? "bg-brand-500/15 text-brand-300"
-                      : "text-white/50 hover:bg-white/[0.04] hover:text-white"
-                  }`}
+          <nav className="sticky top-24 space-y-4">
+            {groups.map((group) => (
+              <div key={group.id} className="space-y-1">
+                <div
+                  className="px-4 pb-1 text-[10px] font-semibold uppercase tracking-wider text-white/25"
+                  title={group.answers}
                 >
-                  <item.icon size={18} />
-                  {item.label}
-                </Link>
-              );
-            })}
-
-            {user.role === "admin" && (
-              <>
-                <div className="my-2 border-t border-white/[0.06]" />
-                <Link
-                  href="/dashboard/admin"
-                  className={`flex items-center gap-3 rounded-xl px-4 py-2.5 text-sm font-medium transition ${
-                    isActive("/dashboard/admin")
-                      ? "bg-brand-500/15 text-brand-300"
-                      : "text-white/50 hover:bg-white/[0.04] hover:text-white"
-                  }`}
-                >
-                  <ShieldIcon size={18} />
-                  Admin
-                </Link>
-              </>
-            )}
+                  {group.label}
+                </div>
+                {group.surfaces.map((surface) =>
+                  RailLink({ surface, size: 18 }),
+                )}
+              </div>
+            ))}
           </nav>
         </aside>
 
         {/* Mobile menu */}
         {mobileOpen && (
           <div className="fixed inset-0 top-16 z-30 bg-ink-950/95 backdrop-blur-sm sm:hidden">
-            <nav className="flex flex-col gap-1 p-5">
-              {visibleNav.map((item) => {
-                const active = isActive(item.href);
-                return (
-                  <Link
-                    key={item.href}
-                    href={item.href}
-                    onClick={() => setMobileOpen(false)}
-                    className={`flex items-center gap-3 rounded-xl px-4 py-3 text-base font-medium transition ${
-                      active
-                        ? "bg-brand-500/15 text-brand-300"
-                        : "text-white/50 hover:bg-white/[0.04] hover:text-white"
-                    }`}
-                  >
-                    <item.icon size={20} />
-                    {item.label}
-                  </Link>
-                );
-              })}
-
-              {user.role === "admin" && (
-                <>
-                  <div className="my-2 border-t border-white/[0.06]" />
-                  <Link
-                    href="/dashboard/admin"
-                    onClick={() => setMobileOpen(false)}
-                    className={`flex items-center gap-3 rounded-xl px-4 py-3 text-base font-medium transition ${
-                      isActive("/dashboard/admin")
-                        ? "bg-brand-500/15 text-brand-300"
-                        : "text-white/50 hover:bg-white/[0.04] hover:text-white"
-                    }`}
-                  >
-                    <ShieldIcon size={20} />
-                    Admin
-                  </Link>
-                </>
-              )}
+            <nav className="flex flex-col gap-4 overflow-y-auto p-5">
+              {groups.map((group) => (
+                <div key={group.id} className="space-y-1">
+                  <div className="px-4 pb-1 text-[10px] font-semibold uppercase tracking-wider text-white/25">
+                    {group.label}
+                  </div>
+                  {/* Each entry is its own element so the rail's active state
+                      and the proxied label are identical on both breakpoints. */}
+                  {group.surfaces.map((surface) => (
+                    <div key={surface.id} className="text-base">
+                      {RailLink({
+                        surface,
+                        size: 20,
+                        onNavigate: () => setMobileOpen(false),
+                      })}
+                    </div>
+                  ))}
+                </div>
+              ))}
             </nav>
           </div>
         )}

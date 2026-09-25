@@ -14,10 +14,14 @@ whole point of the P2 change and each of them fails *silently* if it regresses:
     fails closed — an empty `ZEUS_CAPSTONE_TARGET` (no binding) or one naming a
     workflow this PBX does not carry goes to the operator, never to a default
     agent. Reaching *some* agent is the failure mode, not the fallback.
-  * 824 is named by three files — config/ava/ai-agent.yaml's transfer
-    inventory, src/lib/handoff.ts's classifier, and this dialplan — so the test
-    reads all three and a change to any one of them is caught here rather than
-    in production.
+  * 824 is named by two files — config/ava/ai-agent.yaml's transfer inventory
+    and this dialplan — so the test reads both and a change to either is caught
+    here rather than in production. It used to name a third,
+    `src/lib/handoff.ts`; that classifier existed only to read AVA's *record*
+    of a transfer, and it is gone with the AVA client. These dialplan contexts
+    are themselves on their way out (the call now enters `[dograh-inbound]`
+    directly), so this file's subject is the AVA-era hand-off and it retires
+    with it — see docs/unified-console.md §5.
 
 Run:  python3 -m unittest discover -s pbx/tests -v
 """
@@ -32,7 +36,6 @@ import asterisk_converge as ac  # noqa: E402
 ROOT = os.path.normpath(os.path.join(os.path.dirname(__file__), "..", ".."))
 DIALPLAN = os.path.join(ROOT, "pbx", "asterisk", "extensions_custom.conf")
 AGENT_YAML = os.path.join(ROOT, "config", "ava", "ai-agent.yaml")
-HANDOFF_TS = os.path.join(ROOT, "src", "lib", "handoff.ts")
 
 #: The two destinations [zeus-ai-handoff] owns. 824 is the one AVA's transfer
 #: inventory names; both are a caller's way out of the agent.
@@ -241,15 +244,17 @@ class ThreeFileContractTest(unittest.TestCase):
         self.assertEqual(re.search(r'^\s*target:\s*"?(\d+)"?\s*$', block, re.M).group(1),
                          OPERATOR_EXTEN)
 
-    def test_the_portal_classifier_knows_the_same_extension(self):
-        # Classified by destination, so a transfer the engine recorded as 824
-        # is counted as a Capstone hand-off on the record screen. A literal
-        # read: the list is the contract, and importing TypeScript from here
-        # is not worth a build dependency in a PBX test.
-        text = _read(HANDOFF_TS)
-        listed = re.search(r"CAPSTONE_DESTINATIONS\s*=\s*\[(.*?)\]", text, re.S)
-        self.assertIsNotNone(listed, "CAPSTONE_DESTINATIONS is the contract this reads")
-        self.assertIn(f'"{HANDOFF_EXTEN}"', listed.group(1))
+    def test_the_engine_inventory_and_the_dialplan_agree_on_824(self):
+        # The extension is entered from the engine's side, so the two files that
+        # name it are the engine's transfer inventory and this dialplan. The
+        # portal's third reader (src/lib/handoff.ts) was deleted with the AVA
+        # client: it classified a transfer out of AVA's *records*, and there is
+        # no longer a second engine to keep a record of one.
+        self.assertIn(
+            f"exten => {HANDOFF_EXTEN},1",
+            _read(DIALPLAN),
+            "the dialplan must still own the destination the inventory names",
+        )
 
 
 class ConvergenceTest(unittest.TestCase):

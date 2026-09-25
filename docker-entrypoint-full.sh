@@ -1169,36 +1169,10 @@ WSSEOF
   # Same reasoning for core: a module reinstall restores the shipped trunk
   # code, which makes every trunk save fail with a duplicate-key error.
   patch_core_trunk_write
-  # ── The voice-plane module (Reports → Zeus Voice Plane) ────
-  # A FreePBX admin-menu entry is only expressible as a **module** — the
-  # framework builds its menu from each installed module's module.xml — and
-  # this one lives on a volume: an existing freepbx-www predates it, so it is
-  # converged here rather than at build time (which a volume would shadow).
-  # The repo mount wins over the image's own copy, so a checkout can move ahead
-  # of the image. `--ensure` installs only when the target is behind and never
-  # rewrites the operator's config.json; fail open, because a display-only page
-  # must never keep a phone system from coming up.
-  converge_voiceplane_module() {
-    local installer='/usr/local/bin/install-freepbx-voiceplane.py' source='' log='/tmp/voiceplane-module.log'
-    if [ -d /opt/zeus/pbx/freepbx-modules/voiceplane ]; then
-      source='/opt/zeus/pbx/freepbx-modules/voiceplane'
-      [ -f /opt/zeus/pbx/install-freepbx-voiceplane.py ] && installer='/opt/zeus/pbx/install-freepbx-voiceplane.py'
-    elif [ -d /opt/zeus/pbx-modules/voiceplane ]; then
-      source='/opt/zeus/pbx-modules/voiceplane'
-    else
-      return 0
-    fi
-    if [ ! -f "$installer" ]; then
-      echo ">>> WARNING: voice-plane module present but its installer is missing (${installer})"
-      return 0
-    fi
-    if python3 "$installer" --target host --ensure --no-reload --source "$source" >"$log" 2>&1; then
-      sed 's/^/>>> [voiceplane] /' "$log"
-    else
-      echo ">>> WARNING: the voice-plane module did not converge — see ${log}"
-    fi
-  }
-  converge_voiceplane_module
+  # The voice-plane FreePBX module is deleted (see docs/unified-console.md §5),
+  # so there is nothing to converge here. A host that still carries it from an
+  # older image keeps it until someone runs `fwconsole ma uninstall voiceplane`
+  # and `fwconsole ma delete voiceplane` on it — the module owns no data.
   # ── fwconsole chown on init ────────────────────────────────
   # File ownership across the freepbx-www volume drifts whenever the
   # volume outlives the container (image upgrades, module reinstalls,

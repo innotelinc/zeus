@@ -10,7 +10,8 @@
  * again shortly, or contact support" — which sends a customer to retry
  * something that cannot change and support to an account that is fine. So
  * `AddonGate` grew a `mode="deployment"` branch, and
- * `app/dashboard/voice/page.tsx` passes it whenever `avaConfigured()` is false.
+ * `app/dashboard/voice/page.tsx` passes it whenever `dograhConfigured()` is
+ * false.
  *
  * What this pins is the *separation*, because the two ways it can be lost are
  * both silent in review:
@@ -91,7 +92,7 @@ describe("the add-on gate's deployment wording", () => {
   });
 });
 
-const ENGINE_ABSENT = "if (!avaConfigured()) {";
+const ENGINE_ABSENT = "if (!dograhConfigured()) {";
 
 describe("the Voice screen when the engine is absent", () => {
   const source = read(VOICE_PAGE);

@@ -257,3 +257,39 @@ export function voiceCallsByCallId(callIds: string[]): Map<string, VoiceCall> {
 
   return new Map(rows.map((row) => [row.call_id, hydrate(row)]));
 }
+
+/**
+ * Prior calls to the same number, answered from the switch's own store.
+ *
+ * The context read (`src/lib/voice-context.ts`) used to count these out of a
+ * voice engine's record list. With one engine, the portal does not need one to
+ * ask: `voice_calls` is filled by `ami-handler.ts` from the channel's own AMI
+ * events, so it holds every call the switch saw whether or not an agent ever
+ * picked it up — a more complete record than either engine's.
+ *
+ * Matched on the dialled number, the only column here that describes the
+ * caller's side. The table deliberately carries no caller-identifying field
+ * (the switch records what this platform owns, not who rang), so a number the
+ * portal does not know returns zero rather than a guess at a match.
+ */
+export function priorCallsForDid(
+  did: string,
+  excludeCallId: string,
+  limit = 200,
+): { count: number; last_at: string | null; last_call_id: string | null } {
+  const rows = db
+    .prepare(
+      `SELECT call_id, started_at FROM voice_calls
+        WHERE did = ? AND call_id != ?
+        ORDER BY started_at DESC
+        LIMIT ?`,
+    )
+    .all(did, excludeCallId, limit) as { call_id: string; started_at: string | null }[];
+
+  const latest = rows[0];
+  return {
+    count: rows.length,
+    last_at: latest?.started_at ?? null,
+    last_call_id: latest?.call_id ?? null,
+  };
+}

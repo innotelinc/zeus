@@ -1,80 +1,114 @@
 import { NextResponse } from "next/server";
 import db from "@/lib/db";
 import { getAmiClient } from "@/lib/ami";
-import { avaAdminBase, avaConfigured, listAgents } from "@/lib/ava";
-import { voiceSettingsDetail } from "@/lib/ava-voice-settings";
+import {
+  dograhConfigured,
+  getHealth as getDograhHealth,
+  getVoiceStack,
+  listWorkflows,
+  type DograhVoiceStack,
+} from "@/lib/dograh";
 import { preflightReadiness, preflightReadinessError } from "@/lib/extension-preflight-live";
 
 export const dynamic = "force-dynamic";
 
-// The voice engine, from the portal container. The engine is host-networked
-// and binds its health port on every interface (HEALTH_BIND_HOST=0.0.0.0 in
-// compose), so the bridge gateway reaches it; AVA_ADMIN_URL is the address the
-// portal talks to the admin API on (see docker-compose.yml — inside a
-// container that is a service name, not the host's loopback).
-const AVA_ENGINE_URL = (process.env.AVA_ENGINE_URL ?? "http://host.docker.internal:15000").replace(/\/+$/, "");
-
-interface EngineHealth {
-  status?: string;
-  ari_connected?: boolean;
-  default_ready?: boolean;
-  audiosocket?: { listening?: boolean };
-  /** `pipelines.<name>.tts` is the TTS provider that pipeline resolves. */
-  pipelines?: Record<string, { tts?: unknown }>;
+/**
+ * The voice engine's own verdict.
+ *
+ * `degraded`, not `down`: the portal can describe the whole estate without
+ * Dograh, and a row that takes the install's aggregate status down because the
+ * optional voice plane is missing is the false alarm the Stripe probe already
+ * had to be rescued from once. What it must never do is report `ok` for an
+ * engine it could not reach — an operator staring at a quiet console needs to
+ * know whether that is quiet or broken.
+ */
+async function probeDograhEngine(): Promise<ProbeResult> {
+  const t0 = Date.now();
+  const health = await getDograhHealth();
+  const latency_ms = Date.now() - t0;
+  if (health.state === "ok") {
+    return {
+      status: "ok",
+      latency_ms,
+      detail: `Dograh ${health.data.version ?? "unknown version"} (${health.data.deployment_mode ?? "unknown mode"})`,
+    };
+  }
+  return {
+    status: "degraded",
+    latency_ms,
+    error: `${health.error} — calls routed to the voice plane are not answered`,
+  };
 }
 
 /**
- * The engine's own verdict, plus the two things it reports separately because
- * they fail without changing its `status`: an engine that never attached to
- * ARI, and one whose AudioSocket transport is not listening. Both mean the
- * same thing to a caller — the call is never answered — while the process
- * looks perfectly healthy.
+ * Whether the console can list agents at all — the authenticated read the
+ * Voice screens depend on.
+ *
+ * Separate from the engine probe because reachability is not usability: a
+ * Dograh that answers `/health` and then refuses the service key leaves the
+ * screens empty while the process looks perfectly healthy. This is the same
+ * client they use, so it cannot pass while they fail.
  */
-async function probeAvaEngine(): Promise<ProbeResult> {
+async function probeDograhAgents(): Promise<ProbeResult> {
   const t0 = Date.now();
-  try {
-    const res = await fetch(`${AVA_ENGINE_URL}/health`, {
-      cache: "no-store",
-      signal: AbortSignal.timeout(3_000),
-    });
-    if (!res.ok) throw new Error(`engine health returned ${res.status}`);
-    const body = (await res.json()) as EngineHealth;
-    const latency_ms = Date.now() - t0;
-    if (body.ari_connected === false) {
-      return {
-        status: "degraded",
-        latency_ms,
-        error:
-          "engine is running but not attached to Asterisk (ARI) — inbound calls are not answered",
-      };
-    }
-    if (body.audiosocket?.listening === false) {
-      return {
-        status: "degraded",
-        latency_ms,
-        error:
-          "AudioSocket is not listening — Asterisk has no port to hand the call audio to",
-      };
-    }
-    if (body.default_ready === false || (body.status && body.status !== "healthy")) {
-      return {
-        status: "degraded",
-        latency_ms,
-        error: `engine reports ${body.status ?? "not ready"} — its own /health names the cause`,
-      };
-    }
-    // Per-pipeline validity is deliberately NOT judged here: an optional
-    // pipeline (the licensed premium voice) is invalid until its key is set on
-    // a perfectly healthy install, and calling that a system failure is the
-    // false alarm the Stripe probe already had to be rescued from.
-    return { status: "ok", latency_ms };
-  } catch (e) {
-    return {
-      status: "degraded",
-      latency_ms: Date.now() - t0,
-      error: `no voice engine at ${AVA_ENGINE_URL} — calls routed to AVA are not answered (${e instanceof Error ? e.message : String(e)})`,
-    };
+  const workflows = await listWorkflows();
+  const latency_ms = Date.now() - t0;
+  if (workflows.state !== "ok") {
+    return { status: "degraded", latency_ms, error: workflows.error };
   }
+  const active = workflows.data.filter((workflow) => workflow.status === "active").length;
+  return {
+    status: "ok",
+    latency_ms,
+    detail: `${active} active workflow${active === 1 ? "" : "s"} of ${workflows.data.length}`,
+  };
+}
+
+/**
+ * Which STT, TTS and LLM the agents actually run on.
+ *
+ * Read from the engine rather than from this repo's `.env`, because that is the
+ * value in force: a deployment that changed the voice in Dograh's UI and not
+ * here would otherwise be described by this screen, wrongly. The deliverable
+ * for this estate is local-only speech, so this row is where "is it really
+ * running Whisper and Kokoro, or did it silently fall back to a hosted voice?"
+ * is answered without opening another product.
+ *
+ * `degraded`, never `down` — a preference that could not be read must not take
+ * a working phone system down.
+ */
+async function probeDograhVoice(): Promise<ProbeResult> {
+  const t0 = Date.now();
+  const stack = await getVoiceStack();
+  const latency_ms = Date.now() - t0;
+  if (stack.state !== "ok") {
+    return { status: "degraded", latency_ms, error: stack.error };
+  }
+  return { status: "ok", latency_ms, detail: describeVoiceStack(stack.data) };
+}
+
+/**
+ * One line naming the voice that will speak, for a person who has never opened
+ * Dograh. Absent halves are named as absent rather than omitted, so a pipeline
+ * missing its TTS reads as "no TTS" instead of as a shorter, healthier line.
+ */
+function describeVoiceStack(stack: DograhVoiceStack): string {
+  const part = (label: string, config: DograhVoiceStack["stt"]): string => {
+    if (!config) return `${label} not configured`;
+    // The voice is the TTS half's own name for *which* voice; it is what makes
+    // "kokoro" mean "af_heart" to anyone reading the row.
+    const voice = config.voice ? ` (${config.voice})` : "";
+    const model = config.model ?? config.provider ?? "unknown";
+    const provider = config.provider ? `${config.provider}/` : "";
+    return `${label} ${provider}${model}${voice}`;
+  };
+  const parts = [
+    part("STT", stack.stt),
+    part("TTS", stack.tts),
+    part("LLM", stack.llm),
+  ];
+  if (stack.is_realtime) parts.push("realtime speech-to-speech");
+  return parts.join(" · ");
 }
 
 /**
@@ -100,94 +134,7 @@ async function probeExtensionPreflight(): Promise<ProbeResult> {
   return { status: "degraded", latency_ms, error: preflightReadinessError(readiness) };
 }
 
-/**
- * What the engine loaded for barge-in and for TTS — the two voice settings an
- * operator has no way to see today without curling `:15000/metrics` by hand.
- *
- * `degraded`, never `down`: these are settings, and a row that can take a
- * working phone system down (the aggregate counts `down`) because it could not
- * read a *preference* is the mistake the Stripe probe already had to be
- * rescued from. A reachable engine that has not published its gauges yet is
- * `ok` with the reason in the detail — `_export_config_metrics` runs at the
- * first call since the process started, so a freshly restarted engine is
- * exactly that state, and calling it a fault would alarm on every deploy.
- */
-async function probeAvaVoiceSettings(): Promise<ProbeResult> {
-  const t0 = Date.now();
-  // LOCAL_TTS_BACKEND/LOCAL_TTS_VOICE are the local-ai-server's own variables,
-  // which the portal only holds when it shares the stack's env_file — so when
-  // they are absent the detail simply names the engine's TTS provider and says
-  // nothing about the voice behind it, rather than guessing.
-  const env = {
-    backend: (process.env.LOCAL_TTS_BACKEND ?? "").trim() || null,
-    voice: (process.env.LOCAL_TTS_VOICE ?? "").trim() || null,
-  };
-  try {
-    const [metricsRes, healthRes] = await Promise.all([
-      fetch(`${AVA_ENGINE_URL}/metrics`, {
-        cache: "no-store",
-        signal: AbortSignal.timeout(3_000),
-      }),
-      fetch(`${AVA_ENGINE_URL}/health`, {
-        cache: "no-store",
-        signal: AbortSignal.timeout(3_000),
-      }),
-    ]);
-    if (!metricsRes.ok) throw new Error(`engine metrics returned ${metricsRes.status}`);
-    const metrics = await metricsRes.text();
-    // The pipelines are a bonus, not a requirement: an unparseable /health
-    // must not turn a perfectly readable metrics body into a failure.
-    let pipelines: Record<string, { tts?: unknown }> | null = null;
-    if (healthRes.ok) {
-      try {
-        pipelines = ((await healthRes.json()) as EngineHealth).pipelines ?? null;
-      } catch {
-        pipelines = null;
-      }
-    }
-    return {
-      status: "ok",
-      latency_ms: Date.now() - t0,
-      detail: voiceSettingsDetail(metrics, pipelines, env),
-    };
-  } catch (e) {
-    return {
-      status: "degraded",
-      latency_ms: Date.now() - t0,
-      error: `could not read the engine's loaded voice settings from ${AVA_ENGINE_URL} (${e instanceof Error ? e.message : String(e)})`,
-      detail: voiceSettingsDetail("", null, env),
-    };
-  }
-}
 
-/**
- * Reachability is not usability: on a first run AVA mints a one-time admin
- * password and answers 403 to everything until it is rotated, so the console
- * can be up while the Voice screens read nothing. The authenticated call is
- * what makes that difference visible — and it is the same client the screens
- * use, so this probe cannot pass while they fail.
- */
-async function probeAvaAdmin(): Promise<ProbeResult> {
-  const t0 = Date.now();
-  try {
-    const res = await fetch(`${avaAdminBase()}/health`, {
-      cache: "no-store",
-      signal: AbortSignal.timeout(3_000),
-    });
-    if (!res.ok) throw new Error(`admin health returned ${res.status}`);
-  } catch (e) {
-    return {
-      status: "down",
-      latency_ms: Date.now() - t0,
-      error: `AVA admin API not reachable at ${avaAdminBase()} — the Voice screens have no data (${e instanceof Error ? e.message : String(e)})`,
-    };
-  }
-
-  const latency_ms = Date.now() - t0;
-  const agents = await listAgents();
-  if (agents.state === "ok") return { status: "ok", latency_ms };
-  return { status: "degraded", latency_ms, error: agents.error };
-}
 
 interface ProbeResult {
   status: "ok" | "degraded" | "down";
@@ -213,10 +160,10 @@ interface HealthResponse {
     stripe: ProbeResult;
     voipms_api: ProbeResult;
     avantfax: ProbeResult;
-    ava_engine: ProbeResult;
-    ava_admin: ProbeResult;
+    dograh_engine: ProbeResult;
+    dograh_agents: ProbeResult;
     extension_preflight: ProbeResult;
-    ava_voice_settings: ProbeResult;
+    dograh_voice: ProbeResult;
   };
 }
 
@@ -243,12 +190,12 @@ export async function GET() {
   // ── Run all probes concurrently (avoids sequential timeouts
   //    exceeding the Docker healthcheck timeout when external
   //    services are unreachable). ─────────────────────────────
-  // ── The voice plane is `--profile voice`, so it is only probed where it is
+  // ── The voice plane is optional, so it is only probed where it is
   //    configured. Reporting a missing engine as "down" on every portal-only
   //    install is the mistake the Stripe probe already made once: a deliberate
-  //    default read as a failure. avaConfigured() is the same switch the Voice
-  //    screens use, so the two agree about whether AVA is in play here.
-  const voiceExpected = avaConfigured();
+  //    default read as a failure. dograhConfigured() is the same switch the
+  //    Voice screens use, so the two agree about whether it is in play here.
+  const voiceExpected = dograhConfigured();
 
   const [dbResult, freepbxResult, amiResult, stripeResult, avantfaxResult, engineResult, adminResult, preflightResult, voiceSettingsResult] =
     await Promise.all([
@@ -348,22 +295,22 @@ export async function GET() {
         }
       }),
 
-      // ── AVA engine + admin API ─────────────────────────────
+      // ── Dograh: engine, then the authenticated agent read ──
       // Position matters: this array is destructured by position below, and a
       // probe inserted in the wrong place reports one service's state under
       // another's name (which is exactly how it looked on the first run).
-      voiceExpected ? probeAvaEngine() : Promise.resolve<ProbeResult>({ status: "ok", latency_ms: 0 }),
-      voiceExpected ? probeAvaAdmin() : Promise.resolve<ProbeResult>({ status: "ok", latency_ms: 0 }),
+      voiceExpected ? probeDograhEngine() : Promise.resolve<ProbeResult>({ status: "ok", latency_ms: 0 }),
+      voiceExpected ? probeDograhAgents() : Promise.resolve<ProbeResult>({ status: "ok", latency_ms: 0 }),
 
       // ── Extension provisioning readiness ──────────────────
-      // Placed after the AVA probes on purpose: this array is destructured by
-      // position (see the note there) — appending at the end shifts nothing.
+      // Placed after the voice probes on purpose: this array is destructured
+      // by position (see the note there) — appending at the end shifts nothing.
       probeExtensionPreflight(),
 
-      // ── Voice settings the engine loaded ──────────────────
+      // ── The voice stack the agents actually run on ────────
       // Last, for the same position reason as above.
       voiceExpected
-        ? probeAvaVoiceSettings()
+        ? probeDograhVoice()
         : Promise.resolve<ProbeResult>({
             status: "ok",
             latency_ms: 0,
@@ -397,10 +344,10 @@ export async function GET() {
     stripe: stripeResult,
     voipms_api: voipmsResult,
     avantfax: avantfaxResult,
-    ava_engine: engineResult,
-    ava_admin: adminResult,
+    dograh_engine: engineResult,
+    dograh_agents: adminResult,
     extension_preflight: preflightResult,
-    ava_voice_settings: voiceSettingsResult,
+    dograh_voice: voiceSettingsResult,
   };
 
   const downCount = Object.values(services).filter((s) => s.status === "down").length;

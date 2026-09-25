@@ -16,12 +16,12 @@ export async function register() {
 
     // The Voice screens are gated on a credential this process may not hold:
     // compose reads env_file at container *create* time, so a portal created
-    // before AVA_ADMIN_PASSWORD reached .env renders "not configured" with
-    // nothing anywhere saying what to do about it. One line at boot is the
-    // cheapest place to say it (docs/ava-runbook.md §7).
-    const { avaConfigurationWarning } = await import("@/lib/ava");
-    const voiceWarning = avaConfigurationWarning();
-    if (voiceWarning) console.warn("AVA:", voiceWarning);
+    // before DOGRAH_API_KEY reached .env renders "not configured" with nothing
+    // anywhere saying what to do about it. One line at boot is the cheapest
+    // place to say it (docs/unified-console.md).
+    const { dograhConfigurationWarning } = await import("@/lib/dograh");
+    const voiceWarning = dograhConfigurationWarning();
+    if (voiceWarning) console.warn("Dograh:", voiceWarning);
 
     console.log(">>> instrumentation: starting AMI...");
     const { startAmi } = await import("@/lib/ami");
