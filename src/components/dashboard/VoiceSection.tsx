@@ -1,5 +1,6 @@
 "use client";
 
+import Link from "next/link";
 import { useCallback, useEffect, useState } from "react";
 import { api, fmtDate } from "@/lib/client-api";
 import {
@@ -8,40 +9,20 @@ import {
   RefreshIcon,
   CheckCircleIcon,
   AlertCircleIcon,
-  FileTextIcon,
 } from "@/components/icons";
 import { useToast } from "@/components/ToastProvider";
 import { Badge, Dot, Button, Card, CardHeader, EmptyState, PageHeader, Stat, Tabs } from "@/components/ui";
 // `import type` is erased entirely at compile time, so these shapes reach the
 // browser without pulling `lib/dograh.ts` — and the API key it reads — into the
-// client bundle. The one *value* this component needs from the engine's
-// vocabulary lives in its own module for the same reason.
+// client bundle.
 import type { DograhTurnConfig, DograhVoiceStack, DograhWorkflow } from "@/lib/dograh";
 import type { ProxiedLauncher } from "@/lib/console";
-import { describeOutcome, describePath } from "@/lib/voice-labels";
+import { describePath } from "@/lib/voice-labels";
 import type { InterviewLine } from "@/lib/voice-bindings";
 
 /** One agent, as this screen needs it: the workflow plus how it takes turns. */
 export interface AgentRow extends DograhWorkflow {
   turn: DograhTurnConfig | null;
-}
-
-/**
- * One of the agent's calls, as `/api/voice/calls` serves it.
- *
- * Deliberately a mirror of the screen's needs rather than an import of the
- * server module: this is a client component, and the server module reaches the
- * engine and the database.
- */
-export interface RunRow {
-  id: number;
-  workflow_id: number;
-  name: string | null;
-  created_at: string | null;
-  duration_seconds: number | null;
-  outcome: string | null;
-  nodes_visited: string[];
-  call_id: string | null;
 }
 
 interface RecordedCall {
@@ -63,8 +44,6 @@ interface Props {
   voiceError?: string | null;
   /** This account's numbers and the workflow each reaches. */
   lines: InterviewLine[];
-  /** Recent calls, for the workflows these lines reach. */
-  runs: RunRow[];
   /** The Capstone add-on's state for this account, as the routing path sees it. */
   capstone: { state: string; reason: string };
   /**
@@ -76,36 +55,6 @@ interface Props {
 }
 
 const POLL_MS = 15_000;
-
-/**
- * How the agent takes turns, in the operator's words.
- *
- * These four values are the whole of the interruption behaviour — whether the
- * agent yields when the caller starts talking, and how long it waits before
- * deciding they have finished. Every workflow shipped with an *empty* config,
- * which fell back to a plain speech timeout: the agent heard a pause, assumed
- * the turn was over, and talked over the caller. That is why they are on the
- * screen and not buried in Dograh.
- */
-function turnSummary(turn: DograhTurnConfig | null): string {
-  if (!turn || !turn.turn_stop_strategy) {
-    return "Default turn detection — the agent waits out a silence, so it can talk over a pause";
-  }
-  const parts: string[] = [];
-  if (turn.turn_stop_strategy === "turn_analyzer") {
-    parts.push(
-      `Listens for the end of a thought${
-        turn.smart_turn_stop_secs ? ` (${turn.smart_turn_stop_secs}s)` : ""
-      }`,
-    );
-  } else {
-    parts.push(`Turn stop: ${turn.turn_stop_strategy.replace(/_/g, " ")}`);
-  }
-  if (turn.max_call_duration) {
-    parts.push(`calls capped at ${Math.round(turn.max_call_duration / 60)} min`);
-  }
-  return parts.join(" · ");
-}
 
 /** One layer of the voice pipeline — what the agent hears or speaks with. */
 function PipelineRow({
@@ -130,6 +79,15 @@ function PipelineRow({
   );
 }
 
+/**
+ * The voice screen — the plan and the present.
+ *
+ * It answers two questions and no more: *which agent answers which number*
+ * (the routing plan) and *what is happening now*. The agents themselves and
+ * their calls live on `/dashboard/workflows`, because a screen that shows the
+ * plan, the roster and the runs at once is how "which of these is the one that
+ * matters?" starts.
+ */
 export default function VoiceSection({
   agents,
   agentsState,
@@ -137,7 +95,6 @@ export default function VoiceSection({
   voice,
   voiceError,
   lines: initialLines,
-  runs,
   capstone,
   launchers,
 }: Props) {
@@ -211,7 +168,6 @@ export default function VoiceSection({
   const activeAgents = agents.filter((agent) => agent.status === "active");
   const bound = new Set(lines.map((line) => line.capstone_binding).filter(Boolean));
   const boundCount = lines.filter((line) => line.capstone_binding).length;
-  const totalRuns = agents.reduce((sum, agent) => sum + (agent.total_runs ?? 0), 0);
   const editUrl = launchers.find((launcher) => launcher.id === "workflows")?.href ?? null;
 
   return (
@@ -219,7 +175,7 @@ export default function VoiceSection({
       <PageHeader
         title="Voice agents"
         icon={<SparklesIcon size={20} className="text-brand-300" />}
-        description="Dograh answers your calls and runs the conversations. Which agent answers is chosen per number, so one account can hold a support line and an interview line."
+        description="Dograh answers your calls and runs the conversations. This screen is the plan — which agent answers which number — and what is happening live. The agents themselves are on Agents & workflows."
         actions={
           <>
             <Button size="sm" onClick={() => void poll()}>
@@ -245,7 +201,7 @@ export default function VoiceSection({
       )}
 
       {/* ── The at-a-glance row ────────────────────────────────── */}
-      <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+      <div className="grid gap-3 sm:grid-cols-3">
         <Stat
           label="Agents"
           value={agents.length}
@@ -264,23 +220,14 @@ export default function VoiceSection({
           hint={engine === "ok" ? "engine connected" : `engine ${engine}`}
           icon={<Dot tone={engine === "ok" ? "success" : "danger"} />}
         />
-        <Stat
-          label="Calls handled"
-          value={totalRuns}
-          hint="across all agents"
-          icon={<FileTextIcon size={13} />}
-        />
       </div>
 
-      {/* ── Facets of the one job ──────────────────────────────── */}
       <Tabs
         active={tab}
         onChange={setTab}
         tabs={[
           { id: "overview", label: "Overview" },
           { id: "routing", label: "Routing", count: boundCount },
-          { id: "agents", label: "Agents", count: agents.length },
-          { id: "calls", label: "Calls", count: runs.length || null },
         ]}
       />
 
@@ -348,6 +295,27 @@ export default function VoiceSection({
                 ))}
               </ul>
             )}
+          </Card>
+
+          {/* The agents and their calls now have their own home. */}
+          <Card className="lg:col-span-2">
+            <CardHeader
+              title="The agents behind the plan"
+              answers="The workflows themselves, with their turn-taking and their calls."
+              actions={
+                <Link href="/dashboard/workflows" className="text-xs text-brand-300 hover:text-brand-200">
+                  Agents &amp; workflows →
+                </Link>
+              }
+            />
+            <p className="text-sm text-white/50">
+              {agents.length === 0
+                ? "No agents on the voice engine yet."
+                : `${agents.length} agent${agents.length === 1 ? "" : "s"} on the engine${
+                    bound.size > 0 ? `, ${bound.size} answering a line` : ""
+                  }.`}{" "}
+              Read their prompts, turn-taking and calls there — or build a new flow in Dograh.
+            </p>
           </Card>
 
           {/* The products this screen hands off to */}
@@ -465,96 +433,6 @@ export default function VoiceSection({
                   </li>
                 );
               })}
-            </ul>
-          )}
-        </Card>
-      )}
-
-      {tab === "agents" && (
-        <Card>
-          <CardHeader
-            title="Agents"
-            answers="Exactly as the engine has them. Editing a prompt, a node or a branch happens in Dograh; this screen reads."
-            actions={editUrl ? <Button size="sm" href={editUrl} external>Open Dograh ↗</Button> : undefined}
-          />
-          {agents.length === 0 ? (
-            <EmptyState
-              title="No agents on the voice engine yet"
-              description="Create one in Dograh and it appears here with its run count and turn-taking settings."
-              action={editUrl ? <Button size="sm" variant="primary" href={editUrl} external>Create in Dograh ↗</Button> : undefined}
-            />
-          ) : (
-            <ul className="space-y-2">
-              {agents.map((agent) => {
-                const answering =
-                  bound.has(String(agent.id)) || bound.has(agent.name);
-                return (
-                  <li
-                    key={agent.id}
-                    className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-white/[0.06] px-4 py-3"
-                  >
-                    <div className="min-w-0">
-                      <p className="flex items-center gap-2 truncate text-sm font-medium text-white">
-                        {agent.name}
-                        {agent.status !== "active" ? (
-                          <Badge tone="neutral">{agent.status}</Badge>
-                        ) : null}
-                        {answering ? (
-                          <Badge tone="success">
-                            <CheckCircleIcon size={11} /> Answering a line
-                          </Badge>
-                        ) : null}
-                      </p>
-                      <p className="truncate text-xs text-white/40">{turnSummary(agent.turn)}</p>
-                    </div>
-                    <span className="shrink-0 text-xs text-white/30">
-                      {agent.total_runs ?? 0} call{agent.total_runs === 1 ? "" : "s"}
-                    </span>
-                  </li>
-                );
-              })}
-            </ul>
-          )}
-        </Card>
-      )}
-
-      {tab === "calls" && (
-        <Card>
-          <CardHeader
-            title="Recent calls"
-            answers="The calls these agents handled, newest first — the outcome and where the call went."
-          />
-          {runs.length === 0 ? (
-            <EmptyState
-              title="No calls yet"
-              description="None of the agents bound to this account's numbers has handled a call."
-            />
-          ) : (
-            <ul className="divide-y divide-white/[0.05]">
-              {runs.map((run) => (
-                <li key={`${run.workflow_id}-${run.id}`} className="py-3 text-sm">
-                  <div className="flex items-center justify-between gap-3">
-                    <span className="text-white/70">
-                      {run.nodes_visited[0] ?? run.name ?? "call"}
-                    </span>
-                    <span className="shrink-0 text-white/40">
-                      {run.created_at ? fmtDate(run.created_at) : ""}
-                      {run.duration_seconds ? ` · ${run.duration_seconds}s` : ""}
-                    </span>
-                  </div>
-                  <p className="mt-1 text-xs text-white/50">{describeOutcome(run.outcome)}</p>
-                  <div className="mt-1 flex flex-wrap items-center gap-x-3 text-xs text-white/30">
-                    {run.call_id ? (
-                      /* The id both products carry — what to search the engine, the
-                         PBX log and the control panel by. */
-                      <span className="font-mono">{run.call_id}</span>
-                    ) : null}
-                    {run.nodes_visited.length > 0 ? (
-                      <span>{run.nodes_visited.length} step(s) reached</span>
-                    ) : null}
-                  </div>
-                </li>
-              ))}
             </ul>
           )}
         </Card>

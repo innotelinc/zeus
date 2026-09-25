@@ -5,6 +5,7 @@ import { useRouter } from "next/navigation";
 import { api, fmtDate, planLabel, planPrice } from "@/lib/client-api";
 import { CreditCardIcon, CheckCircleIcon, ArrowRightIcon } from "@/components/icons";
 import { useToast } from "@/components/ToastProvider";
+import { EmptyState, PageHeader } from "@/components/ui";
 import type { User, BillingInvoice } from "@/lib/types";
 
 interface Props {
@@ -84,10 +85,11 @@ export default function BillingSection({ user, invoices, magnateUrl }: Props) {
 
   return (
     <div className="space-y-6">
-      <div>
-        <h1 className="text-2xl font-semibold tracking-tight text-white">Billing</h1>
-        <p className="mt-1 text-sm text-white/45">Manage your plan and view invoices.</p>
-      </div>
+      <PageHeader
+        title="Billing"
+        icon={<CreditCardIcon size={20} className="text-brand-300" />}
+        description="Your plan, the add-ons, and every invoice — all billed through Magnate."
+      />
 
       {/* Current plan */}
       <div className="rounded-2xl border border-white/[0.06] bg-white/[0.02] p-6">
@@ -158,20 +160,25 @@ export default function BillingSection({ user, invoices, magnateUrl }: Props) {
       <div className="rounded-2xl border border-white/[0.06] bg-white/[0.02] p-6">
         <h2 className="text-lg font-semibold text-white mb-4">Invoices</h2>
         {invoices.length === 0 ? (
-          <div className="flex flex-col items-center rounded-2xl bg-white/[0.02] p-8 text-center">
-            <CreditCardIcon size={32} className="text-white/10 mb-3" />
-            <p className="text-sm text-white/45">No invoices yet.</p>
-            <p className="mt-1 text-xs text-white/30">
-              {magnateUrl ? (
-                <>
-                  Billing and invoices are managed by Magnate.{" "}
-                  <a href={`${magnateUrl}/manage`} className="underline text-white/50 hover:text-white/80">Manage subscription</a>.
-                </>
-              ) : (
-                "Invoices will appear here after your billing cycle starts."
-              )}
-            </p>
-          </div>
+          <EmptyState
+            icon={<CreditCardIcon size={26} />}
+            title="No invoices yet"
+            description={
+              magnateUrl
+                ? "Billing and invoices are managed by Magnate — open Manage subscription there."
+                : "Invoices will appear here after your billing cycle starts."
+            }
+            action={
+              magnateUrl ? (
+                <a
+                  href={`${magnateUrl}/manage`}
+                  className="text-sm text-brand-300 hover:text-brand-200"
+                >
+                  Manage subscription →
+                </a>
+              ) : undefined
+            }
+          />
         ) : (
           <div className="space-y-2">
             {invoices.map(inv => (

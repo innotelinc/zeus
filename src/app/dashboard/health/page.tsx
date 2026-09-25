@@ -1,7 +1,8 @@
 "use client";
 
 import { useState, useEffect, useCallback } from "react";
-import { RefreshIcon, CheckCircleIcon, AlertCircleIcon } from "@/components/icons";
+import { RefreshIcon, CheckCircleIcon, AlertCircleIcon, HeartPulseIcon } from "@/components/icons";
+import { PageHeader } from "@/components/ui";
 
 interface ProbeResult {
   status: "ok" | "degraded" | "down";
@@ -186,27 +187,21 @@ export default function HealthPage() {
 
   return (
     <div className="space-y-8">
-      {/* Header */}
-      <div className="flex items-start justify-between">
-        <div>
-          <h1 className="text-2xl font-semibold tracking-tight text-white">
-            System Health
-          </h1>
-          <p className="mt-1 text-sm text-white/45">
-            Real-time service status and diagnostics.
-          </p>
-        </div>
-        <button
-          onClick={fetchHealth}
-          className="flex items-center gap-2 rounded-xl border border-white/[0.08] bg-white/[0.03] px-4 py-2.5 text-sm font-medium text-white/60 transition hover:bg-white/[0.06] hover:text-white active:scale-95"
-        >
-          <RefreshIcon
-            size={16}
-            className={loading ? "animate-spin" : ""}
-          />
-          Refresh
-        </button>
-      </div>
+      <PageHeader
+        title="System health"
+        icon={<HeartPulseIcon size={20} className="text-brand-300" />}
+        description="Every dependency, probed, with what each failure would look like."
+        actions={
+          <button
+            type="button"
+            onClick={fetchHealth}
+            className="flex items-center gap-2 rounded-xl border border-white/[0.08] bg-white/[0.03] px-4 py-2.5 text-sm font-medium text-white/60 transition hover:bg-white/[0.06] hover:text-white active:scale-95"
+          >
+            <RefreshIcon size={16} className={loading ? "animate-spin" : ""} />
+            Refresh
+          </button>
+        }
+      />
 
       {/* Error banner */}
       {error && (

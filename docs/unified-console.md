@@ -144,3 +144,19 @@ Each step is independently shippable and reversible.
   to it is what produced the estate this document exists to collapse.
 - **A new top-level app.** A third deployment would be a sixth UI, which is
   the problem.
+
+## 8. Where this landed
+
+| Step | Status |
+| --- | --- |
+| 2. Remove the second front door (the `voiceplane` module) | **Done** — the module and its installer are deleted. |
+| 3. Context read independent of AVA | **Done** — resolved from the portal's own call store. |
+| 4. Voice → Dograh | **Done** — `lib/dograh.ts`, `lib/voice-console.ts`. |
+| 5. The shell | **Started** — `src/components/ui/` is the primitive set every screen composes; the rail, Estates map and the section headers are on it. Pane-style screens (Messages, Softphone) keep their own layouts. |
+| 6. Capstone merge | **Started** — the customer-facing hand-off read is owned at `/dashboard/capstone`; Capstone's Agents and Workflows are merged into the owned `/dashboard/workflows`. The estate-operations pages (Services, Monitoring, Logs, Secrets, Users) remain in the Capstone dashboard, linked as a proxied surface. |
+| 7. Proxied modules | **Done** — FreePBX, AvantFax, Dograh's flow editor, Workflow Studio and the Capstone dashboard are labelled links resolved by `proxiedLaunchers()`. |
+
+`/dashboard` is the **Today** overview; the numbers moved to
+`/dashboard/numbers` so the root answers "what is happening now" rather than
+"what do I own". Agents and their calls live at `/dashboard/workflows`; the
+Voice screen owns the routing plan and the live view.

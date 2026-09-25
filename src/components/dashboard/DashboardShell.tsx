@@ -59,10 +59,12 @@ type IconFn = ({ size }: { size?: number }) => React.ReactElement;
  * no icon here still appears; it gets the neutral dot.
  */
 const SURFACE_ICONS: Record<string, IconFn> = {
+  overview: LayoutIcon,
   numbers: PhoneIcon,
   history: HistoryIcon,
   "live-pbx": GridIcon,
   voice: SparklesIcon,
+  agents: FlowIcon,
   interviews: FileTextIcon,
   workflows: FlowIcon,
   "workflow-studio": FlowIcon,

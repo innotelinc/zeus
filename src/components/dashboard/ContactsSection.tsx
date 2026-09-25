@@ -5,6 +5,7 @@ import { api } from "@/lib/client-api";
 import type { Contact } from "@/lib/types";
 import { useToast } from "@/components/ToastProvider";
 import { PlusIcon, UserIcon, TrashIcon, MessageIcon, PhoneIcon, MailIcon, SearchIcon, XIcon } from "@/components/icons";
+import { EmptyState, PageHeader } from "@/components/ui";
 import Link from "next/link";
 
 interface Props {
@@ -94,17 +95,17 @@ export default function ContactsSection({ contacts: initialContacts }: Props) {
 
   return (
     <div className="space-y-6">
-      {/* Header */}
-      <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
-        <div>
-          <h1 className="text-2xl font-semibold tracking-tight text-white">Contacts</h1>
-          <p className="mt-1 text-sm text-white/45">Manage your contacts. Names sync to SMS conversations automatically.</p>
-        </div>
-        <button type="button" onClick={openAdd} className="btn-primary flex items-center gap-2 px-4 py-2.5 text-sm">
-          <PlusIcon size={15} />
-          Add contact
-        </button>
-      </div>
+      <PageHeader
+        title="Contacts"
+        icon={<UserIcon size={20} className="text-brand-300" />}
+        description="Manage your contacts. Names sync to SMS conversations automatically."
+        actions={
+          <button type="button" onClick={openAdd} className="btn-primary flex items-center gap-2 px-4 py-2.5 text-sm">
+            <PlusIcon size={15} />
+            Add contact
+          </button>
+        }
+      />
 
       {/* Form */}
       {showForm && (
@@ -173,20 +174,22 @@ export default function ContactsSection({ contacts: initialContacts }: Props) {
 
       {/* List */}
       {filtered.length === 0 ? (
-        <div className="flex flex-col items-center rounded-3xl border border-white/[0.06] bg-white/[0.02] p-12 text-center">
-          <div className="flex h-14 w-14 items-center justify-center rounded-2xl bg-white/[0.05]">
-            <UserIcon size={26} className="text-white/25" />
-          </div>
-          <h3 className="mt-4 text-lg font-semibold text-white">{search ? "No matches" : "No contacts yet"}</h3>
-          <p className="mt-1 text-sm text-white/45">
-            {search ? "Try a different search." : "Add contacts to see names instead of phone numbers in your messages."}
-          </p>
-          {!search && (
-            <button type="button" onClick={openAdd} className="btn-primary mt-4 px-5 py-2 text-sm flex items-center gap-2">
-              <PlusIcon size={14} /> Add your first contact
-            </button>
-          )}
-        </div>
+        <EmptyState
+          icon={<UserIcon size={26} />}
+          title={search ? "No matches" : "No contacts yet"}
+          description={
+            search
+              ? "Try a different search."
+              : "Add contacts to see names instead of phone numbers in your messages."
+          }
+          action={
+            !search ? (
+              <button type="button" onClick={openAdd} className="btn-primary flex items-center gap-2 px-5 py-2 text-sm">
+                <PlusIcon size={14} /> Add your first contact
+              </button>
+            ) : undefined
+          }
+        />
       ) : (
         <div className="divide-y divide-white/[0.04] rounded-2xl border border-white/[0.06] bg-white/[0.02]">
           {filtered.map(c => (

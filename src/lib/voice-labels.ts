@@ -67,6 +67,43 @@ export function describeHandoffTarget(target: string): string {
   }
 }
 
+/** The subset of a workflow's tuning this module reads — kept structural so
+ *  it never imports the server client that holds the API key. */
+export interface TurnConfigLike {
+  turn_stop_strategy?: string | null;
+  smart_turn_stop_secs?: number | null;
+  max_call_duration?: number | null;
+}
+
+/**
+ * How an agent takes turns, in the operator's words.
+ *
+ * This is the whole of the interruption behaviour — whether the agent yields
+ * when the caller starts talking, and how long it waits before deciding they
+ * have finished. A workflow with an *empty* config falls back to a plain
+ * speech timeout: the agent hears a pause, assumes the turn is over, and talks
+ * over the caller. That is why it is on the screen and not buried in Dograh.
+ */
+export function describeTurn(turn: TurnConfigLike | null): string {
+  if (!turn || !turn.turn_stop_strategy) {
+    return "Default turn detection — the agent waits out a silence, so it can talk over a pause";
+  }
+  const parts: string[] = [];
+  if (turn.turn_stop_strategy === "turn_analyzer") {
+    parts.push(
+      `Listens for the end of a thought${
+        turn.smart_turn_stop_secs ? ` (${turn.smart_turn_stop_secs}s)` : ""
+      }`,
+    );
+  } else {
+    parts.push(`Turn stop: ${turn.turn_stop_strategy.replace(/_/g, " ")}`);
+  }
+  if (turn.max_call_duration) {
+    parts.push(`calls capped at ${Math.round(turn.max_call_duration / 60)} min`);
+  }
+  return parts.join(" · ");
+}
+
 /** The path a call took, in the operator's words: `agent → Capstone interview`. */
 export function describePath(handoffs: Array<{ to: string }>): string {
   if (handoffs.length === 0) return "no hand-off";

@@ -4,6 +4,7 @@ import { useState, useEffect, useCallback } from "react";
 import { api } from "@/lib/client-api";
 import { useToast } from "@/components/ToastProvider";
 import { PlusIcon, XIcon, TrashIcon } from "@/components/icons";
+import { Card, EmptyState } from "@/components/ui";
 
 interface Reseller {
   id: string;
@@ -75,7 +76,7 @@ export function ResellersSection() {
   }
 
   return (
-    <div className="rounded-2xl border border-white/[0.06] bg-white/[0.02] p-6">
+    <Card>
       <div className="mb-4 flex items-center justify-between">
         <div>
           <h2 className="text-lg font-semibold text-white">Resellers &amp; White-Label</h2>
@@ -137,9 +138,10 @@ export function ResellersSection() {
       {loading ? (
         <p className="text-sm text-white/40">Loading...</p>
       ) : resellers.length === 0 ? (
-        <p className="rounded-xl border border-white/[0.06] bg-white/[0.02] p-5 text-sm text-white/40">
-          No resellers yet — add one to start white-labeling.
-        </p>
+        <EmptyState
+          title="No resellers yet"
+          description="Add one to serve its own brand and domain to a downstream customer base."
+        />
       ) : (
         <div className="overflow-x-auto">
           <table className="w-full text-left text-sm">
@@ -179,6 +181,6 @@ export function ResellersSection() {
           </table>
         </div>
       )}
-    </div>
+    </Card>
   );
 }
