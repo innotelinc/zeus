@@ -311,30 +311,43 @@ written into `kvstore_Sipsettings` rather than a file.
 One writer used not to follow it: the portal's extension API
 (`src/app/api/phone/extensions/route.ts`). It wrote a WebRTC endpoint fragment
 and made Asterisk load it by appending `#include pjsip_ext_<ext>.conf` **to
-`pjsip.conf`** — the file FreePBX regenerates. Since 2026-09-22 it writes only
-the fragment (`src/lib/pjsip-endpoint.ts`, which never edits a framework file)
-and reports which file, if any, includes it, so a softphone that cannot register
-is a reported state rather than a swallowed comment. Two consequences follow
-from the shape, and they are why the check below exists rather than a patch:
+`pjsip.conf`** — the file FreePBX regenerates. That shape is now retired, and the
+reason it had to be is the same reason the `_custom` rule exists at all.
 
-* on the next Apply Config the include is dropped, the fragment is left on disk
-  entered by nothing, and the secret the portal handed the browser cannot
-  register — silently, while the portal still lists the extension as active;
-* if the include *is* loaded, the fragment defines `[<ext>]` for an extension
-  FreePBX already generates an endpoint for (`pjsip.endpoint.conf`, from the
-  extension's `sip` rows), so it is a **duplicate object id in the same load
-  tree** — the failure documented under [Shared `ari.conf`](#shared-ariconf) for
-  the ARI user, where one duplicate makes sorcery refuse the file *"and costs
-  every user"*.
+**The endpoint decision (2026-09-25): FreePBX owns the endpoint and the portal
+extends it.** `src/lib/pjsip-endpoint.ts` appends `[<ext>](+)` — Asterisk's
+append-to-existing-section syntax — plus the WebRTC media settings to
+`pjsip.endpoint_custom_post.conf`, the operator-owned file above. There is no
+`#include` for the portal to own and no second `[<ext>]` to collide with
+FreePBX's, so the whole class of defect stops existing instead of being managed.
+The softphone registers as the object the PBX already routes to, with the device
+secret FreePBX renders (`src/lib/pjsip-secret.ts` reads it back out of
+`pjsip.auth.conf`; the create route stores that on the row).
 
-Which of the two states a *box* is in is still a measurement, not an assumption
-— a fragment the portal wrote months ago may be included from FreePBX's file on
-this host and nowhere else. `pjsip_owner_check.py` answers it. It reads
-(never writes) and it derives the answers rather than restating them: `#include`
-edges are followed from `pjsip.conf` so "on disk" and "loaded" stay different
-facts, and a duplicate is the same **(id, type)** in two files — which is why
-`[101]` in `pjsip.endpoint.conf`, `pjsip.auth.conf` and `pjsip.aor.conf` is the
-benign case and template inheritance is resolved rather than string-matched.
+The rejected alternative — a portal-owned endpoint under an id FreePBX will not
+generate (`<ext>-webrtc`) — loses because the rest of the PBX addresses
+`PJSIP/<ext>`: inbound routes, ring groups, voicemail and this console's own
+device-state poll cannot reach a second endpoint, so a registration on it reads
+Offline for ever. Reasoning recorded in `src/lib/pjsip-endpoint.ts` and
+[docs/ava-capstone-convergence.md](../docs/ava-capstone-convergence.md) §11.5.
+
+What still exists is the *old* shape, on boxes provisioned before the decision:
+`pjsip_ext_<ext>.conf` defining `[<ext>](webrtc-template)`, a **duplicate object
+id in the same load tree** — the failure documented under
+[Shared `ari.conf`](#shared-ariconf) for the ARI user, where one duplicate makes
+sorcery refuse the file *"and costs every user"* — and, if anything loaded it,
+an `#include` in a file FreePBX rewrites. That is a migration to detect, not a
+shape to write, and it is why the check below stays.
+
+`pjsip_owner_check.py` measures it. It reads (never writes) and it derives the
+answers rather than restating them: `#include` edges are followed from
+`pjsip.conf` so "on disk" and "loaded" stay different facts, and a duplicate is
+the same **(id, type)** in two files — which is why `[101]` in
+`pjsip.endpoint.conf`, `pjsip.auth.conf` and `pjsip.aor.conf` is the benign case
+and template inheritance is resolved rather than string-matched. The portal's
+`[<ext>](+)` append is judged too, and is deliberately untyped — `(+)` inherits
+nothing — so it is never counted as a second endpoint. A box migrated to the
+decided shape reports clean.
 
 ```bash
 python3 pbx/pjsip_owner_check.py --live --json      # the box; paste the JSON back
@@ -347,14 +360,13 @@ the generated carrier, or the fragment nothing loads); 2 = nothing could be
 evaluated. `--extension` judges one extension instead of every `pjsip_ext_*.conf`
 found.
 
-Deliberately **not** wired into `zeus-pbx-sync.sh`: until the owner decision is
-made, the safe state (the portal's fragment inert, FreePBX answering) is one this
-check reports as a failure, and a timer that fails on a safe state is a timer
-that gets ignored. It is a measurement to run and read, not yet a gate. The
-decision it feeds — whether FreePBX keeps the endpoint and the portal
-extends it via `pjsip.endpoint_custom_post.conf`, or the portal keeps its own
-under an id FreePBX will not generate — is open, and is recorded in
-[docs/ava-capstone-convergence.md](../docs/ava-capstone-convergence.md) §11.
+Deliberately **not** wired into `zeus-pbx-sync.sh`: the leftover-fragment states
+it finds mid-migration (a fragment inert, or a duplicate) are real and need a
+person to read them, not a timer that will alarm every run until the last box is
+migrated. It is a measurement to run and read. The decision it fed is now made —
+FreePBX keeps the endpoint and the portal extends it via
+`pjsip.endpoint_custom_post.conf` — and is recorded in
+[docs/ava-capstone-convergence.md](../docs/ava-capstone-convergence.md) §11.5.
 
 ## One provisioning path (for extensions)
 

@@ -1283,10 +1283,30 @@ and **check the caller-visible outcome**, not just the dialplan.
 3. **Conference-leg media (D4 long-term)** — worth designing now or after P0–P3?
 4. **Where `capstone_binding` is authored** — portal only, or portal + Capstone's
    UI with a reconciliation pass? (Portal-only is simpler and keeps one writer.)
-5. **Who owns a WebRTC endpoint** — FreePBX's generated endpoint extended from
-   `pjsip.endpoint_custom_post.conf`, which keeps one object but moves the
-   softphone's credential to FreePBX's device secret (and the portal has no way
-   to read that today: `addExtension` will not return it, so it would need a
-   read path of its own); or a portal-owned endpoint under an id FreePBX will
-   not generate (`<ext>-webrtc`), which keeps the portal-issued secret. The
-   measurement that decides it is `pbx/pjsip_owner_check.py --live` (§8 P3).
+5. **Who owns a WebRTC endpoint** — **RESOLVED 2026-09-25: FreePBX owns it, and
+   the portal extends it.** `src/lib/pjsip-endpoint.ts` appends `[<ext>](+)` —
+   Asterisk's append-to-existing syntax — plus the WebRTC media settings to
+   `pjsip.endpoint_custom_post.conf`, a file FreePBX includes and never
+   regenerates. There is therefore no `#include` for the portal to own and no
+   second `[<ext>]` to collide with FreePBX's, which is what made this an open
+   decision: the old shape's only safe reading was that it always broke the box
+   somehow.
+
+   The credential cost that blocked the option is paid: the softphone registers
+   as FreePBX's endpoint, so it uses FreePBX's device secret, and
+   `src/lib/pjsip-secret.ts` reads that back out of `pjsip.auth.conf` (the same
+   read `pbx/legacy_voice_migrate.py` already uses to verify a migration), which
+   `POST /api/phone/extensions` stores on the row.
+
+   The rejected alternative — a portal-owned endpoint under an id FreePBX will
+   not generate (`<ext>-webrtc`) — is recorded with its reasoning in
+   `src/lib/pjsip-endpoint.ts`: the rest of the PBX addresses `PJSIP/<ext>`, so a
+   second endpoint is one that inbound routes, ring groups, voicemail and this
+   console's own device-state poll cannot reach. It is not a tidiness
+   preference; it is the feature not working.
+
+   A pre-decision `pjsip_ext_<ext>.conf` is still *detected* — it defines a second
+   `[<ext>]` beside FreePBX's — reported by
+   `src/lib/extension-readiness.ts`, and removed by
+   `POST /api/phone/extensions/repair`. `pbx/pjsip_owner_check.py --live` (§8 P3)
+   remains the live measurement, and now judges the append shape as clean.

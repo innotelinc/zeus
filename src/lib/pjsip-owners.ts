@@ -15,8 +15,14 @@
  *   * a section header is `[id]`, `[id](base)` or `[id](!)` (`!` = a template,
  *     not an object), and a `;` comment tail is ignored;
  *   * a section's `type` is its explicit `type =` line, else followed one hop
- *     through the template it names — the portal's own `[<ext>](webrtc-template)`
- *     is only an endpoint because of that hop;
+ *     through the template it names — which is what makes the old
+ *     `[<ext>](webrtc-template)` fragment count as an endpoint;
+ *   * the portal's current `[<ext>](+)` is *not* an endpoint here, and that is
+ *     the point: `(+)` appends to the object FreePBX generates
+ *     (`docs/ava-capstone-convergence.md` §11), so counting it would make the
+ *     preflight refuse to create over an extension the portal just provisioned.
+ *     It resolves to no type because `(+)` names no template, and only a
+ *     resolved `type = endpoint` can conflict;
  *   * an id is only in conflict when the entries share the **same type** —
  *     `[101]` in `pjsip.endpoint.conf`, `pjsip.auth.conf` and `pjsip.aor.conf`
  *     is three objects, and correctly benign.

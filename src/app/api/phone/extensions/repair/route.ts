@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 import { requireUser, badRequest } from "@/lib/api-helpers";
 import db from "@/lib/db";
-import { provisionFragment, readFragmentState } from "@/lib/pjsip-endpoint";
+import { POST_FILE, provisionWebrtc, readWebrtcState, removeLegacyFragment, sectionHeader } from "@/lib/pjsip-endpoint";
 import { pbxSecretFor } from "@/lib/pjsip-secret";
 import { reloadPjsipIfLive } from "@/lib/pjsip-reload";
 import { assessSoftphone } from "@/lib/extension-readiness";
@@ -12,22 +12,25 @@ export const dynamic = "force-dynamic";
 /**
  * Repair an extension's softphone half.
  *
- * The console can now say *why* a phone will not register (see
- * `src/lib/extension-readiness.ts`), and two of the three answers are data, not
- * configuration: the row holds no secret, or it holds one FreePBX does not
- * render. Both are repaired the same way — adopt the secret the PBX actually
- * renders — and the third (nothing includes the fragment) is deliberately not
- * repaired here.
+ * Every fault the console can name is either data or one section this portal
+ * owns, so all of them converge on the same three writes:
  *
- * **What this will not do.** It never edits an include into any file. The
- * fragment it writes defines `[<ext>]`, and for a FreePBX-created extension so
- * does `pjsip.endpoint.conf`: loading both is a duplicate object id, which
- * refuses the whole PJSIP load and costs every extension on the box. Which
- * product owns the endpoint is an open decision in this estate
- * (`docs/ava-capstone-convergence.md` §11), so the endpoint's own file is
- * written and nothing else is touched — the same line
- * `src/lib/pjsip-endpoint.ts` draws, for the same reason. The response reports
- * the include that is still missing, and the UI prints it verbatim.
+ *   1. **Adopt the secret FreePBX renders.** Since the endpoint decision the
+ *      softphone registers as the endpoint the PBX routes to, so the PBX's
+ *      device secret is the credential — a portal-issued one is a 401 for ever.
+ *   2. **Write `[<ext>](+)` and the WebRTC media into
+ *      `pjsip.endpoint_custom_post.conf`**, which appends to the endpoint
+ *      FreePBX generates. One object, one owner; no include, so nothing to be
+ *      dropped by the next Apply Config.
+ *   3. **Remove a pre-decision `pjsip_ext_<ext>.conf`**, which defines a second
+ *      `[<ext>]` beside FreePBX's. That is the migration, and leaving it while
+ *      adding the append section would produce exactly the duplicate id the
+ *      decision exists to avoid.
+ *
+ * It still writes no framework file: `pjsip.conf`, `pjsip.endpoint.conf`,
+ * `pjsip.auth.conf` and `pjsip.aor.conf` are FreePBX's, and the sanctioned way
+ * to extend an endpoint is the post file, which FreePBX includes and never
+ * regenerates.
  */
 export async function POST(req: Request) {
   const { user, error } = await requireUser();
@@ -41,14 +44,18 @@ export async function POST(req: Request) {
     .get(String(body.id), user.id) as FreePBXExtension | undefined;
   if (!ext) return NextResponse.json({ error: "Extension not found" }, { status: 404 });
 
-  // Read before writing, so the reload decision is about the fragment's state
-  // before this call rather than after it.
-  const before = readFragmentState(ext.extension_id);
+  const before = readWebrtcState(ext.extension_id);
   const pbxSecret = pbxSecretFor(ext.extension_id);
   const adopted = Boolean(pbxSecret) && pbxSecret !== ext.extension_secret;
   const secret = pbxSecret || ext.extension_secret || "";
 
+  // The leftover endpoint file is removed even when there is no secret to
+  // repair with: it is a second object with this extension's id, so it is a
+  // hazard to the whole PBX, not just to this softphone.
+  const removedLegacy = removeLegacyFragment(ext.extension_id);
+
   if (!secret) {
+    const after = readWebrtcState(ext.extension_id);
     return NextResponse.json(
       {
         error: "no_secret_to_repair_with",
@@ -58,13 +65,15 @@ export async function POST(req: Request) {
         repair:
           "Create the extension's credential in FreePBX (or re-provision the extension here) " +
           "and run this again — it will adopt what the PBX renders.",
+        removed_leftover_endpoint_file: removedLegacy,
+        softphone: assessSoftphone(ext.extension_id, "", pbxSecret, after),
       },
       { status: 409 },
     );
   }
 
-  // One write: the fragment, with the secret that will actually authenticate.
-  const softphone = provisionFragment(ext.extension_id, secret);
+  // One write, in a file the portal owns, appending to an object FreePBX owns.
+  const softphone = provisionWebrtc(ext.extension_id);
   const reloaded = await reloadPjsipIfLive(before);
 
   if (adopted) {
@@ -80,9 +89,38 @@ export async function POST(req: Request) {
     success: true,
     extensionId: ext.extension_id,
     // Named rather than counted: "the secret the PBX renders was adopted" is a
-    // different story from "the fragment was rewritten".
+    // different story from "the section was rewritten".
     adopted_pbx_secret: adopted,
+    removed_leftover_endpoint_file: removedLegacy,
     reloaded_pjsip: reloaded,
     softphone: readiness,
+  });
+}
+
+/**
+ * The line this portal would write, for an operator who would rather do it by
+ * hand. Cheap, and it is the same string the repair writes.
+ */
+export async function GET(req: Request) {
+  const { user, error } = await requireUser();
+  if (error) return error;
+
+  const { searchParams } = new URL(req.url);
+  const id = searchParams.get("id");
+  if (!id) return badRequest("id query parameter is required");
+
+  const ext = db
+    .prepare("SELECT * FROM freepbx_extensions WHERE id = ? AND user_id = ?")
+    .get(id, user.id) as FreePBXExtension | undefined;
+  if (!ext) return NextResponse.json({ error: "Extension not found" }, { status: 404 });
+
+  const state = readWebrtcState(ext.extension_id);
+  return NextResponse.json({
+    extensionId: ext.extension_id,
+    file: POST_FILE,
+    section: sectionHeader(ext.extension_id),
+    required_section: state.requiredSection,
+    provisioned: state.provisioned,
+    leftover_endpoint_file: state.legacyFragment,
   });
 }

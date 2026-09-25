@@ -9,13 +9,13 @@
  * that only appeared at build time, since the unit tests import the same module
  * in Node, where `node:fs` exists.
  *
- * The reads are per row (`readFragmentState` scans the config directory,
+ * The reads are per row (`readWebrtcState` reads the post file,
  * `pbxSecretFor` reads the auth files). That is affordable for the handful of
  * extensions an account has, and it keeps the list's answer the same one the
  * repair endpoint will give — a cached copy that disagrees with the repair is
  * how an operator ends up repairing something that was already fine.
  */
-import { readFragmentState } from "./pjsip-endpoint";
+import { readWebrtcState } from "./pjsip-endpoint";
 import { pbxSecretFor } from "./pjsip-secret";
 import { assessSoftphone, type SoftphoneReadiness } from "./extension-readiness";
 
@@ -34,7 +34,7 @@ export function withSoftphoneReadiness<T extends SoftphoneCandidate>(
       row.extension_id,
       row.extension_secret,
       pbxSecretFor(row.extension_id),
-      readFragmentState(row.extension_id),
+      readWebrtcState(row.extension_id),
     ),
   }));
 }

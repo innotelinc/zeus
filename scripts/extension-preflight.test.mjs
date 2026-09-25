@@ -247,6 +247,21 @@ describe("endpoint ownership parity with pbx/pjsip_owner_check.py", () => {
       },
       expected: [],
     },
+    {
+      // The endpoint decision (docs/ava-capstone-convergence.md §11): the portal
+      // appends `[<ext>](+)` to `pjsip.endpoint_custom_post.conf`, which extends
+      // FreePBX's endpoint instead of defining a second one. `(+)` is Asterisk's
+      // append-to-existing syntax, so it is deliberately untyped — and the two
+      // parsers must agree that it is not a duplicate, or the provisioner would
+      // refuse to create over an extension the portal itself just provisioned.
+      label: "the portal's append section beside FreePBX's endpoint is not a duplicate",
+      files: {
+        "pjsip.endpoint.conf": `${GENERATED}[101]\ntype = endpoint\n`,
+        "pjsip.endpoint_custom_post.conf":
+          "; appended by the Zeus portal\n[101](+)\nmedia_encryption = dtls\n",
+      },
+      expected: [],
+    },
   ];
 
   it("makes the same duplicate call as the PBX-side parser", { skip: !hasPython }, () => {

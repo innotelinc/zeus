@@ -2,10 +2,12 @@
 """The PJSIP ownership check's parsing and its verdict table.
 
 `pbx/pjsip_owner_check.py` exists to answer one question — who owns the endpoint
-for an extension — because the portal answers it twice: FreePBX generates
-`[<ext>]` from the extension's `sip` rows, and the portal writes a second
-`[<ext>](webrtc-template)` into a fragment it makes Asterisk load by appending
-`#include pjsip_ext_<ext>.conf` to `pjsip.conf` (a file FreePBX regenerates).
+for an extension. Since the endpoint decision (2026-09-25) that answer is
+FreePBX, extended by the portal's `[<ext>](+)` append in
+`pjsip.endpoint_custom_post.conf`; a box provisioned before the decision instead
+carries a `pjsip_ext_<ext>.conf` defining a second `[<ext>](webrtc-template)`,
+which is the shape these tests still pin — it is what a migration has to find and
+remove.
 
 That makes three claims worth pinning here, none of which a human reads off a
 config directory reliably:
@@ -160,6 +162,25 @@ def one_owner_shape() -> dict[str, str]:
         "pjsip_wss.conf": PJSIP_WSS_CONF,
         "pjsip_ext_101.conf": PJSIP_EXT_101_CONF,
         "pjsip_custom_post.conf": PJSIP_CUSTOM_POST_CONF + "#include pjsip_ext_101.conf\n",
+    }
+
+
+def append_shape() -> dict[str, str]:
+    """The decided shape: FreePBX owns [101] and the portal extends it.
+
+    `pjsip.endpoint_custom_post.conf` is operator-owned, FreePBX includes it and
+    never regenerates it, and the portal appends `[101](+)` there — no second
+    object, and no `#include` of the portal's own to be dropped.
+    """
+    return {
+        "pjsip.conf": PJSIP_CONF.rstrip("\n") + "\n#include pjsip.endpoint_custom_post.conf\n",
+        "pjsip.endpoint.conf": PJSIP_ENDPOINT_CONF,
+        "pjsip.auth.conf": PJSIP_AUTH_CONF,
+        "pjsip.aor.conf": PJSIP_AOR_CONF,
+        "pjsip_wss.conf": PJSIP_WSS_CONF,
+        "pjsip.endpoint_custom_post.conf": (
+            "; appended by the Zeus portal\n[101](+)\nmedia_encryption=dtls\n"
+        ),
     }
 
 
@@ -327,6 +348,20 @@ class DefinitionsTest(unittest.TestCase):
             [("pjsip.endpoint.conf", 6), ("pjsip_ext_101.conf", 2)],
         )
 
+    def test_the_append_section_is_not_a_second_endpoint(self):
+        """`[101](+)` extends FreePBX's endpoint; it defines no object.
+
+        This is the endpoint decision's core claim. If the append counted as an
+        endpoint, the check would report the shape it is supposed to bless as a
+        duplicate — and the provisioner would refuse to create over an extension
+        the portal itself had just provisioned.
+        """
+        files = check.load_files(append_shape())
+        defs = check.definitions(files)
+        self.assertEqual(defs[("101", "endpoint")], [("pjsip.endpoint.conf", 6)])
+        self.assertEqual(check.portal_appends(files, "101"), "pjsip.endpoint_custom_post.conf")
+        self.assertEqual(check.appended_extensions(files), {"101"})
+
     def test_the_portal_fragment_is_the_second_endpoint(self):
         """`definitions` is what is on disk; the load tree is applied later.
 
@@ -449,6 +484,27 @@ class VerdictTest(unittest.TestCase):
         self.assertIsNone(findings[0].ok)
         self.assertIs(findings[1].ok, False)
         self.assertIn("loaded but defines no [101] endpoint", findings[1].detail)
+
+    def test_the_decided_shape_is_a_pass_that_names_the_append(self):
+        findings = self.judge(append_shape())
+        self.assertEqual(len(findings), 2, findings)
+        self.assertIs(findings[0].ok, True)
+        self.assertIn("defined once", findings[0].detail)
+        self.assertIs(findings[1].ok, True)
+        self.assertIn("[101](+)", findings[1].detail)
+
+    def test_an_append_with_nothing_to_extend_is_a_defect(self):
+        """The append targets an object only if FreePBX generates one.
+
+        If it does not, the softphone has no endpoint at all, and a check that
+        stopped at "the portal appended something" would call that healthy.
+        """
+        raw = append_shape()
+        del raw["pjsip.endpoint.conf"]
+        findings = self.judge(raw)
+        self.assertEqual(len(findings), 1, findings)
+        self.assertIs(findings[0].ok, False)
+        self.assertIn("nothing to extend", findings[0].detail)
 
     def test_an_extension_nothing_knows_about_is_not_evaluated(self):
         findings = self.judge(live_shape(), ext="999")
@@ -598,6 +654,26 @@ class CliTest(unittest.TestCase):
         carriers = [row["carrier"] for row in payload["include_carriers"]]
         self.assertIn("pjsip.conf", carriers)
         self.assertIn("101/endpoint", payload["definitions"])
+
+    def test_the_decided_shape_passes(self):
+        code, out, err = self.run_cli(append_shape())
+        self.assertEqual(code, 0)
+        self.assertIn("defined once", out)
+        self.assertNotIn("FAIL", err)
+
+    def test_the_append_section_alone_infers_the_extension(self):
+        """No fragment on the box: the default set has to come from the appends.
+
+        Otherwise a fully migrated box — the shape the decision produces —
+        reports "nothing to evaluate" and is indistinguishable from a box where
+        nothing was ever provisioned.
+        """
+        code, out, _err = self.run_cli(append_shape(), "--json")
+        self.assertEqual(code, 0)
+        # A passing run prints its summary after the JSON on stdout, so the
+        # payload is the object between the first `{` and the last `}`.
+        payload = json.loads(out[out.index("{") : out.rindex("}") + 1])
+        self.assertEqual(payload["extensions"], ["101"])
 
     def test_an_unreadable_config_dir_is_named(self):
         """An empty directory names itself rather than reporting a clean run."""

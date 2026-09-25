@@ -1,36 +1,43 @@
 /**
  * Why a softphone will not register, in the order the causes matter.
  *
- * "Offline" in the extensions list is one word for three different problems,
- * and the one the operator reaches for first (the softphone) is almost never
- * the broken half:
+ * "Offline" in the extensions list is one word for four different problems, and
+ * the one the operator reaches for first (the softphone) is almost never the
+ * broken half:
  *
- *   1. **No secret at all.** The portal has nothing to authenticate with. This
- *      is what an extension that arrived from the legacy portal merge, or one
- *      created straight in FreePBX, looks like — `POST /api/phone/extensions`
- *      is the only writer that stores one.
- *   2. **A secret FreePBX does not render.** The row and the PBX disagree, so
+ *   1. **A leftover second endpoint.** A box provisioned before the endpoint
+ *      decision (`docs/ava-capstone-convergence.md` §11) still has
+ *      `pjsip_ext_<ext>.conf` on disk, which defines `[<ext>]` beside the
+ *      endpoint FreePBX generates. If anything loads it, res_pjsip is being
+ *      handed two objects with one id and may refuse the whole file; if nothing
+ *      loads it, it is a trap waiting for the next operator who adds an include.
+ *      This is checked first because it is the only one that can take the box's
+ *      other extensions down with it.
+ *   2. **No secret at all.** The portal has nothing to authenticate with — what
+ *      an extension from the legacy portal merge, or one created straight in
+ *      FreePBX, looks like.
+ *   3. **A secret FreePBX does not render.** The row and the PBX disagree, so
  *      every REGISTER is a 401. FreePBX generates a PJSIP extension's
- *      credential itself; the portal's copy is only right when the portal
- *      created the extension.
- *   3. **Nothing loads the fragment.** `pjsip_ext_<ext>.conf` exists with the
- *      right secret and no operator-owned file includes it, so Asterisk has no
- *      endpoint for the number (`src/lib/pjsip-endpoint.ts` states the same
- *      limit, and why it does not resolve it by writing an include).
+ *      credential itself, and since the endpoint decision the softphone is
+ *      meant to use *that* one.
+ *   4. **No WebRTC settings.** `[<ext>](+)` is not in
+ *      `pjsip.endpoint_custom_post.conf`, so the endpoint FreePBX owns has no
+ *      DTLS/ICE media and a browser cannot register against it at all.
  *
- * Pure over the three observations, so the ordering can be tested without a
- * PBX: it is the ordering that decides what the operator is told to fix, and
- * telling them to fix the softphone when the secret is missing is how this
- * screen wasted a day.
+ * Pure over those observations, so the ordering can be tested without a PBX: it
+ * is the ordering that decides what the operator is told to fix, and telling
+ * them to fix the softphone when the secret is missing is how this screen
+ * wasted a day.
+ *
+ * This module takes only *type* imports and is reached from a client component,
+ * so it must stay free of `node:fs` — the readers live in
+ * `extension-readiness-server.ts`.
  */
-// Type-only, and deliberately so: this module is what the extensions list
-// renders, so it is reachable from a client component and must not pull
-// `node:fs` into that bundle. The readers that touch the config directory live
-// in `extension-readiness-server.ts`.
 import type { SoftphoneState } from "./pjsip-endpoint";
 
 export type SoftphoneReadinessState =
   | "ready"
+  | "duplicate-fragment"
   | "missing-secret"
   | "stale-secret"
   | "not-loaded";
@@ -43,31 +50,30 @@ export interface SoftphoneReadiness {
   pbxSecretPresent: boolean;
   /** The portal's secret and the PBX's both exist and are not equal. */
   secretDiffers: boolean;
-  /** The fragment file that would carry this endpoint, by name. */
-  fragment: string;
-  /** An operator-owned file includes the fragment, so Asterisk loads it. */
-  fragmentLoaded: boolean;
-  /** The line that has to be added when nothing is loading the fragment. */
-  requiredInclude: string;
+  /** The operator-owned file the WebRTC settings belong in. */
+  file: string;
+  /** Those settings are in it, so the endpoint FreePBX owns can do WebRTC. */
+  loaded: boolean;
+  /** The append header that has to be added when they are not. */
+  requiredSection: string;
+  /** A pre-decision `pjsip_ext_<ext>.conf` is still on disk. */
+  duplicateFragment: boolean;
   /** One sentence naming the state, and the first thing to fix about it. */
   summary: string;
 }
 
-/** Where an operator has to put the include, the estate's operator-owned file. */
-const INCLUDE_HOME = "pjsip_custom_post.conf";
-
 /**
  * Judge one extension.
  *
- * `fragment` is `readFragmentState`'s answer; `pbxSecret` is `pbxSecretFor`'s.
- * Both are read-only observations, which is what makes this safe to call while
+ * `state` is `readWebrtcState`'s answer; `pbxSecret` is `pbxSecretFor`'s. Both
+ * are read-only observations, which is what makes this safe to call while
  * rendering a page.
  */
 export function assessSoftphone(
   extensionId: string,
   portalSecret: string | null | undefined,
   pbxSecret: string,
-  fragment: SoftphoneState,
+  state: SoftphoneState,
 ): SoftphoneReadiness {
   const secretPresent = Boolean(portalSecret);
   const pbxSecretPresent = Boolean(pbxSecret);
@@ -76,11 +82,22 @@ export function assessSoftphone(
     secretPresent,
     pbxSecretPresent,
     secretDiffers,
-    fragment: fragment.fragment,
-    fragmentLoaded: fragment.provisioned,
-    // Always populated by the fragment reader (`stateFor` sets it unconditionally).
-    requiredInclude: fragment.requiredInclude,
+    file: state.file,
+    loaded: state.provisioned,
+    requiredSection: state.section,
+    duplicateFragment: state.legacyFragment,
   };
+
+  if (state.legacyFragment) {
+    return {
+      ...base,
+      state: "duplicate-fragment",
+      summary:
+        `Left over from before the endpoint decision: pjsip_ext_${extensionId}.conf defines a ` +
+        `second [${extensionId}] beside the endpoint FreePBX generates. Remove it — two objects ` +
+        `with one id is what makes res_pjsip refuse a whole configuration.`,
+    };
+  }
 
   if (!secretPresent) {
     return {
@@ -104,19 +121,19 @@ export function assessSoftphone(
     };
   }
 
-  if (!fragment.provisioned) {
-    // The fragment's own reason already names the file and the line, and it is
-    // written where that file is read, so it cannot drift from this message.
-    return { ...base, state: "not-loaded", summary: fragment.reason };
+  if (!state.provisioned) {
+    // The reader's own words already name the file and the line, and they are
+    // written where that file is read, so they cannot drift from it.
+    return { ...base, state: "not-loaded", summary: state.reason };
   }
 
-  const home = fragment.includes.find((entry) => entry.operatorOwned);
   return {
     ...base,
     state: "ready",
     summary:
-      `Ready: the stored secret matches the PBX's and ${home?.file ?? INCLUDE_HOME} ` +
-      `includes ${fragment.fragment}, so the softphone endpoint loads and survives Apply Config.`,
+      `Ready: the stored secret matches the PBX's, and ${state.file} appends the WebRTC ` +
+      `settings to the endpoint FreePBX generates for [${extensionId}] — one object, so ` +
+      `routing, voicemail and this softphone all agree.`,
   };
 }
 
@@ -167,11 +184,13 @@ export function readinessLabel(readiness: SoftphoneReadiness): string {
   switch (readiness.state) {
     case "ready":
       return "Softphone ready";
+    case "duplicate-fragment":
+      return "Leftover endpoint file — remove it";
     case "missing-secret":
       return "No SIP secret";
     case "stale-secret":
       return "Secret out of step with the PBX";
     case "not-loaded":
-      return "Fragment not loaded";
+      return "No WebRTC settings on the endpoint";
   }
 }

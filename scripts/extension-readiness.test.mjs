@@ -4,7 +4,8 @@
  *
  * "Offline" in the extensions list is one word for three different faults, and
  * the console's whole value here is telling them apart: no secret at all, a
- * secret FreePBX never rendered, or a fragment nothing loads. The order they
+ * secret FreePBX never rendered, or no WebRTC settings on the endpoint FreePBX
+ * owns. The order they
  * are reported in is a decision, not an implementation detail — telling an
  * operator to fix their softphone when the row has no credential is how this
  * screen wastes a day.
@@ -66,15 +67,18 @@ function pythonSecrets(text) {
   return JSON.parse(out);
 }
 
-/** A fragment state as `readFragmentState` would return it. */
-function fragmentState(overrides = {}) {
+/** A softphone state as `readWebrtcState` would return it. */
+function webrtcState(overrides = {}) {
   return {
     provisioned: true,
-    fragment: "pjsip_ext_8000.conf",
-    includes: [{ file: "pjsip_custom_post.conf", operatorOwned: true }],
-    requiredInclude: "#include pjsip_ext_8000.conf",
-    operatorFiles: ["pjsip_custom_post.conf"],
-    reason: "pjsip_custom_post.conf includes pjsip_ext_8000.conf",
+    file: "pjsip.endpoint_custom_post.conf",
+    section: "[8000](+)",
+    includes: [{ file: "pjsip.endpoint_custom_post.conf", operatorOwned: true }],
+    requiredSection: "[8000](+)",
+    legacyFragment: false,
+    reason:
+      "pjsip.endpoint_custom_post.conf appends the WebRTC settings to the " +
+      "endpoint FreePBX generates for [8000]",
     ...overrides,
   };
 }
@@ -143,15 +147,15 @@ describe("reading a secret off the box", () => {
 describe("the readiness judgement", () => {
   const ID = "8000";
 
-  it("is ready when the secret matches and something loads the fragment", () => {
-    const verdict = readiness.assessSoftphone(ID, "same", "same", fragmentState());
+  it("is ready when the secret matches and the settings are in the post file", () => {
+    const verdict = readiness.assessSoftphone(ID, "same", "same", webrtcState());
     assert.equal(verdict.state, "ready");
     assert.equal(verdict.secretDiffers, false);
-    assert.match(verdict.summary, /pjsip_custom_post\.conf/);
+    assert.match(verdict.summary, /pjsip\.endpoint_custom_post\.conf/);
   });
 
   it("reports a missing secret first, and names where to get one", () => {
-    const verdict = readiness.assessSoftphone(ID, null, "rendered", fragmentState({ provisioned: false }));
+    const verdict = readiness.assessSoftphone(ID, null, "rendered", webrtcState({ provisioned: false }));
     assert.equal(verdict.state, "missing-secret");
     assert.match(verdict.summary, /Repair adopts it/);
     // Even with a broken fragment, the missing credential is the thing to fix.
@@ -159,7 +163,7 @@ describe("the readiness judgement", () => {
   });
 
   it("knows a missing secret from a PBX that renders none either", () => {
-    const verdict = readiness.assessSoftphone(ID, "", "", fragmentState({ provisioned: false }));
+    const verdict = readiness.assessSoftphone(ID, "", "", webrtcState({ provisioned: false }));
     assert.equal(verdict.state, "missing-secret");
     assert.match(verdict.summary, /renders none for it either/);
   });
@@ -169,40 +173,42 @@ describe("the readiness judgement", () => {
       ID,
       "portal-secret",
       "pbx-secret",
-      fragmentState({ provisioned: false }),
+      webrtcState({ provisioned: false }),
     );
     assert.equal(verdict.state, "stale-secret");
     assert.equal(verdict.secretDiffers, true);
     assert.match(verdict.summary, /refused/);
   });
 
-  it("reports the fragment only when the credential is right", () => {
+  it("reports the missing settings only when the credential is right", () => {
     const verdict = readiness.assessSoftphone(
       ID,
       "same",
       "same",
-      fragmentState({ provisioned: false, reason: "written but nothing includes it" }),
+      webrtcState({ provisioned: false, reason: "the post file carries no [8000](+)" }),
     );
     assert.equal(verdict.state, "not-loaded");
-    // The fragment's own words, so the file and line cannot drift from it.
-    assert.equal(verdict.summary, "written but nothing includes it");
-    assert.equal(verdict.requiredInclude, "#include pjsip_ext_8000.conf");
+    // The reader's own words, so the file and the line cannot drift from it.
+    assert.equal(verdict.summary, "the post file carries no [8000](+)");
+    assert.equal(verdict.requiredSection, "[8000](+)");
   });
 
-  it("treats a portal secret with no rendered one as fine", () => {
-    // A portal-owned endpoint: the portal wrote the secret, so nothing else
-    // renders it, and that is not a mismatch.
-    const verdict = readiness.assessSoftphone(ID, "portal-secret", "", fragmentState());
+  it("does not call a secret a mismatch it cannot compare", () => {
+    // "The PBX renders none" is also what an unreadable config mount looks like,
+    // so an absence is not evidence the stored secret is wrong — only a rendered
+    // value that differs is. Reporting a mismatch here would put every extension
+    // into a repair the operator cannot complete.
+    const verdict = readiness.assessSoftphone(ID, "portal-secret", "", webrtcState());
     assert.equal(verdict.state, "ready");
     assert.equal(verdict.secretDiffers, false);
   });
 
   it("labels every state it can return", () => {
     const states = new Set([
-      readiness.assessSoftphone(ID, "s", "s", fragmentState()).state,
-      readiness.assessSoftphone(ID, "", "", fragmentState()).state,
-      readiness.assessSoftphone(ID, "a", "b", fragmentState()).state,
-      readiness.assessSoftphone(ID, "s", "s", fragmentState({ provisioned: false })).state,
+      readiness.assessSoftphone(ID, "s", "s", webrtcState()).state,
+      readiness.assessSoftphone(ID, "", "", webrtcState()).state,
+      readiness.assessSoftphone(ID, "a", "b", webrtcState()).state,
+      readiness.assessSoftphone(ID, "s", "s", webrtcState({ provisioned: false })).state,
     ]);
     for (const state of states) {
       const label = readiness.readinessLabel({ state });

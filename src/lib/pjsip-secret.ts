@@ -16,10 +16,13 @@
  * This is the same read, in the portal, so the console can say which of the two
  * it is instead of printing a 401 and leaving the operator to guess.
  *
- * Reading is all it does. Nothing here writes an endpoint: whether FreePBX or
- * the portal owns `[<ext>]` is a decision this estate has not made
- * (`docs/ava-capstone-convergence.md` §11), and writing both owners' objects is
- * the duplicate-id failure that refuses the whole PJSIP load.
+ * Reading is all it does. Nothing here writes an endpoint. The owner decision is
+ * made (`docs/ava-capstone-convergence.md` §11.5): FreePBX owns `[<ext>]` and the
+ * portal appends to it from `pjsip.endpoint_custom_post.conf`, which is exactly
+ * why this read exists — the softphone has to register as FreePBX's object, so
+ * FreePBX's rendered secret is the credential and there is no portal-issued one
+ * to reconcile. Writing an endpoint here would reintroduce the duplicate id the
+ * decision removes.
  */
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
