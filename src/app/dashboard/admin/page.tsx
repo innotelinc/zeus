@@ -4,7 +4,8 @@ import { useState, useEffect, useCallback } from "react";
 import { api } from "@/lib/client-api";
 import type { User, PlanInfo } from "@/lib/types";
 import { useToast } from "@/components/ToastProvider";
-import { PlusIcon, TrashIcon } from "@/components/icons";
+import { PlusIcon, TrashIcon, UserIcon } from "@/components/icons";
+import { PageHeader, Stat } from "@/components/ui";
 import { ResellersSection } from "@/components/dashboard/ResellersSection";
 import AdminVoicePlan from "@/components/dashboard/AdminVoicePlan";
 
@@ -132,7 +133,11 @@ export default function AdminPage() {
   if (loading) {
     return (
       <div className="space-y-6">
-        <h1 className="text-2xl font-semibold text-white">Admin Portal</h1>
+        <PageHeader
+          title="Admin portal"
+          icon={<UserIcon size={20} className="text-brand-300" />}
+          description="Manage users, plans, resellers and the per-number voice plan."
+        />
         <div className="rounded-2xl border border-white/[0.06] bg-white/[0.02] p-10 text-center">
           <p className="text-sm text-white/40">Loading...</p>
         </div>
@@ -142,25 +147,19 @@ export default function AdminPage() {
 
   return (
     <div className="space-y-6">
-      <div>
-        <h1 className="text-2xl font-semibold tracking-tight text-white">Admin Portal</h1>
-        <p className="mt-1 text-sm text-white/45">Manage users, plans, and system configuration.</p>
-      </div>
+      <PageHeader
+        title="Admin portal"
+        icon={<UserIcon size={20} className="text-brand-300" />}
+        description="Manage users, plans, resellers and the per-number voice plan."
+      />
 
       {/* Stats */}
       {stats && (
-        <div className="grid gap-4 sm:grid-cols-4">
-          {[
-            { label: "Total Users", value: stats.total, color: "text-brand-300" },
-            { label: "Business", value: stats.business, color: "text-mint-400" },
-            { label: "Consumer", value: stats.consumer, color: "text-white/60" },
-            { label: "Admins", value: stats.admins, color: "text-sun-400" },
-          ].map((s) => (
-            <div key={s.label} className="rounded-2xl border border-white/[0.06] bg-white/[0.02] p-5 text-center">
-              <div className={`text-3xl font-bold ${s.color}`}>{s.value}</div>
-              <div className="mt-1 text-xs text-white/40">{s.label}</div>
-            </div>
-          ))}
+        <div className="grid gap-3 sm:grid-cols-4">
+          <Stat label="Total users" value={stats.total} />
+          <Stat label="Business" value={stats.business} />
+          <Stat label="Consumer" value={stats.consumer} />
+          <Stat label="Admins" value={stats.admins} />
         </div>
       )}
 

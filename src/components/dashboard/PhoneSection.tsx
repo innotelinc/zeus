@@ -5,6 +5,7 @@ import { api, apiErrorMessage } from "@/lib/client-api";
 import type { PhoneNumber, FreePBXExtension } from "@/lib/types";
 import { useToast } from "@/components/ToastProvider";
 import { PlusIcon, RefreshIcon, CheckCircleIcon, SearchIcon, PhoneIcon, XIcon, TrashIcon, AlertCircleIcon } from "@/components/icons";
+import { EmptyState, PageHeader } from "@/components/ui";
 
 interface Props {
   numbers: PhoneNumber[];
@@ -195,10 +196,11 @@ export default function PhoneSection({ numbers: initialNumbers, extensions: init
 
   return (
     <div className="space-y-6">
-      <div>
-        <h1 className="text-2xl font-semibold tracking-tight text-white">Phone Numbers</h1>
-        <p className="mt-1 text-sm text-white/45">Manage your DIDs and FreePBX extensions.</p>
-      </div>
+      <PageHeader
+        title="Phone Numbers"
+        icon={<PhoneIcon size={20} className="text-brand-300" />}
+        description="Manage your DIDs and FreePBX extensions."
+      />
 
       {/* Release confirm */}
       {confirmRelease && (
@@ -255,16 +257,18 @@ export default function PhoneSection({ numbers: initialNumbers, extensions: init
         </div>
 
         {numbers.length === 0 ? (
-          <div className="flex flex-col items-center rounded-2xl bg-white/[0.02] p-10 text-center">
-            <div className="flex h-14 w-14 items-center justify-center rounded-2xl bg-brand-500/15 text-brand-300"><PhoneIcon size={26} /></div>
-            <h3 className="mt-4 text-lg font-semibold text-white">No phone numbers yet</h3>
-            <p className="mt-2 max-w-sm text-sm text-white/45">Order a phone number to start making and receiving calls.</p>
-            {numbers.length < maxNumbers && (
-              <button type="button" onClick={() => setSearchMode(true)} className="btn-primary mt-4 px-5 py-2 text-sm flex items-center gap-2">
-                <PlusIcon size={14} /> Order your first number
-              </button>
-            )}
-          </div>
+          <EmptyState
+            icon={<PhoneIcon size={26} />}
+            title="No phone numbers yet"
+            description="Order a phone number to start making and receiving calls."
+            action={
+              numbers.length < maxNumbers ? (
+                <button type="button" onClick={() => setSearchMode(true)} className="btn-primary flex items-center gap-2 px-5 py-2 text-sm">
+                  <PlusIcon size={14} /> Order your first number
+                </button>
+              ) : undefined
+            }
+          />
         ) : (
           <div className="space-y-3">
             {numbers.map(n => {
@@ -311,9 +315,15 @@ export default function PhoneSection({ numbers: initialNumbers, extensions: init
         </div>
 
         {extensions.length === 0 ? (
-          <div className="rounded-2xl bg-white/[0.02] p-8 text-center">
-            <p className="text-sm text-white/45">No extensions yet. Provision one to connect your SIP phone or softphone.</p>
-          </div>
+          <EmptyState
+            title="No extensions yet"
+            description="Provision one to connect your SIP phone or softphone."
+            action={
+              <button type="button" onClick={() => setProvisionMode(true)} className="btn-primary flex items-center gap-2 px-5 py-2 text-sm">
+                <PlusIcon size={14} /> Add your first extension
+              </button>
+            }
+          />
         ) : (
           <div className="space-y-3">
             {extensions.map(ext => {

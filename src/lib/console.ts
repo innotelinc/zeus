@@ -164,12 +164,12 @@ export interface ConsoleSurface {
 export const CONSOLE_SURFACES: ConsoleSurface[] = [
   // ── Today ─────────────────────────────────────────────────────────
   {
-    id: "numbers",
-    label: "Phone Numbers",
+    id: "overview",
+    label: "Today",
     group: "today",
     product: "zeus",
     kind: "owned",
-    answers: "The numbers on this account, and what answers each one",
+    answers: "What is happening right now — calls, what arrived, and how the machine is doing",
     href: "/dashboard",
   },
   {
@@ -195,13 +195,32 @@ export const CONSOLE_SURFACES: ConsoleSurface[] = [
 
   // ── Calls ─────────────────────────────────────────────────────────
   {
+    id: "numbers",
+    label: "Phone Numbers",
+    group: "calls",
+    product: "zeus",
+    kind: "owned",
+    answers: "The numbers on this account, and what answers each one",
+    href: "/dashboard/numbers",
+  },
+  {
     id: "voice",
     label: "Voice Agents",
     group: "calls",
     product: "dograh",
     kind: "owned",
-    answers: "Which Dograh agent answers which number, and how each one is set up",
+    answers: "Which Dograh agent answers which number, and what is happening live",
     href: "/dashboard/voice",
+    addon: "agents",
+  },
+  {
+    id: "agents",
+    label: "Agents & Workflows",
+    group: "calls",
+    product: "dograh",
+    kind: "owned",
+    answers: "The agents themselves — prompts, turn-taking and the calls they handled",
+    href: "/dashboard/workflows",
     addon: "agents",
   },
   {
@@ -216,11 +235,11 @@ export const CONSOLE_SURFACES: ConsoleSurface[] = [
   },
   {
     id: "workflows",
-    label: "Workflows & Flows",
+    label: "Flow editor",
     group: "calls",
     product: "dograh",
     kind: "proxied",
-    answers: "Build and edit an agent's flow — prompts, nodes, branching",
+    answers: "Build and edit an agent's flow in Dograh — prompts, nodes, branching",
     baseEnv: "DOGRAH_UI_URL",
     baseDefault: "https://dograh.capstone.innotel.us",
   },

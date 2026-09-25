@@ -80,7 +80,7 @@ export default async function InterviewsPage() {
               title="No active numbers yet"
               description="Add a number from Phone Numbers, then choose the agent that answers it on the Voice Agents screen."
               action={
-                <Link href="/dashboard" className="text-sm text-brand-300 hover:text-brand-200">
+                <Link href="/dashboard/numbers" className="text-sm text-brand-300 hover:text-brand-200">
                   Phone Numbers →
                 </Link>
               }

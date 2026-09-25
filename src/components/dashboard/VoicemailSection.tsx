@@ -4,6 +4,7 @@ import { useState, useRef } from "react";
 import { api, fmtDate, fmtDuration } from "@/lib/client-api";
 import { VoicemailIcon, PlayIcon, MailIcon, PauseIcon, SparklesIcon } from "@/components/icons";
 import { useToast } from "@/components/ToastProvider";
+import { EmptyState, PageHeader } from "@/components/ui";
 import type { Voicemail } from "@/lib/types";
 
 interface Props {
@@ -62,17 +63,18 @@ export default function VoicemailSection({ voicemails: initial }: Props) {
 
   return (
     <div className="space-y-6">
-      <div>
-        <h1 className="text-2xl font-semibold tracking-tight text-white">Voicemail</h1>
-        <p className="mt-1 text-sm text-white/45">Listen to your voicemails with transcriptions and AI summaries.</p>
-      </div>
+      <PageHeader
+        title="Voicemail"
+        icon={<VoicemailIcon size={20} className="text-brand-300" />}
+        description="Listen to your voicemails with transcriptions and AI summaries."
+      />
 
       {voicemails.length === 0 ? (
-        <div className="flex flex-col items-center rounded-3xl border border-white/[0.06] bg-white/[0.02] p-12 text-center">
-          <div className="flex h-16 w-16 items-center justify-center rounded-2xl bg-brand-500/15 text-brand-300"><VoicemailIcon size={30} /></div>
-          <h3 className="mt-5 text-lg font-semibold text-white">No voicemails</h3>
-          <p className="mt-2 max-w-md text-sm text-white/45">You don&apos;t have any voicemails yet. Voicemails will appear here when someone leaves a message on your extension.</p>
-        </div>
+        <EmptyState
+          icon={<VoicemailIcon size={26} />}
+          title="No voicemails"
+          description="Messages appear here when someone leaves one on your extension, with the transcription and an AI summary."
+        />
       ) : (
         <div className="space-y-3">
           {voicemails.map(vm => (

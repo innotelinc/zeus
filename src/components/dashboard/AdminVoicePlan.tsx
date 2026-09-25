@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { api } from "@/lib/client-api";
 import { AlertCircleIcon, CheckCircleIcon, PhoneIcon, RefreshIcon } from "@/components/icons";
+import { Card } from "@/components/ui";
 
 interface RoutingAccount {
   did: string;
@@ -54,7 +55,7 @@ export default function AdminVoicePlan({ compact = false }: Props) {
   const blocked = plan?.capstone_not_enabled.length ?? 0;
 
   return (
-    <section className="rounded-2xl border border-white/[0.06] bg-white/[0.02] p-6">
+    <Card>
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div>
           <h2 className="flex items-center gap-2 text-lg font-semibold text-white">
@@ -132,7 +133,7 @@ export default function AdminVoicePlan({ compact = false }: Props) {
           )}
         </>
       ) : null}
-    </section>
+    </Card>
   );
 }
 

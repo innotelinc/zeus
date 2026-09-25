@@ -5,6 +5,7 @@ import { api, fmtDate } from "@/lib/client-api";
 import { useToast } from "@/components/ToastProvider";
 import type { FaxAccount, Fax, PhoneNumber } from "@/lib/types";
 import { FaxIcon, PlusIcon, SendIcon, UploadIcon, FileTextIcon, DownloadIcon, EyeIcon, CheckCircleIcon, AlertCircleIcon, XIcon } from "@/components/icons";
+import { EmptyState, PageHeader } from "@/components/ui";
 
 interface Props {
   faxAccount: FaxAccount | null;
@@ -133,22 +134,32 @@ export default function FaxSection({ faxAccount, faxes: initialFaxes, numbers }:
   if (!account) {
     return (
       <div className="space-y-6">
-        <div><h1 className="text-2xl font-semibold text-white">Fax</h1><p className="mt-1 text-sm text-white/45">Send and receive faxes via AvantFax + HylaFAX+.</p></div>
-        <div className="flex flex-col items-center rounded-3xl border border-white/[0.06] bg-white/[0.02] p-12 text-center">
-          <div className="flex h-16 w-16 items-center justify-center rounded-2xl bg-sun-400/15 text-sun-400"><FaxIcon size={30} /></div>
-          <h3 className="mt-5 text-lg font-semibold text-white">Set up your fax line</h3>
-          <p className="mt-2 max-w-md text-sm text-white/45">Activate fax service on one of your DIDs. Includes AvantFax web access.</p>
-          <button type="button" onClick={setupAccount} disabled={loadingAcct} className="btn-primary mt-6 px-6 py-2.5 text-sm flex items-center gap-2">
-            {loadingAcct ? "Setting up..." : "Enable fax service"}{!loadingAcct && <PlusIcon size={15} />}
-          </button>
-        </div>
+        <PageHeader
+          title="Fax"
+          icon={<FaxIcon size={20} className="text-brand-300" />}
+          description="Send and receive faxes via AvantFax + HylaFAX+."
+        />
+        <EmptyState
+          icon={<FaxIcon size={26} />}
+          title="Set up your fax line"
+          description="Activate fax service on one of your DIDs. Includes AvantFax web access."
+          action={
+            <button type="button" onClick={setupAccount} disabled={loadingAcct} className="btn-primary flex items-center gap-2 px-6 py-2.5 text-sm">
+              {loadingAcct ? "Setting up..." : "Enable fax service"}{!loadingAcct && <PlusIcon size={15} />}
+            </button>
+          }
+        />
       </div>
     );
   }
 
   return (
     <div className="space-y-6">
-      <div><h1 className="text-2xl font-semibold text-white">Fax</h1><p className="mt-1 text-sm text-white/45">Send and receive faxes digitally.</p></div>
+      <PageHeader
+        title="Fax"
+        icon={<FaxIcon size={20} className="text-brand-300" />}
+        description="Send and receive faxes digitally."
+      />
 
       {/* Status bar */}
       <div className="flex flex-wrap items-center justify-between gap-4 rounded-2xl border border-mint-500/10 bg-mint-500/[0.04] px-6 py-4">
@@ -248,7 +259,11 @@ export default function FaxSection({ faxAccount, faxes: initialFaxes, numbers }:
       <div className="rounded-2xl border border-white/[0.06] bg-white/[0.02] p-6">
         <h2 className="text-lg font-semibold text-white mb-4">Fax History</h2>
         {faxes.length === 0 ? (
-          <div className="rounded-2xl bg-white/[0.02] p-8 text-center"><p className="text-sm text-white/45">No faxes sent or received yet.</p></div>
+          <EmptyState
+            icon={<FaxIcon size={26} />}
+            title="No faxes yet"
+            description="Faxes you send and receive appear here, with preview and download."
+          />
         ) : (
           <div className="space-y-2">
             {faxes.map(fax => (

@@ -2,7 +2,8 @@
 
 import { useState, useEffect } from "react";
 import { api } from "@/lib/client-api";
-import { AlertCircleIcon, CheckCircleIcon } from "@/components/icons";
+import { AlertCircleIcon, CheckCircleIcon, CogIcon } from "@/components/icons";
+import { PageHeader } from "@/components/ui";
 import { useToast } from "@/components/ToastProvider";
 import type { User } from "@/lib/types";
 import Link from "next/link";
@@ -163,10 +164,11 @@ export default function SettingsSection({ user }: Props) {
 
   return (
     <div className="space-y-6">
-      <div>
-        <h1 className="text-2xl font-semibold tracking-tight text-white">Settings</h1>
-        <p className="mt-1 text-sm text-white/45">Manage your account settings.</p>
-      </div>
+      <PageHeader
+        title="Settings"
+        icon={<CogIcon size={20} className="text-brand-300" />}
+        description="Your profile, password, and the services this portal is wired to."
+      />
 
       {/* Profile */}
       <form onSubmit={saveProfile} className="rounded-2xl border border-white/[0.06] bg-white/[0.02] p-6 space-y-4">
