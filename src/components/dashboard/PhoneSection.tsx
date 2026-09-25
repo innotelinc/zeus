@@ -336,8 +336,10 @@ export default function PhoneSection({ numbers: initialNumbers, extensions: init
                       <span className={`absolute -right-0.5 -top-0.5 h-2.5 w-2.5 rounded-full border-2 border-[var(--background)] ${st.dot}`} />
                     </div>
                     <div>
-                      <div className="font-mono text-lg font-semibold text-white">Ext {ext.extension_id}</div>
-                      <div className="text-xs text-white/40">{ext.extension_name}{ext.voicemail_enabled ? " · Voicemail enabled" : ""}</div>
+                      {/* Theme tokens, not `text-white`: this number is the one
+                          thing on the card the operator must read. */}
+                      <div className="font-mono text-lg font-semibold text-[var(--foreground)]">Ext {ext.extension_id}</div>
+                      <div className="text-xs text-[var(--text-secondary)]">{ext.extension_name}{ext.voicemail_enabled ? " · Voicemail enabled" : ""}</div>
                     </div>
                   </div>
                   <div className="flex items-center gap-2">

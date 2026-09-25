@@ -167,6 +167,13 @@ html.light .btn-primary {
   color: #ffffff !important;
 }
 
+/* A label sitting on a solid accent keeps its white in either theme. rose-500
+   and mint-500 do not flip with the theme, so neither may the text on top of
+   them — the same reasoning as .btn-primary above. */
+.on-accent {
+  color: #ffffff !important;
+}
+
 html.light .bg-brand-500\\/10,
 html.light .bg-brand-500\\/15,
 html.light .bg-brand-500\\/20 {

@@ -6,6 +6,7 @@ import { UserAgent, Registerer, SessionState } from "sip.js";
 import type { FreePBXExtension, PhoneNumber } from "@/lib/types";
 import { api } from "@/lib/client-api";
 import { PhoneIcon } from "@/components/icons";
+import { Select } from "@/components/ui";
 import { useToast } from "@/components/ToastProvider";
 import { WSS_STORAGE_KEY, softphoneWssUrl } from "@/lib/softphone-wss";
 
@@ -61,6 +62,9 @@ export default function SoftphoneSection({ extensions, phoneNumbers }: Props) {
   // Held as a ref as well as state so the unmount cleanup can close the window
   // without capturing a stale render's value.
   const popoutWindowRef = useRef<Window | null>(null);
+  // Mirrors the <html> theme class into the pop-out window, so the phone there
+  // follows the app's theme instead of the default palette.
+  const popoutThemeObserverRef = useRef<MutationObserver | null>(null);
 
   const selectedExt = extensions.find((e) => e.id === selectedExtId);
 
@@ -159,6 +163,7 @@ export default function SoftphoneSection({ extensions, phoneNumbers }: Props) {
   useEffect(() => {
     return () => {
       cleanupAll();
+      stopThemeSync();
       // The session dies with this component, so an orphaned popup would be a
       // phone that looks connected and can do nothing.
       try {
@@ -531,6 +536,12 @@ export default function SoftphoneSection({ extensions, phoneNumbers }: Props) {
     }
   }
 
+  /** Stop mirroring the theme into the pop-out window (it is going away). */
+  function stopThemeSync() {
+    popoutThemeObserverRef.current?.disconnect();
+    popoutThemeObserverRef.current = null;
+  }
+
   /**
    * Detach the phone into its own window.
    *
@@ -567,10 +578,26 @@ export default function SoftphoneSection({ extensions, phoneNumbers }: Props) {
     win.document.body.appendChild(root);
     win.document.body.style.margin = "0";
 
+    // The stylesheets are necessary but not sufficient: the theme is a class on
+    // <html> (see ThemeProvider), and every colour token hangs off it. A fresh
+    // window has no class, so the popped-out phone would be painted by the
+    // defaults rather than by the app, and the theme toggle would never reach
+    // it. Copy the class across, then keep it in step while the window is open.
+    const syncTheme = () => {
+      const source = document.documentElement;
+      win.document.documentElement.className = source.className;
+      win.document.documentElement.style.colorScheme = source.classList.contains("light") ? "light" : "dark";
+    };
+    syncTheme();
+    const themeObserver = new MutationObserver(syncTheme);
+    themeObserver.observe(document.documentElement, { attributes: true, attributeFilter: ["class"] });
+    popoutThemeObserverRef.current = themeObserver;
+
     // The window being closed must be treated exactly like "Bring back", or the
     // panel would stay portalled into a document that no longer exists and the
     // phone would vanish from both places.
     win.addEventListener("pagehide", () => {
+      stopThemeSync();
       popoutWindowRef.current = null;
       setPopoutRoot(null);
     });
@@ -585,6 +612,7 @@ export default function SoftphoneSection({ extensions, phoneNumbers }: Props) {
     const win = popoutWindowRef.current;
     popoutWindowRef.current = null;
     setPopoutRoot(null);
+    stopThemeSync();
     try {
       win?.close();
     } catch {
@@ -618,7 +646,7 @@ export default function SoftphoneSection({ extensions, phoneNumbers }: Props) {
     <button
       type="button"
       onClick={() => setExpanded(true)}
-      className="flex w-full items-center justify-center gap-2 border-t border-white/[0.08] bg-ink-900/95 backdrop-blur-xl px-4 py-3 text-sm font-medium text-white/60 transition hover:text-white hover:bg-ink-850/95"
+      className="flex w-full items-center justify-center gap-2 border-t border-[var(--surface-border)] bg-ink-900/95 backdrop-blur-xl px-4 py-3 text-sm font-medium text-[var(--text-secondary)] transition hover:text-[var(--foreground)] hover:bg-ink-850/95"
     >
       <PhoneIcon size={18} className={callState === "in-call" ? "text-mint-400" : callState === "ringing-in" ? "text-sun-400 animate-pulse" : ""} />
       {callState === "idle" && "WebRTC Softphone — Click to open"}
@@ -632,20 +660,20 @@ export default function SoftphoneSection({ extensions, phoneNumbers }: Props) {
   );
 
   const panel = (
-        <div className="border-t border-white/[0.08] bg-ink-900/95 backdrop-blur-xl animate-slide-up">
-          <div className="flex w-full items-center justify-center gap-2 border-b border-white/[0.06] px-4 py-1.5 text-xs text-white/30">
+        <div className="border-t border-[var(--surface-border)] bg-ink-900/95 backdrop-blur-xl animate-slide-up">
+          <div className="flex w-full items-center justify-center gap-2 border-b border-[var(--surface-border)] px-4 py-1.5 text-xs text-[var(--text-muted)]">
             <button
               type="button"
               onClick={() => setExpanded(false)}
-              className="transition hover:text-white/50"
+              className="transition hover:text-[var(--text-secondary)]"
             >
               ▼ Hide softphone
             </button>
-            <span className="text-white/15">·</span>
+            <span className="text-[var(--text-muted)]">·</span>
             <button
               type="button"
               onClick={openPopout}
-              className="transition hover:text-white/50"
+              className="transition hover:text-[var(--text-secondary)]"
               title="Open the softphone in its own window"
             >
               ⧉ Pop out
@@ -658,25 +686,26 @@ export default function SoftphoneSection({ extensions, phoneNumbers }: Props) {
               <div className="shrink-0 space-y-3 sm:w-64">
                 {callState === "disconnected" ? (
                   <>
-                    <h3 className="text-sm font-semibold text-white">Connect Extension</h3>
+                    <h3 className="text-sm font-semibold text-[var(--foreground)]">Connect Extension</h3>
                     {extensions.length === 0 ? (
-                      <p className="text-sm text-white/40">
+                      <p className="text-sm text-[var(--text-secondary)]">
                         No extensions yet. Provision one on the Phone Numbers page first.
                       </p>
                     ) : (
                       <div className="space-y-3">
-                        <select
-                          className="w-full rounded-xl border px-4 py-2.5 text-sm outline-none transition bg-[var(--input-bg)] border-[var(--input-border)] text-[var(--foreground)] focus:border-[var(--input-focus-border)]"
+                        {/* The number is the label and the name the hint, so the
+                            thing being chosen is never the quiet half of the row. */}
+                        <Select
+                          ariaLabel="Extension to connect"
                           value={selectedExtId}
-                          onChange={(e) => setSelectedExtId(e.target.value)}
-                        >
-                          <option value="">Select an extension...</option>
-                          {extensions.map((ext) => (
-                            <option key={ext.id} value={ext.id}>
-                              Ext {ext.extension_id} — {ext.extension_name ?? "Unnamed"}
-                            </option>
-                          ))}
-                        </select>
+                          onChange={setSelectedExtId}
+                          placeholder="Select an extension…"
+                          options={extensions.map((ext) => ({
+                            value: ext.id,
+                            label: `Ext ${ext.extension_id}`,
+                            hint: ext.extension_name ?? "Unnamed",
+                          }))}
+                        />
                         <button
                           type="button"
                           onClick={connectExtension}
@@ -698,16 +727,19 @@ export default function SoftphoneSection({ extensions, phoneNumbers }: Props) {
                             ? "bg-brand-400 pulse-dot"
                             : callState === "ringing-in"
                               ? "bg-sun-400 animate-pulse"
-                              : "bg-white/40"
+                              : "bg-[var(--text-muted)]"
                       }`} />
-                      <span className="text-sm font-medium text-white">
+                      {/* Theme tokens rather than `text-white`: the number is the
+                          one thing on this row the operator must read, so it
+                          cannot depend on the light-mode compatibility override. */}
+                      <span className="text-sm font-medium text-[var(--foreground)]">
                         Ext {selectedExt?.extension_id ?? "?"}
                       </span>
-                      <span className="text-xs text-white/35">
+                      <span className="text-xs text-[var(--text-secondary)]">
                         {selectedExt?.extension_name ?? ""}
                       </span>
                     </div>
-                    <div className="text-xs text-white/30">
+                    <div className="text-xs text-[var(--text-muted)]">
                       {callState === "idle" && "Ready"}
                       {callState === "registering" && "Registering..."}
                       {callState === "ringing-out" && "Calling..."}
@@ -719,7 +751,7 @@ export default function SoftphoneSection({ extensions, phoneNumbers }: Props) {
                     {/* Volume */}
                     {canDial && (
                       <div className="flex items-center gap-2 pt-2">
-                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className="text-white/30">
+                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className="text-[var(--text-muted)]">
                           <polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5" />
                         </svg>
                         <input
@@ -754,14 +786,14 @@ export default function SoftphoneSection({ extensions, phoneNumbers }: Props) {
                       <PhoneIcon size={30} className="text-sun-400" />
                     </div>
                     <div>
-                      <div className="text-lg font-semibold text-white">Incoming Call</div>
-                      <div className="text-sm text-white/45">{incomingCaller}</div>
+                      <div className="text-lg font-semibold text-[var(--foreground)]">Incoming Call</div>
+                      <div className="text-sm text-[var(--text-secondary)]">{incomingCaller}</div>
                     </div>
                     <div className="flex gap-4 mt-2">
-                      <button type="button" onClick={rejectCall} className="flex h-14 w-14 items-center justify-center rounded-full bg-rose-500 text-white transition hover:bg-rose-600" title="Reject">
+                      <button type="button" onClick={rejectCall} className="flex h-14 w-14 items-center justify-center rounded-full bg-rose-500 on-accent transition hover:bg-rose-600" title="Reject">
                         <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
                       </button>
-                      <button type="button" onClick={answerCall} className="flex h-14 w-14 items-center justify-center rounded-full bg-mint-500 text-white transition hover:bg-mint-600" title="Answer">
+                      <button type="button" onClick={answerCall} className="flex h-14 w-14 items-center justify-center rounded-full bg-mint-500 on-accent transition hover:bg-mint-600" title="Answer">
                         <PhoneIcon size={24} />
                       </button>
                     </div>
@@ -779,13 +811,13 @@ export default function SoftphoneSection({ extensions, phoneNumbers }: Props) {
                       } />
                     </div>
                     <div>
-                      <div className="text-lg font-semibold text-white">
+                      <div className="text-lg font-semibold text-[var(--foreground)]">
                         {callState === "held" ? "On Hold" : callState === "ringing-out" ? "Ringing..." : "Connected"}
                       </div>
-                      <div className="text-sm text-white/45">
+                      <div className="text-sm text-[var(--text-secondary)]">
                         {activeRemoteId || "In call"}
                       </div>
-                      <div className="mt-1 font-mono text-2xl font-bold text-white">
+                      <div className="mt-1 font-mono text-2xl font-bold text-[var(--foreground)]">
                         {formatDuration(callDuration)}
                       </div>
                     </div>
@@ -795,7 +827,7 @@ export default function SoftphoneSection({ extensions, phoneNumbers }: Props) {
                       <button
                         type="button"
                         onClick={() => setShowDtmf(!showDtmf)}
-                        className="text-xs text-white/40 transition hover:text-white"
+                        className="text-xs text-[var(--text-secondary)] transition hover:text-[var(--foreground)]"
                       >
                         {showDtmf ? "Hide keypad" : "Show keypad"}
                       </button>
@@ -809,7 +841,7 @@ export default function SoftphoneSection({ extensions, phoneNumbers }: Props) {
                             key={d}
                             type="button"
                             onMouseDown={() => sendDtmf(d)}
-                            className="rounded-lg border border-white/[0.1] bg-white/[0.04] py-2 text-sm font-semibold text-white transition hover:bg-white/[0.1] active:bg-brand-500/30"
+                            className="rounded-lg border border-[var(--input-border)] bg-[var(--input-bg)] py-2 text-sm font-semibold text-[var(--foreground)] transition hover:bg-[var(--btn-ghost-hover-bg)] active:bg-brand-500/30"
                           >
                             {d}
                           </button>
@@ -821,7 +853,7 @@ export default function SoftphoneSection({ extensions, phoneNumbers }: Props) {
                       <button type="button" onClick={toggleMute} className={`flex h-12 w-12 items-center justify-center rounded-full border transition ${
                         muted
                           ? "bg-rose-500/20 border-rose-500/50 text-rose-300"
-                          : "border-white/[0.1] bg-white/[0.04] text-white/60 hover:text-white hover:bg-white/[0.08]"
+                          : "border-[var(--input-border)] bg-[var(--input-bg)] text-[var(--text-secondary)] hover:text-[var(--foreground)] hover:bg-[var(--btn-ghost-hover-bg)]"
                       }`} title="Mute">
                         <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
                           {muted ? (
@@ -834,13 +866,13 @@ export default function SoftphoneSection({ extensions, phoneNumbers }: Props) {
                       <button type="button" onClick={toggleHold} className={`flex h-12 w-12 items-center justify-center rounded-full border transition ${
                         callState === "held"
                           ? "bg-sun-400/20 border-sun-400/50 text-sun-400"
-                          : "border-white/[0.1] bg-white/[0.04] text-white/60 hover:text-white hover:bg-white/[0.08]"
+                          : "border-[var(--input-border)] bg-[var(--input-bg)] text-[var(--text-secondary)] hover:text-[var(--foreground)] hover:bg-[var(--btn-ghost-hover-bg)]"
                       }`} title="Hold">
                         <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
                           <line x1="6" x2="6" y1="4" y2="20"/><line x1="18" x2="18" y1="4" y2="20"/>
                         </svg>
                       </button>
-                      <button type="button" onClick={hangup} className="flex h-14 w-14 items-center justify-center rounded-full bg-rose-500 text-white transition hover:bg-rose-600" title="Hang up">
+                      <button type="button" onClick={hangup} className="flex h-14 w-14 items-center justify-center rounded-full bg-rose-500 on-accent transition hover:bg-rose-600" title="Hang up">
                         <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" transform="rotate(135)">
                           <path d="M22 16.92v3a2 2 0 0 1-2.18 2 19.79 19.79 0 0 1-8.63-3.07 19.5 19.5 0 0 1-6-6A19.79 19.79 0 0 1 2.08 4.18 2 2 0 0 1 4.08 2h3a2 2 0 0 1 2 1.72c.127.96.361 1.903.7 2.81a2 2 0 0 1-.45 2.11L8.09 9.91a16 16 0 0 0 6 6l1.27-1.27a2 2 0 0 1 2.11-.45c.907.339 1.85.573 2.81.7A2 2 0 0 1 22 16.92z"/>
                         </svg>
@@ -853,25 +885,23 @@ export default function SoftphoneSection({ extensions, phoneNumbers }: Props) {
                 {canDial && (
                   <div className="space-y-4">
                     {phoneNumbers.length > 0 && (
-                      <label className="mx-auto block max-w-[280px] space-y-1.5 text-xs text-white/50">
-                        <span>Outgoing line</span>
-                        <select
-                          className="w-full rounded-xl border px-3 py-2 text-sm outline-none transition bg-[var(--input-bg)] border-[var(--input-border)] text-[var(--foreground)] focus:border-[var(--input-focus-border)]"
+                      <div className="mx-auto block max-w-[280px] space-y-1.5 text-xs text-[var(--text-secondary)]">
+                        <span className="block">Outgoing line</span>
+                        <Select
+                          ariaLabel="Outgoing line"
                           value={outboundDid}
-                          onChange={(e) => setOutboundDid(e.target.value)}
-                        >
-                          <option value="">Default line</option>
-                          {phoneNumbers.map((number) => (
-                            <option key={number.id} value={number.did}>
-                              {number.did}
-                            </option>
-                          ))}
-                        </select>
-                      </label>
+                          onChange={setOutboundDid}
+                          placeholder="Default line"
+                          options={[
+                            { value: "", label: "Default line" },
+                            ...phoneNumbers.map((number) => ({ value: number.did, label: number.did })),
+                          ]}
+                        />
+                      </div>
                     )}
-                    <div className="mx-auto max-w-[280px] rounded-2xl border border-white/[0.08] bg-white/[0.03] px-5 py-4 text-center">
-                      <div className="min-h-[32px] font-mono text-2xl font-semibold tracking-wider text-white">
-                        {dialNumber || <span className="text-white/20">Enter number</span>}
+                    <div className="mx-auto max-w-[280px] rounded-2xl border border-[var(--surface-border)] bg-[var(--surface-bg)] px-5 py-4 text-center">
+                      <div className="min-h-[32px] font-mono text-2xl font-semibold tracking-wider text-[var(--foreground)]">
+                        {dialNumber || <span className="text-[var(--text-muted)]">Enter number</span>}
                       </div>
                     </div>
                     <div className="mx-auto grid max-w-[280px] grid-cols-3 gap-2">
@@ -880,7 +910,7 @@ export default function SoftphoneSection({ extensions, phoneNumbers }: Props) {
                           key={key}
                           type="button"
                           onClick={() => appendDigit(key)}
-                          className="flex flex-col items-center justify-center rounded-2xl border border-white/[0.08] bg-white/[0.03] py-3 text-white transition hover:bg-white/[0.06] hover:border-white/[0.15] active:scale-95"
+                          className="flex flex-col items-center justify-center rounded-2xl border border-[var(--surface-border)] bg-[var(--surface-bg)] py-3 text-[var(--foreground)] transition hover:bg-[var(--btn-ghost-hover-bg)] hover:border-[var(--btn-ghost-hover-border)] active:scale-95"
                         >
                           <span className="text-xl font-semibold">{key}</span>
                         </button>
@@ -888,7 +918,7 @@ export default function SoftphoneSection({ extensions, phoneNumbers }: Props) {
                     </div>
                     <div className="mx-auto flex max-w-[280px] gap-3">
                       <button type="button" onClick={clearDial} disabled={!dialNumber} className="btn-ghost flex-1 py-2.5 text-sm">Clear</button>
-                      <button type="button" onClick={makeCall} disabled={!dialNumber.trim()} className="flex h-12 w-12 shrink-0 items-center justify-center rounded-full bg-mint-500 text-white transition hover:bg-mint-600 disabled:opacity-30">
+                      <button type="button" onClick={makeCall} disabled={!dialNumber.trim()} className="flex h-12 w-12 shrink-0 items-center justify-center rounded-full bg-mint-500 on-accent transition hover:bg-mint-600 disabled:opacity-30">
                         <PhoneIcon size={22} />
                       </button>
                       <button type="button" onClick={backspaceDial} disabled={!dialNumber} className="btn-ghost flex-1 py-2.5 text-sm">⌫</button>
@@ -913,14 +943,14 @@ export default function SoftphoneSection({ extensions, phoneNumbers }: Props) {
       {popoutRoot ? (
         /* Popped out: a thin strip stays behind so the call is still visible
            here and can be pulled back. */
-        <div className="flex w-full items-center justify-center gap-3 border-t border-white/[0.08] bg-ink-900/95 px-4 py-2.5 text-sm text-white/60 backdrop-blur-xl">
+        <div className="flex w-full items-center justify-center gap-3 border-t border-[var(--surface-border)] bg-ink-900/95 px-4 py-2.5 text-sm text-[var(--text-secondary)] backdrop-blur-xl">
           <PhoneIcon
             size={16}
             className={callState === "in-call" ? "text-mint-400" : callState === "ringing-in" ? "text-sun-400 animate-pulse" : ""}
           />
           <span>Softphone is in its own window</span>
           {callState === "in-call" && (
-            <span className="font-mono text-white/80">{formatDuration(callDuration)}</span>
+            <span className="font-mono text-[var(--foreground)]">{formatDuration(callDuration)}</span>
           )}
           <button type="button" onClick={closePopout} className="btn-ghost px-3 py-1 text-xs">
             Bring back
