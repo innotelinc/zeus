@@ -46,7 +46,7 @@ interface AccountRow {
  * GET /api/admin/voice-routing
  *
  * The routing plan the PBX renders from: one entry per active DID, carrying
- * the account's AVA agent and whether its Capstone hand-off is live.
+ * the Dograh agent it reaches and whether its Capstone hand-off is live.
  *
  *   curl -s localhost:3000/api/admin/voice-routing > /tmp/accounts.json
  *   python3 pbx/ava_routing.py --accounts-json /tmp/accounts.json --out /tmp/accounts.conf

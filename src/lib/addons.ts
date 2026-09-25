@@ -4,10 +4,10 @@
  * Zeus sells two voice add-ons, both enforced here and, for routing, again at
  * the PBX:
  *
- *   agents    — AVA answers the account's inbound calls at all (the
+ *   agents    — Dograh answers the account's inbound calls at all (the
  *               first-response voice agent).
  *   capstone  — the account's calls may be handed off to Capstone's interview
- *               agent. Requires `agents`: Capstone is reached *from* an AVA
+ *               agent. Requires `agents`: Capstone is reached *from* a Dograh
  *               agent, so it is unreachable without it.
  *
  * ## The policy is Capstone's policy
@@ -67,7 +67,7 @@ export const ADDONS: Record<AddonSku, AddonDefinition> = {
     sku: "agents",
     label: "AI voice agent",
     description:
-      "AVA answers inbound calls, runs IVR and business functions, and transfers to your team.",
+      "Dograh answers inbound calls, runs IVR and business functions, and transfers to your team.",
   },
   capstone: {
     sku: "capstone",
