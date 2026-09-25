@@ -5,6 +5,7 @@ import { api, fmtTime } from "@/lib/client-api";
 import type { SmsConversation, SmsMessage, PhoneNumber, Contact } from "@/lib/types";
 import { useToast } from "@/components/ToastProvider";
 import { SendIcon, PlusIcon, MessageIcon, PhoneIcon, UserIcon, XIcon } from "@/components/icons";
+import { Select } from "@/components/ui";
 
 interface Props {
   conversations: SmsConversation[];
@@ -167,14 +168,11 @@ export default function MessagesSection({ conversations: initialConvs, numbers, 
                   className="rounded-lg p-1.5 text-white/30 hover:text-white/60"><XIcon size={18} /></button>
               </div>
               {numbers.length > 1 && (
-                <label className="block space-y-1.5">
+                <div className="block space-y-1.5">
                   <span className="text-xs font-medium text-white/50">From</span>
-                  <select className="w-full rounded-xl border px-4 py-2.5 text-sm outline-none transition focus:border-brand-500/50"
-                    style={{ background: 'var(--input-bg)', borderColor: 'var(--input-border)', color: 'var(--foreground)' }}
-                    value={toDid} onChange={e => setToDid(e.target.value)}>
-                    {numbers.map(n => <option key={n.id} value={n.id}>{n.did}</option>)}
-                  </select>
-                </label>
+                  <Select ariaLabel="From number" value={toDid} onChange={setToDid}
+                    options={numbers.map(n => ({ value: n.id, label: n.did }))} />
+                </div>
               )}
               <label className="block space-y-1.5">
                 <span className="text-xs font-medium text-white/50">To</span>

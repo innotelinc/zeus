@@ -5,7 +5,7 @@ import { api, fmtDate } from "@/lib/client-api";
 import { useToast } from "@/components/ToastProvider";
 import type { FaxAccount, Fax, PhoneNumber } from "@/lib/types";
 import { FaxIcon, PlusIcon, SendIcon, UploadIcon, FileTextIcon, DownloadIcon, EyeIcon, CheckCircleIcon, AlertCircleIcon, XIcon } from "@/components/icons";
-import { EmptyState, PageHeader } from "@/components/ui";
+import { EmptyState, PageHeader, Select } from "@/components/ui";
 
 interface Props {
   faxAccount: FaxAccount | null;
@@ -187,14 +187,11 @@ export default function FaxSection({ faxAccount, faxes: initialFaxes, numbers }:
           <div className="space-y-4">
             <div className="grid gap-4 sm:grid-cols-2">
               {faxNumbers.length > 1 && (
-                <label className="block space-y-1.5">
+                <div className="block space-y-1.5">
                   <span className="text-xs font-medium text-white/50">From</span>
-                  <select className="w-full rounded-xl border px-4 py-2.5 text-sm outline-none transition focus:border-brand-500/50"
-                    style={{ background: 'var(--input-bg)', borderColor: 'var(--input-border)', color: 'var(--foreground)' }}
-                    value={didId} onChange={e => setDidId(e.target.value)}>
-                    {faxNumbers.map(n => <option key={n.id} value={n.id}>{n.did}</option>)}
-                  </select>
-                </label>
+                  <Select ariaLabel="From fax number" value={didId} onChange={setDidId}
+                    options={faxNumbers.map(n => ({ value: n.id, label: n.did }))} />
+                </div>
               )}
               <label className="block space-y-1.5">
                 <span className="text-xs font-medium text-white/50">To</span>

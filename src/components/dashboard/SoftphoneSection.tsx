@@ -2,7 +2,7 @@
 
 import { useState, useEffect, useRef } from "react";
 import { createPortal } from "react-dom";
-import { UserAgent, Registerer, SessionState } from "sip.js";
+import { Registerer, RegistererState, SessionState, UserAgent } from "sip.js";
 import type { FreePBXExtension, PhoneNumber } from "@/lib/types";
 import { api } from "@/lib/client-api";
 import { PhoneIcon } from "@/components/icons";
@@ -65,6 +65,13 @@ export default function SoftphoneSection({ extensions, phoneNumbers }: Props) {
   // Mirrors the <html> theme class into the pop-out window, so the phone there
   // follows the app's theme instead of the default palette.
   const popoutThemeObserverRef = useRef<MutationObserver | null>(null);
+  // Registration is its own fact, separate from "the panel is open". The PBX
+  // accepting our REGISTER is what makes the extension reachable, and it is the
+  // thing that silently fails.
+  const [registration, setRegistration] = useState<"none" | "registering" | "registered" | "failed">("none");
+  // `Registerer.register()` rejects with a summary; the status code that says
+  // *why* arrives on the out-of-dialog rejection below.
+  const registrationErrorRef = useRef<string>("");
 
   const selectedExt = extensions.find((e) => e.id === selectedExtId);
 
@@ -174,6 +181,16 @@ export default function SoftphoneSection({ extensions, phoneNumbers }: Props) {
     };
   }, []);
 
+  /** "401 Unauthorized" out of a SIP.js response, or "" when it says nothing. */
+  function describeRejection(response: {
+    message?: { statusCode?: number; reasonPhrase?: string };
+  }): string {
+    const code = response?.message?.statusCode;
+    const phrase = response?.message?.reasonPhrase;
+    if (!code && !phrase) return "";
+    return [code, phrase].filter(Boolean).join(" ");
+  }
+
   async function connectExtension() {
     if (!selectedExt) return;
     if (!wssUrl) {
@@ -183,13 +200,26 @@ export default function SoftphoneSection({ extensions, phoneNumbers }: Props) {
       toast.error("No WebSocket address is configured — set one in Settings → Softphone.");
       return;
     }
+    const extNumber = selectedExt.extension_id;
+    const password = selectedExt.extension_secret ?? "";
+    if (!password) {
+      // Registering with an empty secret can only ever produce a 401, and the
+      // 401 looks like a PBX fault. Say what it actually is: this row has no
+      // secret, which is what an extension imported from elsewhere looks like.
+      toast.error(
+        `Extension ${extNumber} has no SIP secret stored, so it cannot register. ` +
+          "Re-provision it from Phone Numbers to write one.",
+      );
+      return;
+    }
+
     setCallState("registering");
+    setRegistration("registering");
+    registrationErrorRef.current = "";
 
     cleanupAll();
 
     try {
-      const extNumber = selectedExt.extension_id;
-      const password = selectedExt.extension_secret ?? "";
       const domain = new URL(wssUrl).hostname;
 
       const userAgent = new UserAgent({
@@ -261,7 +291,32 @@ export default function SoftphoneSection({ extensions, phoneNumbers }: Props) {
       await userAgent.start();
 
       const registerer = new Registerer(userAgent);
-      await registerer.register();
+      registerer.stateChange.addListener((state) => {
+        if (state === RegistererState.Registered) setRegistration("registered");
+        else if (state === RegistererState.Unregistered || state === RegistererState.Terminated) {
+          setRegistration((prev) => (prev === "failed" ? prev : "none"));
+        } else setRegistration("registering");
+      });
+      await registerer.register({
+        // A refused REGISTER arrives here with the status code that explains
+        // it; the promise's own rejection is only a summary.
+        requestDelegate: {
+          onReject: (response) => {
+            registrationErrorRef.current = describeRejection(response);
+          },
+        },
+      });
+
+      // The panel used to call itself connected purely because a REGISTER had
+      // been sent. Until the PBX answers 200 the extension is unreachable: it
+      // shows Offline in FreePBX, inbound calls never ring here, and the
+      // outbound originate (which dials this extension back) fails. So the
+      // state is the registerer's, not the fact that we asked.
+      if (registerer.state !== RegistererState.Registered) {
+        throw new Error(
+          registrationErrorRef.current || "The PBX did not accept the registration",
+        );
+      }
 
       userAgentRef.current = userAgent;
       registererRef.current = registerer;
@@ -269,13 +324,19 @@ export default function SoftphoneSection({ extensions, phoneNumbers }: Props) {
       // Notify PhoneSection to refresh device states immediately
       window.dispatchEvent(new CustomEvent("pbx:extension-state-changed"));
     } catch (e) {
-      toast.error(e instanceof Error ? e.message : "Failed to connect extension");
+      toast.error(
+        `Extension ${extNumber} did not register — ${
+          e instanceof Error ? e.message : "unknown error"
+        }`,
+      );
+      setRegistration("failed");
       setCallState("disconnected");
     }
   }
 
   function disconnect() {
     cleanupAll();
+    setRegistration("none");
     setCallState("disconnected");
     setSelectedExtId("");
     setDialNumber("");
@@ -740,7 +801,10 @@ export default function SoftphoneSection({ extensions, phoneNumbers }: Props) {
                       </span>
                     </div>
                     <div className="text-xs text-[var(--text-muted)]">
-                      {callState === "idle" && "Ready"}
+                      {callState === "idle" &&
+                        (registration === "registered"
+                          ? "Registered with the PBX"
+                          : "Not registered with the PBX — check the extension's secret")}
                       {callState === "registering" && "Registering..."}
                       {callState === "ringing-out" && "Calling..."}
                       {callState === "ringing-in" && "Incoming..."}

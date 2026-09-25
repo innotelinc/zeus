@@ -19,7 +19,14 @@ interface Props {
   className?: string;
   /** Accessible name; the visible label normally lives outside the control. */
   ariaLabel?: string;
+  /** `sm` is for controls inside a table row, where the form padding is too tall. */
+  size?: "sm" | "md";
 }
+
+const TRIGGER_SIZE: Record<NonNullable<Props["size"]>, string> = {
+  sm: "px-2.5 py-1 text-xs",
+  md: "px-4 py-2.5 text-sm",
+};
 
 /** Room a drop-up needs, matched to the list's `max-h-64`. */
 const LIST_ROOM = 280;
@@ -86,6 +93,7 @@ export function Select({
   disabled = false,
   className = "",
   ariaLabel,
+  size = "md",
 }: Props) {
   const [open, setOpen] = useState(false);
   const [active, setActive] = useState(0);
@@ -175,7 +183,7 @@ export function Select({
         aria-activedescendant={open ? `${listId}-${active}` : undefined}
         onClick={() => (open ? setOpen(false) : openList())}
         onKeyDown={onKeyDown}
-        className="flex w-full items-center justify-between gap-2 rounded-xl border border-[var(--input-border)] bg-[var(--input-bg)] px-4 py-2.5 text-left text-sm text-[var(--foreground)] outline-none transition focus:border-[var(--input-focus-border)] disabled:cursor-not-allowed disabled:opacity-50"
+        className={`flex w-full items-center justify-between gap-2 rounded-xl border border-[var(--input-border)] bg-[var(--input-bg)] text-left text-[var(--foreground)] outline-none transition focus:border-[var(--input-focus-border)] disabled:cursor-not-allowed disabled:opacity-50 ${TRIGGER_SIZE[size]}`}
       >
         <span className={`min-w-0 truncate ${selected ? "" : "text-[var(--text-muted)]"}`}>
           {selected ? selected.label : placeholder}
