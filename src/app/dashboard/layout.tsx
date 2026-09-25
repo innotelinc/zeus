@@ -5,6 +5,7 @@ import { brandNameFor } from "@/lib/resellers";
 import { addonStatuses } from "@/lib/addons";
 import db from "@/lib/db";
 import { DashboardShell } from "@/components/dashboard/DashboardShell";
+import { withSoftphoneReadiness } from "@/lib/extension-readiness-server";
 import type { FreePBXExtension, PhoneNumber } from "@/lib/types";
 
 export const metadata: Metadata = { title: "Dashboard — Zeus" };
@@ -23,9 +24,14 @@ export default async function DashboardLayout({
   const headersList = await headers();
   const brand = brandNameFor(headersList.get("host"));
 
-  const extensions = db
-    .prepare("SELECT * FROM freepbx_extensions WHERE user_id = ? ORDER BY created_at DESC")
-    .all(user.id) as FreePBXExtension[];
+  // Readiness travels with the row, because the softphone's picker has to know
+  // which extensions can register at all: offering one that cannot is how the
+  // panel looks broken for a reason that is fixed on another screen.
+  const extensions = withSoftphoneReadiness(
+    db
+      .prepare("SELECT * FROM freepbx_extensions WHERE user_id = ? ORDER BY created_at DESC")
+      .all(user.id) as FreePBXExtension[],
+  );
   const phoneNumbers = db
     .prepare("SELECT * FROM phone_numbers WHERE user_id = ? AND status = 'active' ORDER BY created_at DESC")
     .all(user.id) as PhoneNumber[];

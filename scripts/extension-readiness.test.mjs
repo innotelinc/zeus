@@ -260,3 +260,48 @@ describe("what the client may import", () => {
     assert.match(server, /from "\.\/pjsip-secret"/);
   });
 });
+
+/** A row as the server attaches readiness to it. */
+function row(extensionId, softphone) {
+  return { id: `row-${extensionId}`, extension_id: extensionId, extension_secret: 's', softphone };
+}
+
+const READY = { state: 'ready' };
+const NO_SECRET = { state: 'missing-secret' };
+const NOT_LOADED = { state: 'not-loaded' };
+
+describe('what the softphone may offer', () => {
+  it('offers only extensions that can register', () => {
+    const rows = [row('8000', READY), row('8001', NO_SECRET), row('8002', NOT_LOADED)];
+    assert.deepEqual(
+      readiness.connectable(rows).map((r) => r.extension_id),
+      ['8000'],
+    );
+  });
+
+  it('offers an extension nobody has judged', () => {
+    // Absent readiness means no reader ran, which is not the same as unusable:
+    // dropping it would remove a working phone from the list with no reason.
+    const rows = [row('8000', undefined), row('8001', READY)];
+    assert.deepEqual(
+      readiness.connectable(rows).map((r) => r.extension_id),
+      ['8000', '8001'],
+    );
+    assert.deepEqual(readiness.notConnectable(rows), []);
+  });
+
+  it('names what it withholds, and why', () => {
+    // A list that merely omits an extension reads as "it was never created".
+    const blocked = readiness.notConnectable([row('8000', READY), row('4132643964', NO_SECRET)]);
+    assert.equal(blocked.length, 1);
+    assert.equal(blocked[0].extension.extension_id, '4132643964');
+    assert.equal(blocked[0].reason, 'No SIP secret');
+  });
+
+  it('leaves nothing out between the two halves', () => {
+    const rows = [row('8000', READY), row('8001', NO_SECRET), row('8002', undefined)];
+    const offered = readiness.connectable(rows).map((r) => r.extension_id);
+    const withheld = readiness.notConnectable(rows).map((r) => r.extension.extension_id);
+    assert.deepEqual([...offered, ...withheld].sort(), rows.map((r) => r.extension_id).sort());
+  });
+});
