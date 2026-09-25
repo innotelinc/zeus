@@ -3,88 +3,13 @@
 import { useState, useEffect, useCallback } from "react";
 import { RefreshIcon, CheckCircleIcon, AlertCircleIcon, HeartPulseIcon } from "@/components/icons";
 import { PageHeader } from "@/components/ui";
-
-interface ProbeResult {
-  status: "ok" | "degraded" | "down";
-  latency_ms: number;
-  error?: string;
-  /** A factual readout for a probe whose answer is data, not a state. */
-  detail?: string;
-}
-
-interface HealthResponse {
-  status: "ok" | "degraded" | "down";
-  uptime_seconds: number;
-  timestamp: string;
-  services: {
-    database: ProbeResult;
-    freepbx_api: ProbeResult;
-    asterisk_ami: ProbeResult;
-    stripe: ProbeResult;
-    voipms_api: ProbeResult;
-    avantfax: ProbeResult;
-    dograh_engine: ProbeResult;
-    dograh_agents: ProbeResult;
-    extension_preflight: ProbeResult;
-    dograh_voice: ProbeResult;
-  };
-}
-
-const serviceMeta: Record<
-  keyof HealthResponse["services"],
-  { label: string; desc: string; icon: string }
-> = {
-  database: {
-    label: "Database",
-    desc: "SQLite connection and query health",
-    icon: "🗄️",
-  },
-  freepbx_api: {
-    label: "FreePBX",
-    desc: "PBX web UI connectivity",
-    icon: "📡",
-  },
-  asterisk_ami: {
-    label: "Asterisk AMI",
-    desc: "Manager interface for call control",
-    icon: "🔌",
-  },
-  stripe: {
-    label: "Stripe",
-    desc: "Billing & subscription config",
-    icon: "💳",
-  },
-  voipms_api: {
-    label: "VoIP.ms API",
-    desc: "Number provisioning, SMS and CDRs",
-    icon: "☎️",
-  },
-  avantfax: {
-    label: "AvantFAX",
-    desc: "Fax module web UI",
-    icon: "📠",
-  },
-  dograh_engine: {
-    label: "Voice engine",
-    desc: "Dograh itself — the process that answers and runs the call",
-    icon: "🤖",
-  },
-  dograh_agents: {
-    label: "Voice agents",
-    desc: "The authenticated workflow read behind the Voice screens",
-    icon: "🎛️",
-  },
-  extension_preflight: {
-    label: "Extension provisioning",
-    desc: "FreePBX API, AMI and the Asterisk config mount the create gate reads",
-    icon: "🧾",
-  },
-  dograh_voice: {
-    label: "The voice on the line",
-    desc: "Which STT, TTS and LLM the agents actually run on",
-    icon: "🎚️",
-  },
-};
+import {
+  SERVICE_KEYS,
+  SERVICE_META,
+  statusLabel,
+  statusTextClass,
+  type HealthResponse,
+} from "@/lib/health-services";
 
 function formatUptime(seconds: number): string {
   const d = Math.floor(seconds / 86400);
@@ -175,16 +100,6 @@ export default function HealthPage() {
     };
   }, [fetchHealth]);
 
-  const statusLabel = (s: string) =>
-    s === "ok" ? "Healthy" : s === "degraded" ? "Degraded" : "Unhealthy";
-
-  const statusColor = (s: string) =>
-    s === "ok"
-      ? "text-mint-400"
-      : s === "degraded"
-        ? "text-amber-400"
-        : "text-rose-400";
-
   return (
     <div className="space-y-8">
       <PageHeader
@@ -235,7 +150,7 @@ export default function HealthPage() {
           </div>
           <div className="flex-1">
             <div className="flex items-center gap-3">
-              <h2 className={`text-lg font-semibold ${statusColor(data.status)}`}>
+              <h2 className={`text-lg font-semibold ${statusTextClass(data.status)}`}>
                 System {statusLabel(data.status)}
               </h2>
               <span className="rounded-full border border-white/[0.08] bg-white/[0.04] px-2.5 py-0.5 text-[11px] font-medium text-white/40">
@@ -262,7 +177,7 @@ export default function HealthPage() {
       {/* Loading skeleton */}
       {loading && !data && (
         <div className="grid gap-5 sm:grid-cols-2">
-          {Object.keys(serviceMeta).map((key) => (
+          {SERVICE_KEYS.map((key) => (
             <div
               key={key}
               className="animate-pulse rounded-2xl border border-white/[0.06] bg-white/[0.02] p-6"
@@ -277,10 +192,9 @@ export default function HealthPage() {
       {/* Service cards */}
       {data && (
         <div className="grid gap-5 sm:grid-cols-2">
-          {(Object.keys(serviceMeta) as Array<keyof HealthResponse["services"]>).map(
-            (key) => {
+          {SERVICE_KEYS.map((key) => {
               const svc = data.services[key];
-              const meta = serviceMeta[key];
+              const meta = SERVICE_META[key];
               const isOk = svc.status === "ok";
               const isDown = svc.status === "down";
 

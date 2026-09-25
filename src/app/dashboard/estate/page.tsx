@@ -1,5 +1,6 @@
 import Link from "next/link";
 import { requireDashboardUser } from "@/lib/dashboard-auth";
+import { PageHeader } from "@/components/ui";
 import { addonStatuses } from "@/lib/addons";
 import {
   CONSOLE_PRODUCTS,
@@ -118,14 +119,10 @@ export default async function EstatePage() {
 
   return (
     <div className="space-y-8">
-      <div>
-        <h1 className="text-2xl font-semibold tracking-tight text-white">System Map</h1>
-        <p className="mt-1 max-w-3xl text-sm text-white/45">
-          One console for six products. {owned} of {surfaceCount} screens are built here; the rest
-          are labelled links into the product that owns them, because rewriting FreePBX or AvantFax
-          would cost years and change nothing an operator does.
-        </p>
-      </div>
+      <PageHeader
+        title="System map"
+        description={`One console for six products. ${owned} of ${surfaceCount} screens are built here; the rest are labelled links into the product that owns them, because rewriting FreePBX or AvantFax would cost years and change nothing an operator does.`}
+      />
 
       {/* The products */}
       <section className="rounded-2xl border border-white/[0.06] bg-white/[0.02] p-6">

@@ -77,6 +77,7 @@ const SURFACE_ICONS: Record<string, IconFn> = {
   settings: CogIcon,
   estate: MapIcon,
   health: HeartPulseIcon,
+  operations: GridIcon,
   "pbx-admin": GridIcon,
   "capstone-dashboard": LayoutIcon,
   admin: ShieldIcon,

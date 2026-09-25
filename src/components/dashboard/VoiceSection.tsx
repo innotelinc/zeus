@@ -274,7 +274,13 @@ export default function VoiceSection({
             ) : (
               <ul className="divide-y divide-white/[0.05]">
                 {recorded.map((record) => (
-                  <li key={record.call_id} className="py-2 text-sm">
+                  <li key={record.call_id}>
+                    {/* The row opens the call's detail — the id both products
+                        carry is what the drill-down joins on. */}
+                    <Link
+                      href={`/dashboard/calls/${encodeURIComponent(record.call_id)}`}
+                      className="block rounded-lg py-2 text-sm transition hover:bg-white/[0.03]"
+                    >
                     <div className="flex items-center justify-between gap-3">
                       <span className="text-white/70">
                         {record.did ?? "unknown number"}
@@ -291,6 +297,7 @@ export default function VoiceSection({
                       <span className="font-mono">{record.call_id}</span>
                       <span>started {fmtDate(record.started_at)}</span>
                     </div>
+                    </Link>
                   </li>
                 ))}
               </ul>
