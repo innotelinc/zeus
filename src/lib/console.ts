@@ -200,7 +200,7 @@ export const CONSOLE_SURFACES: ConsoleSurface[] = [
     group: "calls",
     product: "dograh",
     kind: "owned",
-    answers: "Which agent answers which number, and how it is set up",
+    answers: "Which Dograh agent answers which number, and how each one is set up",
     href: "/dashboard/voice",
     addon: "agents",
   },
@@ -210,7 +210,7 @@ export const CONSOLE_SURFACES: ConsoleSurface[] = [
     group: "calls",
     product: "capstone",
     kind: "owned",
-    answers: "Which interview workflow each line reaches",
+    answers: "What the agent handed to Capstone for an interview, and on which number",
     href: "/dashboard/capstone",
     addon: "capstone",
   },
@@ -383,6 +383,51 @@ export function proxiedHost(surface: ConsoleSurface): string | null {
   } catch {
     return url;
   }
+}
+
+/**
+ * A proxied surface, resolved for a screen that wants to launch it.
+ *
+ * The unified console's whole promise is that a module can send an operator
+ * into the product that owns a fact without them having to know which product
+ * that is. This is that hand-off: a label, the product's own name, and the
+ * browser-reachable URL — never a loopback port.
+ */
+export interface ProxiedLauncher {
+  id: string;
+  label: string;
+  product: ConsoleProduct;
+  /** The product's display name, for the "opens X" label. */
+  productName: string;
+  answers: string;
+  href: string;
+}
+
+/**
+ * The proxied surfaces for a set of products, resolved and labelled.
+ *
+ * A surface whose URL cannot be resolved (no env, no default) is dropped
+ * rather than rendered as a dead link — an operator cannot open what the
+ * portal cannot address.
+ */
+export function proxiedLaunchers(products: ConsoleProduct[]): ProxiedLauncher[] {
+  const names = new Map(CONSOLE_PRODUCTS.map((p) => [p.id, p.name]));
+  return CONSOLE_SURFACES.filter(
+    (surface) => surface.kind === "proxied" && products.includes(surface.product),
+  )
+    .map((surface) => {
+      const href = proxiedUrl(surface);
+      if (!href) return null;
+      return {
+        id: surface.id,
+        label: surface.label,
+        product: surface.product,
+        productName: names.get(surface.product) ?? surface.product,
+        answers: surface.answers,
+        href,
+      };
+    })
+    .filter((launcher): launcher is ProxiedLauncher => launcher !== null);
 }
 
 /** Surfaces visible to this viewer, in rail order, grouped. */

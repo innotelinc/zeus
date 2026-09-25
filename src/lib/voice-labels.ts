@@ -42,3 +42,33 @@ export function describeOutcome(outcome: string | null): string {
       return outcome.replace(/_/g, " ");
   }
 }
+
+/**
+ * Where a call moved to, in the operator's words.
+ *
+ * The stored token is dialplan vocabulary and is deliberately not renamed —
+ * `[zeus-ai-return]` still records the leg as `ava`, because that is the
+ * string the dialplan renders and the `voice_calls` rows already carry. What
+ * changes on a screen is the *name*: the return leg is Dograh handing the
+ * caller back, and that is what an operator should read.
+ */
+export function describeHandoffTarget(target: string): string {
+  switch (target) {
+    case "capstone":
+      return "Capstone interview";
+    case "operator":
+      return "an operator";
+    case "ava":
+      return "Dograh";
+    case "voicemail":
+      return "voicemail";
+    default:
+      return target.replace(/_/g, " ");
+  }
+}
+
+/** The path a call took, in the operator's words: `agent → Capstone interview`. */
+export function describePath(handoffs: Array<{ to: string }>): string {
+  if (handoffs.length === 0) return "no hand-off";
+  return ["agent", ...handoffs.map((hop) => describeHandoffTarget(hop.to))].join(" → ");
+}

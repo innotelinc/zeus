@@ -42,10 +42,11 @@ let groups;
 let proxiedUrl;
 let proxiedHost;
 let groupedSurfaces;
+let proxiedLaunchers;
 
 before(async () => {
   const dir = transpile(["src/lib/console.ts"]);
-  ({ CONSOLE_SURFACES: surfaces, CONSOLE_PRODUCTS: products, CONSOLE_GROUPS: groups, proxiedUrl, proxiedHost, groupedSurfaces } =
+  ({ CONSOLE_SURFACES: surfaces, CONSOLE_PRODUCTS: products, CONSOLE_GROUPS: groups, proxiedUrl, proxiedHost, groupedSurfaces, proxiedLaunchers } =
     await load(dir, "console"));
 });
 
@@ -137,6 +138,29 @@ describe("proxied surfaces", () => {
     // and a double slash is a 404 on some of these appliances.
     const surface = proxied().find((entry) => entry.id === "pbx-admin");
     assert.equal(proxiedUrl(surface), "https://pbx.example.test/admin");
+  });
+});
+
+describe("the launchers", () => {
+  // The Voice console hands an operator into the products that own a fact. A
+  // launcher is built at call time from the same registry the rail uses, so
+  // these assertions are the contract the module relies on.
+  it("returns only the requested products, each resolved and labelled", () => {
+    const launchers = proxiedLaunchers(["dograh", "freepbx"]);
+    assert.ok(launchers.length > 0, "no launchers for dograh/freepbx");
+    for (const launcher of launchers) {
+      assert.ok(["dograh", "freepbx"].includes(launcher.product), `${launcher.id} leaked ${launcher.product}`);
+      assert.ok(launcher.href, `${launcher.id} has no href`);
+      assert.ok(launcher.productName && launcher.productName !== launcher.product, `${launcher.id} has no product name`);
+      assert.ok(launcher.answers && launcher.answers.trim().length > 10, `${launcher.id} has no meaningful answers line`);
+    }
+  });
+
+  it("never hands out a loopback address", () => {
+    for (const launcher of proxiedLaunchers(["dograh", "capstone", "freepbx", "avantfax"])) {
+      const host = new URL(launcher.href).hostname;
+      assert.ok(host !== "127.0.0.1" && host !== "localhost", `${launcher.id} points at loopback`);
+    }
   });
 });
 

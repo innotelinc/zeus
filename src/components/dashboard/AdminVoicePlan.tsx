@@ -102,7 +102,7 @@ export default function AdminVoicePlan({ compact = false }: Props) {
                 <thead>
                   <tr className="border-b border-white/[0.06] bg-white/[0.02] text-xs text-white/35">
                     <th className="px-3 py-3 font-medium">DID</th>
-                    <th className="px-3 py-3 font-medium">AVA agent</th>
+                    <th className="px-3 py-3 font-medium">Dograh agent</th>
                     <th className="px-3 py-3 font-medium">Interview target</th>
                     <th className="px-3 py-3 font-medium">Routing</th>
                   </tr>

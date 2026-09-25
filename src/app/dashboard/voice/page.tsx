@@ -9,6 +9,7 @@ import {
   listWorkflows,
   type DograhRun,
 } from "@/lib/dograh";
+import { proxiedLaunchers } from "@/lib/console";
 import AddonGate from "@/components/dashboard/AddonGate";
 import VoiceSection, { type AgentRow } from "@/components/dashboard/VoiceSection";
 
@@ -67,6 +68,11 @@ export default async function VoicePage() {
   const lines = accountLines(user.id);
   const capstone = await addonStatus("capstone", { user: user.email });
 
+  // The products this screen hands off to, resolved server-side so the client
+  // never reads the environment and a link the portal cannot address is never
+  // rendered (see `proxiedLaunchers`).
+  const launchers = proxiedLaunchers(["dograh", "capstone", "freepbx", "avantfax"]);
+
   if (workflows.state !== "ok") {
     // A reachable-but-unreadable engine is its own state, and it is not
     // "no agents": an operator has to be able to tell quiet from broken.
@@ -79,6 +85,7 @@ export default async function VoicePage() {
         lines={lines}
         runs={[]}
         capstone={{ state: capstone.state, reason: capstone.reason }}
+        launchers={launchers}
       />
     );
   }
@@ -129,6 +136,7 @@ export default async function VoicePage() {
       lines={lines}
       runs={runs}
       capstone={{ state: capstone.state, reason: capstone.reason }}
+      launchers={launchers}
     />
   );
 }
