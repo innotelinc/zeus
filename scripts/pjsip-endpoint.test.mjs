@@ -2,7 +2,7 @@
  * The portal's WebRTC settings: what it writes, and what it leaves alone.
  *
  * `src/lib/pjsip-endpoint.ts` owns the endpoint decision
- * (`docs/ava-capstone-convergence.md` §11.5): **FreePBX owns the endpoint and
+ * (`docs/voice-convergence.md` §11.5): **FreePBX owns the endpoint and
  * the portal extends it**, by appending `[<ext>](+)` — Asterisk's
  * append-to-existing-section syntax — to `pjsip.endpoint_custom_post.conf`. The
  * rejected alternative was a portal-owned second endpoint under an id FreePBX

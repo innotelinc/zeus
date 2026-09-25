@@ -13,10 +13,16 @@
 #             • ARI HTTP port open (ARI_HTTP_PORT, default 8088)
 #             • PBX fragments in sync (pbx/bootstrap-zeus-pbx.sh --check)
 #             • RTP plane: published block == Asterisk effective range
-#             • One ingress (P1): [zeus-ai-router] and [zeus-ai-accounts] are in
-#               the live dialplan, and — where this host holds the portal
-#               database — every platform DID's inbound route reaches the
-#               router (pbx/ava_routes.py --check)
+#             • Voicemail: `*97` resolves in the live dialplan, and every DSN
+#               the res_odbc classes name is defined in /etc/odbc.ini (a class
+#               whose DSN is missing answers every retrieve with "Data source
+#               name not found" — the PBX looks healthy and the phone goes
+#               quiet)
+#             • One ingress: [dograh-inbound] is in the live dialplan, so a DID
+#               whose inbound route names a Dograh workflow reaches a loaded
+#               context — and every DID the portal sells actually names one
+#               (pbx/dograh_routes.py; a route off the workflow still answers a
+#               call, just as the wrong thing)
 #   Fax       • AvantFax reachable (AVANTFAX_URL) and its MariaDB has strict
 #               mode off (AvantFAX writes '' into DATE/TIMESTAMP columns, which
 #               strict mode rejects with error 1292 → HTTP 500 after login)
@@ -29,11 +35,11 @@
 # Optional sections are skipped (with a note) when their env vars are unset,
 # so the smoke runs in a bare dev checkout too.
 #
-#   Voice     • the D7 assertions (pbx/d7_assert.py): both agents registered
+#   Voice     • the D7 assertions (pbx/d7_assert.py): the agent registered
 #               with the PBX, the CDR backend wired — and, with D7_CALL=1, a
-#               test call that proves it writes — and the gateway offering both
-#               pinned models (the call path's AVA_LLM_MODEL and, when set, the
-#               summary path's VOICEMAIL_SUMMARY_MODEL)
+#               test call that proves it writes — and the gateway offering the
+#               model pins this repo still holds (the voicemail summary path's
+#               VOICEMAIL_SUMMARY_MODEL; the call path's belongs to Dograh)
 #
 # Usage (run from the repo root):
 #   ./scripts/smoke-test.sh            # everything
@@ -43,7 +49,8 @@
 #   ./scripts/smoke-test.sh sms        # SMS trunk + inbound webhook
 #
 # Env: D7_CALL=1 places the CDR test call (a Local channel at 12@default — no
-#      trunk, no phone, no agent). D7_PBX names the FreePBX container.
+#      trunk, no phone, no agent). D7_PBX names the FreePBX container, and
+#      PORTAL_DB the portal's database the DID list is read from.
 #
 # Exit code: 0 = all checks passed, 1 = one or more failures.
 # ═══════════════════════════════════════════════════════════════════
@@ -149,9 +156,9 @@ if [ "$SCOPE" = all ] || [ "$SCOPE" = pbx ]; then
   fi
 
   if [ -f scripts/pbx.env ] || [ -n "${FREEPBX_AMI_SECRET:-}" ]; then
-    # `--check` covers the fragments *and* the DID routes, so a bare "out of
-    # sync" here would send the operator to the fragments for a row that needs
-    # the GUI. The run's own drift lines are what name which it was.
+    # `--check` covers the fragments. The DID routes are a separate judgement
+    # below, because a route row lives in FreePBX's database rather than in a
+    # fragment this apply writes.
     if drift_out="$(pbx/bootstrap-zeus-pbx.sh --check 2>&1)"; then
       pass "PBX fragments and DID routes in sync"
     else
@@ -204,60 +211,141 @@ if [ "$SCOPE" = all ] || [ "$SCOPE" = pbx ]; then
       fail "Asterisk effective RTP range is ${eff_start:-unknown}-${eff_end:-unknown}; expected within ${rtp_start}-${rtp_end} (settings DB drifted?)"
     fi
 
-    # ── One ingress (P1) ─────────────────────────────────────────
-    # Every platform DID is meant to reach [zeus-ai-router], which dispatches
-    # per DID into [zeus-ai-accounts]. A PBX with the fragments *written* and
-    # not *loaded* (an apply with no reload) answers "unknown extension"
-    # instead of reaching an agent — the same caller-visible failure as the
-    # routes being wrong, from a different cause, and neither is visible in
-    # the files the last section just compared.
+    # ── One ingress ──────────────────────────────────────────────
+    # Every platform DID is answered by Dograh, and the call enters
+    # [dograh-inbound] directly: the DID's own FreePBX inbound route names the
+    # workflow (`dograh-inbound,80NN`). A PBX with the route *written* and not
+    # *loaded* (an apply with no reload) answers "unknown extension" instead of
+    # reaching an agent — the same caller-visible failure as the routes being
+    # wrong, from a different cause, and neither is visible in the files the
+    # last section just compared.
     # Captured first, then matched — never `docker exec … | grep -q`. `grep -q`
     # exits on the first match and closes the pipe, the writer still has output
     # buffered, and the SIGPIPE it gets back becomes the pipeline's status under
     # `set -o pipefail`: a *matched* check reported as a failure. Measured here:
-    # the three-priority router context always won that race and the thirteen-
-    # extension accounts context usually lost it, so the same check passed by
-    # hand, passed under `bash -x`, and failed in the run.
-    router_dp="$(docker exec "$FBX" asterisk -rx 'dialplan show zeus-ai-router' 2>/dev/null || true)"
-    accounts_dp="$(docker exec "$FBX" asterisk -rx 'dialplan show zeus-ai-accounts' 2>/dev/null || true)"
-    if grep -q 'zeus-ai-accounts' <<<"$router_dp"; then
-      pass "the AVA router is loaded and dispatches into zeus-ai-accounts"
+    # a many-extension context usually lost that race, so the same check passed
+    # by hand, passed under `bash -x`, and failed in the run.
+    dograh_dp="$(docker exec "$FBX" asterisk -rx 'dialplan show dograh-inbound' 2>/dev/null || true)"
+    if grep -q 'dograh-inbound' <<<"$dograh_dp"; then
+      pass "the Dograh inbound context is loaded"
     else
-      fail "the AVA router is not in the live dialplan (apply the fragments, then reload)"
+      fail "dograh-inbound is not in the live dialplan (apply the fragments, then reload)"
     fi
     # `dialplan show` prints an extension as `  '<exten>' =>  1. <app>(…)`, not
     # as an `exten => ` line (that is the .conf syntax). Grepping for the conf
-    # syntax reported a loaded context as missing — and it is the context with a
-    # per-DID entry in it that matters, so that is what this asserts.
-    if grep -qE "^  '[0-9]+" <<<"$accounts_dp"; then
-      pass "the per-DID accounts context is loaded"
+    # syntax reported a loaded context as missing — and it is the per-workflow
+    # entries in it that matter, so that is what this asserts.
+    if grep -qE "^  '[0-9]+" <<<"$dograh_dp"; then
+      pass "the per-workflow entries are loaded"
     else
-      fail "zeus-ai-accounts has no per-DID entry in the live dialplan"
+      fail "dograh-inbound has no per-workflow entry in the live dialplan"
     fi
-    # The route *rows* are a judgement about which DIDs reach the router, and
-    # that needs the plan — the portal's own answer, or the cached database
-    # this host holds. Where neither is readable the run says what it did not
-    # judge rather than implying the ingress is fine.
-    ingress_db="$(docker volume inspect zeus-portal-data --format '{{.Mountpoint}}' 2>/dev/null || true)"
-    if [ -n "$ingress_db" ] && [ -f "$ingress_db/pbx.db" ] && [ -f pbx/ava_routes.py ]; then
-      routes_rc=0
-      python3 pbx/ava_routes.py --db "$ingress_db/pbx.db" --check >/dev/null 2>&1 || routes_rc=$?
-      case "$routes_rc" in
-        0) pass "every platform DID's inbound route reaches the AVA router" ;;
-        # 3 is "nothing this tool may write": the plan names a DID FreePBX has no
-        # route for, which is a row a person adds. Reporting it as routes being
-        # *off* the router would name the wrong repair — those DIDs are not
-        # pointed elsewhere, they are unwired, and only the GUI can fix it.
-        3) fail "a platform DID the plan names has no inbound route in FreePBX — add it by hand (python3 pbx/ava_routes.py --db <portal.db> --check names it)" ;;
-        # 1 also covers a route table that is in sync while the router is not
-        # registered as a Custom Destination — FreePBX's "bad destination"
-        # state, which is the same caller-invisible ingress failure: the run
-        # above names which of the two it found, so this points at it rather
-        # than guessing.
-        *) fail "DID ingress is out of sync — routes off zeus-ai-router,s,1, or the Custom Destination is not registered (python3 pbx/ava_routes.py --db <portal.db> --check)" ;;
-      esac
+
+    # A loaded context is not a routed DID. `dialplan show` says nothing about
+    # which DIDs point into it: a route naming another context still answers a
+    # call, just as the wrong thing, and one with no row at all is answered by
+    # the catch-all — both look like a working phone from the inside, which is
+    # how every DID came to be unwired while both products believed otherwise.
+    # The portal's own database is the list of DIDs this platform sells, so the
+    # judgement needs both halves. The tool never writes: which workflow a DID
+    # should reach is a portal decision, and the row is FreePBX's.
+    DID_DB="${PORTAL_DB:-/var/lib/docker/volumes/zeus-portal-data/_data/pbx.db}"
+    if [ ! -f pbx/dograh_routes.py ]; then
+      skip "DID ingress (pbx/dograh_routes.py not present)"
+    elif [ ! -f "$DID_DB" ]; then
+      skip "DID ingress (portal database not found at $DID_DB)"
     else
-      skip "DID inbound routes (no portal database readable here — run pbx/ava_routes.py --check with a plan)"
+      did_out="$(python3 pbx/dograh_routes.py --db "$DID_DB" --check 2>&1)"
+      did_rc=$?
+      printf '%s\n' "$did_out" | sed 's/^/       /'
+      case "$did_rc" in
+        0) pass "every DID the portal sells reaches a dograh-inbound workflow" ;;
+        2) fail "DID ingress could not be judged — the portal's DID list or the PBX was unreadable (see above); this is not a pass" ;;
+        *) fail "a platform DID does not reach a Dograh workflow (see above) — repoint it in FreePBX's Inbound Routes; the sync timer reports the same rows" ;;
+      esac
+    fi
+
+    # ── Voicemail — the `*97` feature code ──────────────────────
+    # `*97` is FreePBX's My Voicemail, and no file in this repo defines it: the
+    # feature code comes from the module-generated dialplan and the mailbox from
+    # app_voicemail's storage. So "*97 does not work" cannot be answered from
+    # the fragments the section above compares — it has to be asked of the
+    # switch — and its two halves fail identically at the phone (nothing
+    # happens), which is why they are checked one at a time.
+    # `dialplan show` reads a bare argument as a CONTEXT name, so
+    # `dialplan show *97` answers "There is no existence of '*97' context" on
+    # every PBX there is — a string that contains `'*97'`, which the obvious
+    # grep matched. The check passed on its own error message and could never
+    # fail. The question that has an answer is the one a phone asks: the
+    # feature code in the context it dials from.
+    vm_dp="$(docker exec "$FBX" asterisk -rx 'dialplan show *97@from-internal' 2>/dev/null || true)"
+    if [ -z "$vm_dp" ]; then
+      fail "the live dialplan could not be read on $FBX (asterisk -rx 'dialplan show *97@from-internal' answered nothing)"
+    elif grep -qF "no existence of" <<<"$vm_dp"; then
+      fail "*97 is not in [from-internal] — FreePBX's Voicemail / Feature Codes modules are not providing it, so a phone dialling it gets nothing"
+    elif grep -qF "'*97'" <<<"$vm_dp"; then
+      pass "*97 (My Voicemail) resolves in the dialplan a phone dials from"
+    else
+      fail "*97 is not in [from-internal] — FreePBX's Voicemail / Feature Codes modules are not providing it"
+    fi
+    # Reaching the feature code is not reaching the box. `macro-user-callerid`
+    # re-derives the extension from AstDB's DEVICE/<callerid>/user and reads
+    # AMPUSER/<ext>/cidname; with either absent it blanks AMPUSER, so
+    # macro-get-vmcontext is called with no argument, resolves no context, and
+    # the call ends on the priority after that lookup — one second, ANSWERED,
+    # nothing at the phone. Every extension this portal's create path made was
+    # in exactly that state, and the dialplan check above cannot see it. Asked
+    # of the extensions that have a mailbox, because those are the ones a
+    # caller is told to reach with *97.
+    vm_boxes="$(docker exec "$FBX" mysql -uroot asterisk -N -B -e \
+      "select extension from users where voicemail not in ('novm','disabled','')" 2>/dev/null || true)"
+    vm_amp="$(docker exec "$FBX" asterisk -rx 'database show AMPUSER' 2>/dev/null || true)"
+    vm_dev="$(docker exec "$FBX" asterisk -rx 'database show DEVICE' 2>/dev/null || true)"
+    if [ -z "$vm_amp" ] || [ -z "$vm_dev" ]; then
+      fail "AstDB could not be read on $FBX — cannot tell whether *97 resolves the caller to an extension"
+    elif [ -z "$vm_boxes" ]; then
+      skip "*97 caller resolution (no extension on $FBX has a mailbox)"
+    else
+      vm_unwired=""
+      while IFS= read -r vm_ext; do
+        [ -n "$vm_ext" ] || continue
+        grep -qF "/DEVICE/$vm_ext/user" <<<"$vm_dev" \
+          || vm_unwired="$vm_unwired $vm_ext (no DEVICE/$vm_ext/user)"
+        grep -qE "/AMPUSER/$vm_ext/cidname *: *[^[:space:]]" <<<"$vm_amp" \
+          || vm_unwired="$vm_unwired $vm_ext (no AMPUSER/$vm_ext/cidname)"
+      done <<<"$vm_boxes"
+      if [ -z "$vm_unwired" ]; then
+        pass "every extension with a mailbox resolves from its caller id (*97 can reach its box)"
+      else
+        fail "*97 hangs up before the mailbox for:$vm_unwired — macro-user-callerid blanks AMPUSER and macro-get-vmcontext is called with nothing (pbx/voicemail_mailbox.py applies this)"
+      fi
+    fi
+    # The other half is where the messages are stored. res_odbc_custom.conf
+    # registers [asteriskvoicemail] against a DSN, and a res_odbc class whose
+    # DSN /etc/odbc.ini does not define fails every retrieve with "Data source
+    # name not found and no default driver specified": voicemail that records
+    # nothing and plays nothing while the PBX is otherwise healthy. The DSN is
+    # read out of the class that names it rather than restated here, because
+    # that file is what owns the name — and this is the check that would have
+    # said so before a caller did.
+    vm_res="$(docker exec "$FBX" cat /etc/asterisk/res_odbc_custom.conf 2>/dev/null || true)"
+    vm_ini="$(docker exec "$FBX" cat /etc/odbc.ini 2>/dev/null || true)"
+    vm_dsns="$(sed -nE 's/^[[:space:]]*dsn[[:space:]]*=>?[[:space:]]*(.*[^[:space:]])[[:space:]]*$/\1/p' <<<"$vm_res")"
+    if [ -z "$vm_ini" ]; then
+      fail "/etc/odbc.ini could not be read on $FBX — cannot tell which DSNs are defined"
+    elif [ -z "$vm_dsns" ]; then
+      skip "voicemail storage DSN (no res_odbc class on $FBX)"
+    else
+      vm_undefined=""
+      while IFS= read -r vm_dsn; do
+        [ -n "$vm_dsn" ] || continue
+        grep -qF "[$vm_dsn]" <<<"$vm_ini" || vm_undefined="$vm_undefined $vm_dsn"
+      done <<<"$vm_dsns"
+      if [ -z "$vm_undefined" ]; then
+        pass "every res_odbc DSN is defined in /etc/odbc.ini ($(tr '\n' ' ' <<<"$vm_dsns"))"
+      else
+        fail "res_odbc names a DSN /etc/odbc.ini does not define:$vm_undefined — voicemail fails with 'Data source name not found' (the boot entrypoint adds it; see docker-entrypoint-full.sh)"
+      fi
     fi
   else
     skip "PBX RTP plane (container $FBX not running)"

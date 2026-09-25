@@ -132,7 +132,7 @@ function handleNewchannel(event: AmiEvent): void {
 
 /**
  * The envelope variables the dialplan stamps, and the `voice_calls` column each
- * one fills (see `pbx/ava_routing.py`).
+ * one fills.
  *
  * Keyed on the variable name because AMI reports every `Set()` as its own
  * `VarSet` event: one call arrives here several times, in dialplan order, and
@@ -249,7 +249,7 @@ function handleCdr(event: AmiEvent): void {
   // One span per CDR write, carrying the Asterisk uniqueid as the call id —
   // the same id the dialplan stamps as AI_CALL_ID and Capstone fetches
   // context with. That is what turns "the CDR was missing for nine days"
-  // (docs/ava-capstone-convergence.md §2.7) from a discovery into a symptom:
+  // (docs/voice-convergence.md §2.7) from a discovery into a symptom:
   // the trace shows the event arriving and the row it did or did not update.
   // A no-op span when tracing is off, so the hot path is unchanged.
   const span = startSpan("ami.cdr", {

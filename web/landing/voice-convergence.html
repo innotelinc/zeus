@@ -6,7 +6,7 @@
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Geist:wght@450;500;600;700&display=swap" rel="stylesheet">
-  <title>AVA ↔ Capstone ↔ FreePBX convergence — design — Zeus</title>
+  <title>Zeus ↔ Dograh ↔ Capstone voice convergence — design — Zeus</title>
   <meta name="description" content="Three systems answer, grade, and switch calls. Each works; the seams between them are where every incident has come from.">
   <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='14' fill='%23fbbf24'/%3E%3Cpath fill='%230b0d10' d='M37.6 8 13.5 37.4h13.1l-1.8 18.6L50.5 25.8H36.9z'/%3E%3C/svg%3E">
   <style>
@@ -117,7 +117,7 @@
   <div class="docnav">
     <a class="brand" href="./">Zeus</a>
     <span class="sep">·</span>
-    <a href="https://github.com/innotelinc/zeus/blob/master/docs/ava-capstone-convergence.md">Edit this doc</a>
+    <a href="https://github.com/innotelinc/zeus/blob/master/docs/voice-convergence.md">Edit this doc</a>
     <span class="sep">·</span>
     <a href="https://github.com/innotelinc/zeus/tree/master/docs">All docs</a>
   </div>
@@ -160,16 +160,18 @@
 </li>
 <li><a href="#9-verification">9. Verification</a></li>
 <li><a href="#10-risks-and-non-goals">10. Risks and non-goals</a></li>
-<li><a href="#11-open-decisions">11. Open decisions</a></li>
+<li><a href="#11-decisions">11. Decisions</a></li>
 </ul>
 </div>
   </div>
 
-  <h1 id="ava-capstone-freepbx-convergence-design">AVA ↔ Capstone ↔ FreePBX convergence — design</h1>
-  <p><strong>Status:</strong> proposed. Nothing here is implemented on <code>192.168.1.30</code> unless a row
-  says so. This is the document to argue with <em>before</em> code changes; the
-  as-built description of the current AVA integration stays in
-  <a href="ava-integration.md"><code>ava-integration.md</code></a>.</p>
+  <h1 id="zeus-dograh-capstone-voice-convergence-design">Zeus ↔ Dograh ↔ Capstone voice convergence — design</h1>
+  <p><strong>Status:</strong> historical design record. The AVA engine this document was written
+  around has been retired: every call now enters <code>[dograh-inbound]</code> directly, and
+  the <code>[zeus-ai-*]</code> contexts, the <code>voice</code> compose profile and the AVA ARI user are
+  gone (see <a href="unified-console.md"><code>unified-console.md</code></a> §5). The decisions and the
+  reasoning below are kept because live code still cites them by section — read
+  every AVA reference as "the engine that held this role before Dograh".</p>
   <p><strong>The one-sentence goal:</strong> one voice plane where a call is answered once, knows
   who it is and what it may buy, can move between an IVR agent and a structured
   interview agent without restarting, and leaves one record — with FreePBX as the
@@ -276,8 +278,8 @@
   </tbody>
   </table>
   <p>The formats agree, which is why transfers work at all — but by luck, not
-  contract. <code>pbx/ava_ari_check.py</code> exists precisely because a secret mismatch
-  between engine and <code>ari.conf</code> is invisible until a call fails; and today a
+  contract. <code>pbx/ava_ari_check.py</code> existed precisely because a secret mismatch
+  between engine and <code>ari.conf</code> was invisible until a call failed; and today a
   duplicate <code>[zeus-ava]</code> section in <code>ari.conf</code> made Asterisk reject the <strong>entire
   file</strong>, so <em>no</em> ARI user loaded and no Stasis app could register. Nothing in
   the architecture prevents a third variant of that.</p>
@@ -388,9 +390,12 @@
   <hr />
   <h2 id="4-design-decisions">4. Design decisions</h2>
   <h3 id="d1-every-did-enters-through-one-router-context">D1 — Every DID enters through one router context</h3>
-  <p>Keep the existing <code>zeus-ai-router</code> design (<code>ava-integration.md</code> §2) and finish
-  it: FreePBX inbound routes point at a <strong>Custom Destination</strong>
-  <code>zeus-ai-router,s,1</code>, one route per DID.</p>
+  <p>Route every DID through one named destination rather than per-route variables,
+  so the decision has one owner and is unit-testable without a PBX. As built, that
+  one destination is the Dograh workflow the DID is bound to
+  (<code>dograh-inbound,80NN</code>, named directly by the FreePBX <code>incoming</code> row); the
+  <code>zeus-ai-router,s,1</code> Custom Destination this originally described has been
+  removed with the engine.</p>
   <p><em>Why not per-route FreePBX variables:</em> the decision (agent, add-on) then has one
   owner, survives <em>Apply Config</em>, and is unit-testable without a PBX
   (<code>pbx/tests/test_ava_routing.py</code> already does this).</p>
@@ -1003,11 +1008,32 @@
   a value that could close <code>DIALPLAN_EXISTS(...)</code> can never reach the table and
   stop the plan from converging. Clearing deletes the row instead of storing an
   empty string, so "no row" and "no target" stay one thing.</p>
-  <p><strong>Still live and unmet in this phase:</strong> <code>voice_bindings</code> rows on <code>.30</code> (the
-  product can now write them; the box still has none, so every hand-off refuses),
-  <code>VOICE_CONTEXT_SECRET</code> handed to Capstone and to AVA (without it the context read
-  refuses every request), pointing Capstone at <code>[zeus-ai-return]</code>, and the §2.1
-  reconciliation of <code>7745057135</code> / <code>8005</code> / <em>Job Interview</em> on the box.</p>
+  <p><strong>Deployed on <code>.30</code> (2026-09-24), with the remaining gate named rather than
+  hidden:</strong> the Zeus portal image now contains migrations 009–011, the
+  authenticated context route, and the account-scoped voice UI; the live
+  <code>[zeus-ai-interview]</code> and <code>[zeus-ai-return]</code> contexts are loaded; AVA's admin
+  credential is out of first-run state; and <code>VOICE_CONTEXT_SECRET</code> is configured
+  on the portal. Dograh's patched API image is deployed with
+  <code>ZEUS_RETURN_ENABLED=true</code>, so a token-bearing interview channel can write
+  <code>ZEUS_RETURN_OUTCOME=interview_complete</code> and redirect to the live return
+  context. Auth probes now distinguish the states correctly: no/wrong credential
+  is 401, an unknown call is 404, and the AVA admin source is reachable.</p>
+  <p><strong>Pilot configured on <code>.30</code> (2026-09-24), call acceptance still open:</strong> the
+  portal now has one explicit binding, <code>4132643964 → 8000</code> (the active IT Help
+  Desk Mock Interview), written through <code>PUT /api/voice/agent-mapping</code>. The live
+  PBX reports all seven platform DIDs on <code>zeus-ai-router,s,1</code>; the generated
+  account block carries the binding only for <code>4132643964</code>, while the other DIDs
+  remain fail-closed with an empty target. The periodic sync timer is stopped
+  during this controlled pilot so it cannot widen the change.</p>
+  <p>The controlled return call is <strong>not claimed as passed</strong>. A local-media
+  origination was attempted against the live AVA/Dograh path, but Asterisk's
+  Local channel rejected the generated <code>zeus-ai-accounts</code> context as “No such
+  extension/context” before AVA answered; no customer call was placed and no
+  return transcript is being claimed. The next acceptance step is one controlled
+  external call to <code>4132643964</code>, asking for the interview workflow, then verify
+  the same <code>call_id</code> in <code>voice_calls</code>, <code>return_outcome</code>, and the AVA/Dograh
+  transcripts. Until that happens the deployed return is capability-verified, not
+  customer-call-verified.</p>
   <p><strong>Exit:</strong> each interview DID reaches the <em>correct</em> workflow; an unknown target
   refuses to the operator; a concluded interview returns to AVA or a human with
   its context intact.</p>
@@ -1089,9 +1115,9 @@
   the mirror cannot observe the user-without-device half-created state on its own
   (it sees the technology rows, not the raw tables), and it reads no <code>sip.conf</code>.
   Those are exactly the facts this tool stays the authority for. Inbound routes and
-  the voice mapping stay with their owners by design (<code>ava_routes.py</code>,
-  <code>PUT /api/voice/agent-mapping</code>) and the provisioner reports them instead of
-  duplicating them. On <code>.30</code> neither path has been run: the intent document is the
+  the voice mapping stay with their owners by design (<code>dograh_routes.py</code> judges the
+  routes and never writes one; <code>PUT /api/voice/agent-mapping</code> owns the mapping) and
+  the provisioner reports them instead of duplicating them. On <code>.30</code> neither path has been run: the intent document is the
   operator's data, as the DIDs were in P1.</p>
   <p><strong>Built (2026-09-22): the portal's half of the endpoint, and the binding write
   path.</strong> The extension API writes the fragment and reports which file loads it
@@ -1100,9 +1126,11 @@
   per number through the voice mapping (see P2's as-built above). Both are
   verifiable without a box: <code>npm test</code> runs the two new probes, which the portal
   previously had no runner for — they transpile the modules with the project's own
-  <code>typescript</code> (<code>scripts/ts-probe.mjs</code>) and check, among other things, that the
-  portal's target rule and <code>pbx/ava_routing.py</code>'s <code>SAFE_TOKEN_RE</code> agree on the same
-  candidate list, and that a stored binding survives <code>render(validate(...))</code>.</p>
+  <code>typescript</code> (<code>scripts/ts-probe.mjs</code>) and check, among other things, the exact
+  verdicts of the Capstone target charset one candidate at a time — the renderer
+  that used to mirror it went with the AVA engine, so the probe pins the rule
+  rather than comparing it against a second copy — and that a target the write path
+  accepted reads back out of <code>voice_bindings</code> verbatim.</p>
   <p><strong>Opened (2026-09-22): the endpoint's owner is measured before it is changed.</strong>
   The phase's first move is not "move the include to <code>pjsip_custom_post.conf</code>",
   because that is a trap: the include would then survive, which is precisely what
@@ -1144,7 +1172,7 @@
   back — so neither product has to instrument itself, a caller who abandons before
   an agent picks up still leaves a record, and an agent that dies mid-interview
   does not take its call's history with it. The context classifier
-  (<code>handoffFromContext</code>) reads the two names <code>pbx/ava_routing.py</code> renders rather
+  (<code>handoffFromContext</code>) reads the two contexts the dialplan actually loads rather
   than keeping a second copy, and it deliberately does <strong>not</strong> claim the operator
   leg: a refused hand-off reuses <code>[zeus-ai-handoff]</code>'s own <code>refused</code> extension, so
   the context is indistinguishable from a transfer that succeeded (§11.1).
@@ -1206,9 +1234,34 @@
   of which the portal holds, so naming the shared key is the honest answer and a
   synthetic URL would 404 (§2.6). AVA's transcript stays a link
   (<code>/api/voice/calls/[recordId]</code>, which the join points at from a call id).</p>
+  <p><strong>Built (2026-09-24): the admin and customer surfaces now expose the same
+  plan.</strong> The customer Voice screen already shows live calls, the switch-written
+  call record, per-DID interview targets, and recent calls. The new admin Voice
+  routing panel reads the same <code>/api/admin/voice-routing</code> authority the PBX uses:
+  active DIDs, AVA agents, Capstone entitlement, workflow targets, gate state,
+  and generated-at time are visible without exposing <code>PBX_SYNC_TOKEN</code> to the
+  browser. It is a read-only view; the portal remains the only writer for those
+  mappings.</p>
+  <p><strong>Built (2026-09-24): the explicit interview hand-back.</strong> Capstone's ARI hangup
+  path now has one opt-in shared-plane branch. When
+  <code>ZEUS_RETURN_ENABLED=true</code>, Dograh reads <code>AI_CONTEXT_TOKEN</code> from the live
+  channel, writes <code>ZEUS_RETURN_OUTCOME=interview_complete</code>, and ARI-redirects the
+  same channel to <code>[zeus-ai-return]</code> instead of deleting it. <code>[zeus-ai-return]</code>
+  re-enters the original <code>AI_AGENT</code>; the portal context read exposes the return
+  outcome, and AMI's existing <code>zeus-ai-return</code> classifier records the second hop
+  as <code>capstone → ava</code>. Standalone Dograh has the switch off by default and keeps
+  its ordinary ARI delete path.</p>
+  <p>The branch is deliberately guarded twice: deployment opt-in, then a live channel
+  token. It does not guess a return context, does not redirect a call without the
+  Zeus envelope, and falls back to normal hangup on any ARI error. The remaining
+  proof is live: converge <code>[zeus-ai-return]</code>, set the shared context secret, set
+  <code>ZEUS_RETURN_ENABLED=true</code>, then make one controlled interview call and confirm
+  the same <code>AI_CALL_ID</code> appears in Dograh and the returned <code>voice_calls</code> row.</p>
   <p><strong>Still open in this phase.</strong> The record is <em>observed</em>, so a call that never
   carried an envelope has no row at all — that is a routing finding, not a missing
-  log line, and the runbook says so.</p>
+  log line, and the runbook says so. The hand-back branch is shipped in the
+  Capstone/AVA contracts but is not live-verified from this checkout because the
+  Zeus PBX and Capstone services are not running here.</p>
   <p><strong>Exit:</strong> for a call that moved AVA → Capstone → operator, one screen names the
   path, and one query returns its full record.</p>
   <h3 id="the-structural-parity-checklist-the-gate-for-retiring-capstones-bundled-pbx">The structural-parity checklist — the gate for retiring Capstone's bundled PBX</h3>
@@ -1247,14 +1300,14 @@
   <td>Dialplan</td>
   <td><code>[dograh-inbound]</code>, agent Custom Extensions <code>8000+</code>, <code>[from-internal-custom]</code> (append-shared)</td>
   <td>The same contexts converged by <code>pbx/asterisk_converge.py</code>, one owner per fragment (<code>--owner capstone</code>)</td>
-  <td><code>pbx/tests/test_ava_dialplan_contract.py</code> + <code>pbx/tests/test_parity_checklist.py</code> (off-host); <code>asterisk_converge.py --owner capstone --check</code> against the live file</td>
+  <td><code>pbx/tests/test_parity_checklist.py</code> (off-host, asserts the Zeus fragment ships no inbound routing); <code>asterisk_converge.py --owner capstone --check</code> against the live file</td>
   </tr>
   <tr>
   <td>2</td>
   <td>ARI</td>
   <td><code>[dograh]</code> user, dograh's <code>Stasis(dograh_&lt;hex&gt;)</code> app registered</td>
   <td>The same user in the real <code>/etc/asterisk/ari.conf</code> (no include), same host/port/secret</td>
-  <td><code>python3 pbx/ava_ari_check.py</code> (engine + PBX env agree) + <code>pbx/tests/test_parity_checklist.py</code> (off-host, one user per owner); <code>curl -s localhost:8088/ari/applications</code></td>
+  <td><code>pbx/tests/test_parity_checklist.py</code> (off-host, one user per owner); <code>python3 pbx/d7_assert.py --only ari</code>; <code>curl -s localhost:8088/ari/applications</code></td>
   </tr>
   <tr>
   <td>3</td>
@@ -1370,18 +1423,18 @@
   </ul>
   <p>Rows 3 and 4 keep their "checked with a call" rule and rows 5–11 stay as
   written: this is the half of the gate this repo owns, not the whole one.</p>
-  <p><strong>Found while checking row 2 — measured, not yet fixed.</strong> A fragment whose last
-  section is followed by comment prose is <em>not</em> byte-idempotent through
-  <code>asterisk_converge.py</code>: that prose lands as the <strong>next</strong> section's attributed
-  prefix on the target, and the next apply installs a second copy of it inside the
-  first section's body. <code>pbx/asterisk/ari.conf</code> ends in exactly that prose (the
-  note about AVA's user deliberately not being rendered there), and the measured
-  growth is 3155 → 4036 bytes on one re-apply, per run. The <em>users</em> stay correct,
-  so nothing a caller reaches is wrong — but <code>--check</code> never converges, which
-  makes the sync timer apply (and the file grow) on every tick. The test records
-  this and asserts the invariants that do hold rather than pinning the growth as
-  expected; the repair belongs in the replace policy (<code>_replace_context</code>), not in
-  the fragments.</p>
+  <p><strong>Fixed (2026-09-24): trailing comment prose is stable across ARI applies.</strong> A
+  fragment whose last section is followed by comment prose had a second failure
+  mode: the parser attributes that prose to the next section on the next parse,
+  and the old replace policy installed a second copy inside the first section's
+  body. <code>pbx/asterisk/ari.conf</code> ends in exactly that prose (the note about AVA's
+  user deliberately not being rendered there), so the ARI file could grow on every
+  timer tick even though its users stayed correct. <code>asterisk_converge.py</code> now
+  keeps a source context's final comment run explicit and recognises that run when
+  it is already present in the following context's attributed prefix; it does not
+  reinstall it in both places. The regression is covered in
+  <code>pbx/tests/test_asterisk_converge.py</code>, and the row-2 parity test now requires
+  byte-identical re-convergence rather than only checking user counts.</p>
   <p><strong>Exit:</strong> every row checked on the shared box, in one run, recorded — then
   Capstone's item 7 ("deprecate the bundled PBX as the default topology") is a
   default flip, not a migration.</p>
@@ -1505,28 +1558,138 @@
     telephony primitives; the portal owns voice logic.</li>
   </ul>
   <hr />
-  <h2 id="11-open-decisions">11. Open decisions</h2>
+  <h2 id="11-decisions">11. Decisions</h2>
+  <p>One row per question this design could not settle by itself — the answer taken,
+  why, and the alternative that was rejected. Item 5 was resolved the day it was
+  asked; the rest on 2026-09-25, against the running estate rather than from
+  preference.</p>
   <ol>
-  <li><strong>Hand-back semantics</strong> — when an interview ends without a decision, does the
-     caller return to the <em>same</em> AVA agent with the transcript summary, or go
-     straight to a human queue? (Affects D3 and the <code>voice_calls.disposition</code>
-     vocabulary.)</li>
-  <li><strong>Extension range ownership</strong> — which numbers are AVA agents, which are
-     Capstone bindings (the <code>800x</code> block today), and which are human. The
-     provisioner needs this as a declared inventory, not a convention.</li>
-  <li><strong>Conference-leg media (D4 long-term)</strong> — worth designing now or after P0–P3?</li>
-  <li><strong>Where <code>capstone_binding</code> is authored</strong> — portal only, or portal + Capstone's
-     UI with a reconciliation pass? (Portal-only is simpler and keeps one writer.)</li>
-  <li><strong>Who owns a WebRTC endpoint</strong> — FreePBX's generated endpoint extended from
-     <code>pjsip.endpoint_custom_post.conf</code>, which keeps one object but moves the
-     softphone's credential to FreePBX's device secret (and the portal has no way
-     to read that today: <code>addExtension</code> will not return it, so it would need a
-     read path of its own); or a portal-owned endpoint under an id FreePBX will
-     not generate (<code>&lt;ext&gt;-webrtc</code>), which keeps the portal-issued secret. The
-     measurement that decides it is <code>pbx/pjsip_owner_check.py --live</code> (§8 P3).</li>
+  <li><strong>Hand-back semantics</strong> — <strong>DECIDED 2026-09-25: the caller returns to the
+     <em>same</em> AVA agent, carrying the transcript summary. The human queue is the
+     fallback, not the default.</strong> An interview ends without a decision for two
+     different reasons and they must not be collapsed: the agent's business is
+     finished (booking made, question answered, a callback promised) and the
+     caller has nothing left to say, or the agent cannot continue at all. The
+     first is the common case and the agent is the only party holding the context
+     — handing that caller to a person makes them re-explain what a machine
+     already heard and wrote down, and makes a queue do work a summary can do. So
+     the default hand-back is the same agent plus its summary; a person takes the
+     call when the caller asks for one or the agent fails (D3), and that transfer
+     is a decision the call record has to distinguish from the routine one. This
+     pins the <code>voice_calls.disposition</code> vocabulary to five values, closed and
+     small so a dashboard can group by it: <code>agent_completed</code> (the agent finished
+     its own business), <code>handed_back</code> (returned to the same agent with the
+     summary), <code>transferred_human</code> (a person took the call), <code>abandoned</code> (the
+     caller left first) and <code>failed</code> (the pipeline died — the value every
+     observable incident above records). Asterisk's own CDR <code>disposition</code> stays
+     Asterisk's (<code>ANSWERED</code>/<code>NO ANSWER</code>/<code>BUSY</code>/<code>FAILED</code>); these are what the
+     <em>voice</em> did, which is a different question. No <code>disposition</code> column exists in
+     this repo yet, which is the other reason to fix the words now: the first
+     writer should not be the first decider.
+     <em>Rejected:</em> straight to a human queue on any undecided end — it doubles the
+     cost of the common case to make the rare one simpler, and it is the shape
+     that makes an agent look useless the first time it works.</li>
+  <li><strong>Extension range ownership</strong> — <strong>DECIDED 2026-09-25: declared, one range per
+     owner, and the provisioner refuses a number outside its range.</strong> The ranges
+     below are what the live box holds today; what is being decided is that the
+     <em>rule</em> is a fact in the repo rather than a convention in someone's head, so a
+     new block is a change to this table and not a discovery made from a phone.</li>
   </ol>
+  <table>
+  <thead>
+  <tr>
+  <th>Range</th>
+  <th>Owner</th>
+  <th>Today</th>
+  </tr>
+  </thead>
+  <tbody>
+  <tr>
+  <td><code>8000</code>–<code>8099</code></td>
+  <td>Capstone agent lines — the DIDs an agent answers on</td>
+  <td><code>8000</code>–<code>8008</code>, routed <code>dograh-inbound,80NN,1</code></td>
+  </tr>
+  <tr>
+  <td>10-digit DIDs</td>
+  <td>Customer numbers — the portal's (<code>phone_numbers</code>, <code>freepbx_extensions</code>)</td>
+  <td><code>413…</code>, <code>774…</code>, <code>857…</code>, <code>3025551002</code></td>
+  </tr>
+  <tr>
+  <td><code>1001</code>–<code>1099</code></td>
+  <td>Platform-provisioned extensions (portal-created, one per account)</td>
+  <td><code>1001</code> (portal row only — <strong>no PBX extension</strong>, the drift §10 records)</td>
+  </tr>
+  <tr>
+  <td><code>12000</code>–<code>12999</code></td>
+  <td>Estate infrastructure, never provisioned by a product</td>
+  <td><code>12000</code> cordless, <code>15000</code> fax</td>
+  </tr>
+  <tr>
+  <td><code>3291</code>–<code>3299</code></td>
+  <td>Fax lines</td>
+  <td><code>3291</code>–<code>3294</code></td>
+  </tr>
+  </tbody>
+  </table>
+  <p>FreePBX's own range checks stay the framework's; this table answers the
+     question FreePBX cannot — whose <em>product</em> a number belongs to, which is what
+     <code>pbx/provision_extension.py</code> needs before it can refuse anything. The refusal
+     is the point: provisioning an extension in the agent block would make a
+     customer's number answer as an agent, and no check downstream can see that.
+     <em>Rejected:</em> inferring the owner from the number's shape ("ten digits is a
+     customer") — that is the convention this row exists to replace, and it holds
+     only until the first block that is not shaped like the others.
+  3. <strong>Conference-leg media (D4 long-term)</strong> — <strong>DECIDED 2026-09-25: after P0–P3,
+     and the trigger is a call that needs a third leg</strong> (a supervisor joining, or
+     a human taking a call an agent is still on). D4's contract — one media
+     plane, one offer, one codec — is what makes three-way work expensive to add
+     <em>now</em>: a conference leg is a second offer, so this is a change to the
+     contract rather than a feature beside it, and the parties who would have to
+     agree (AVA's engine and the PBX's own bridge) both already do what P0–P3
+     needs. Designing it earlier spends the contract budget on a case nothing has
+     asked for yet. The trigger is recorded so the decision has an owner and a
+     condition instead of a date.
+     <em>Rejected:</em> designing it in D4 itself — it would hold the media plane's
+     contract open for a shape no call on this estate has needed, and the contract
+     is what everything else in D4 is pinned to.
+  4. <strong>Where <code>capstone_binding</code> is authored</strong> — <strong>DECIDED 2026-09-25: the portal,
+     only; Capstone's UI reads it and never writes it.</strong> A binding is one row
+     joining an account to an agent, and two writers of one row need a
+     reconciliation pass whose only output is which writer was right — a pass that
+     exists because of a decision, not because of a fact. The portal already owns
+     the account (<code>freepbx_extensions</code>, <code>voice_agents</code>) and is the surface the
+     operator is signed into under SSO, so it is the writer that can also show the
+     change. Capstone keeps its own per-organization agent configuration, which is
+     a different fact: what an agent <em>says</em>, not which number reaches it.
+     <em>Rejected:</em> both UIs writing <code>capstone_binding</code> with a reconciler — the
+     reconciler has to guess the winner, and a wrong guess re-points a customer's
+     number at another customer's agent.
+  5. <strong>Who owns a WebRTC endpoint</strong> — <strong>RESOLVED 2026-09-25: FreePBX owns it, and
+     the portal extends it.</strong> <code>src/lib/pjsip-endpoint.ts</code> appends <code>[&lt;ext&gt;](+)</code> —
+     Asterisk's append-to-existing syntax — plus the WebRTC media settings to
+     <code>pjsip.endpoint_custom_post.conf</code>, a file FreePBX includes and never
+     regenerates. There is therefore no <code>#include</code> for the portal to own and no
+     second <code>[&lt;ext&gt;]</code> to collide with FreePBX's, which is what made this an open
+     decision: the old shape's only safe reading was that it always broke the box
+     somehow.</p>
+  <p>The credential cost that blocked the option is paid: the softphone registers
+     as FreePBX's endpoint, so it uses FreePBX's device secret, and
+     <code>src/lib/pjsip-secret.ts</code> reads that back out of <code>pjsip.auth.conf</code> (the same
+     read <code>pbx/legacy_voice_migrate.py</code> already uses to verify a migration), which
+     <code>POST /api/phone/extensions</code> stores on the row.</p>
+  <p>The rejected alternative — a portal-owned endpoint under an id FreePBX will
+     not generate (<code>&lt;ext&gt;-webrtc</code>) — is recorded with its reasoning in
+     <code>src/lib/pjsip-endpoint.ts</code>: the rest of the PBX addresses <code>PJSIP/&lt;ext&gt;</code>, so a
+     second endpoint is one that inbound routes, ring groups, voicemail and this
+     console's own device-state poll cannot reach. It is not a tidiness
+     preference; it is the feature not working.</p>
+  <p>A pre-decision <code>pjsip_ext_&lt;ext&gt;.conf</code> is still <em>detected</em> — it defines a second
+     <code>[&lt;ext&gt;]</code> beside FreePBX's — reported by
+     <code>src/lib/extension-readiness.ts</code>, and removed by
+     <code>POST /api/phone/extensions/repair</code>. <code>pbx/pjsip_owner_check.py --live</code> (§8 P3)
+     remains the live measurement, and now judges the append shape as clean.</p>
   <p class="provenance">
-    Rendered from <a href="https://github.com/innotelinc/zeus/blob/master/docs/ava-capstone-convergence.md">docs/ava-capstone-convergence.md</a>
+    Rendered from <a href="https://github.com/innotelinc/zeus/blob/master/docs/voice-convergence.md">docs/voice-convergence.md</a>
     by <code>web/landing/build-doc.py</code>.
     The markdown is the source of truth; edits to this page are overwritten.
   </p>

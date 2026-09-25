@@ -3,7 +3,7 @@
 # ═══════════════════════════════════════════════════════════════
 # The co-hosted deployment: Zeus and Capstone share one host, and the target
 # architecture is one observability spine rather than two (docs/stack.md,
-# roadmap item 3; docs/ava-capstone-convergence.md, D7). Running a second
+# roadmap item 3; docs/voice-convergence.md, D7). Running a second
 # ClickHouse + SigNoz just so Zeus's spans have somewhere to land is the
 # duplication this mode retires — the portal exports to Capstone's collector
 # and an operator reads both products in Capstone's Grafana/SigNoz.

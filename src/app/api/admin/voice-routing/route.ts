@@ -49,9 +49,11 @@ interface AccountRow {
  * the Dograh agent it reaches and whether its Capstone hand-off is live.
  *
  *   curl -s localhost:3000/api/admin/voice-routing > /tmp/accounts.json
- *   python3 pbx/ava_routing.py --accounts-json /tmp/accounts.json --out /tmp/accounts.conf
- *   python3 pbx/asterisk_converge.py --target <extensions_custom.conf> \
- *       --source /tmp/accounts.conf --owner zeus
+ *
+ * This used to feed a per-account dialplan renderer (`pbx/ava_routing.py` and
+ * the `[zeus-ai-accounts]` context), which went with the AVA engine: a DID now
+ * reaches its agent through its own FreePBX inbound route. The route is kept as
+ * the portal's account -> agent view and the add-on gate's own answer.
  *
  * The Capstone flag is re-checked against Magnate here — this route is the
  * routing authority, and the PBX refuses the hand-off for anything it does

@@ -15,13 +15,14 @@ Type=oneshot
 WorkingDirectory=/PATH/TO/ZEUS
 Environment=PBX_ENV_FILE=/PATH/TO/ZEUS/scripts/pbx.env
 # The WRAPPER, not bootstrap directly. Calling pbx/bootstrap-zeus-pbx.sh here
-# would re-apply fragments without ever asking whether the engine's ARI secret
-# is the one ari.conf carries — the one disagreement whose only symptom is
-# calls that are never answered, because to Asterisk a wrong password is just a
-# failed login. The wrapper checks that first and refuses to apply over it
-# (exit 1, documented in docs/ava-runbook.md), then no-ops when the fragments
-# are already in sync. It exits 0 when the PBX is merely unreachable, so a slow
-# boot after a reboot is not a failed unit; the window below covers that boot.
+# would re-apply fragments without ever asking whether every DID this platform
+# sells reaches the agent its route names — a row in FreePBX's own `incoming`
+# table, which no fragment describes, so an apply that only compared files would
+# answer "in sync" on a PBX whose numbers all point elsewhere. The wrapper judges
+# that first (pbx/dograh_routes.py), reports it to the journal and refuses
+# nothing, then no-ops when the fragments are already in sync. It exits 0 when
+# the PBX is merely unreachable, so a slow boot after a reboot is not a failed
+# unit; the window below covers that boot.
 ExecStart=/usr/bin/env bash scripts/zeus-pbx-sync.sh
 TimeoutStartSec=120s
 StandardOutput=journal

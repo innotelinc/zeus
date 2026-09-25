@@ -1,4 +1,4 @@
--- One row per call, one id across products (P4 of docs/ava-capstone-convergence.md).
+-- One row per call, one id across products (P4 of docs/voice-convergence.md).
 --
 -- `call_id` is Asterisk's `UNIQUEID` — the same value the dialplan stamps as
 -- `AI_CALL_ID` and `AI_CONTEXT_TOKEN`. That is the whole point: an operator

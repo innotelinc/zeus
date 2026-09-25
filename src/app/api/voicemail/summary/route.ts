@@ -14,7 +14,8 @@ const SUMMARY_URL = (
 ).replace(/\/+$/, "");
 
 // The *pin* is deliberately its own (VOICEMAIL_SUMMARY_MODEL), not the shared
-// OLLAMA_MODEL/AVA_LLM_MODEL: the gateway's free routes cooldown per model, so
+// OLLAMA_MODEL the voicemail path falls back to: the gateway's free routes
+// cooldown per model, so
 // a summary that rides the call path's model goes silent the moment calls
 // exhaust it — and a busy voicemail box would starve the phone. Two pins make
 // the two consumers independent; OLLAMA_MODEL stays the fallback so a

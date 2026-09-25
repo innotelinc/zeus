@@ -8,7 +8,7 @@ file that carries the same theme as `index.html` (inline CSS, no build step, no
 external assets beyond the Geist webfont the landing already loads).
 
     python3 web/landing/build-doc.py \
-        docs/ava-capstone-convergence.md \
+        docs/voice-convergence.md \
         web/landing/voice-convergence.html
 
 The output is committed, not generated at deploy time — a Pages publish must not

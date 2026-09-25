@@ -32,29 +32,9 @@
 # Reads from pbx.env (scripts/pbx.env.example) or the environment:
 #   FREEPBX_AMI_USER  (default pbxportal)   FREEPBX_AMI_SECRET
 #   FREEPBX_ARI_USER  (default pbxportal)   FREEPBX_ARI_SECRET
-#   AVA_ARI_USER      (default zeus-ava)    AVA_ARI_SECRET (generated if blank
-#                                            — persist it; the AVA voice engine
-#                                            authenticates with this pair)
 #   ARI_HTTP_PORT     (default 8088)        AMI_PERMIT (permit line, default:
 #                                            this host's LAN subnet — never a
 #                                            docker bridge range)
-#   ZEUS_PORTAL_URL   portal base URL the [zeus-ai-accounts] plan is fetched
-#                     from (default http://127.0.0.1:3001)
-#   PBX_SYNC_TOKEN    bearer token for that fetch (portal env PBX_SYNC_TOKEN).
-#                     Without it, or when the portal is unreachable, the
-#                     context is rendered from the portal's cached database.
-#   ZEUS_PORTAL_DB    that SQLite database. Default: the zeus-portal-data
-#                     volume. When neither is readable the static placeholder
-#                     stands.
-#
-# The same plan also drives the DID ingress: every DID it names must have an
-# inbound route pointing at zeus-ai-router,s,1, which pbx/ava_routes.py
-# converges from this run (see converge_routes below). Optional:
-#   ZEUS_ROUTE_REVERT_OUT  where the routes' undo script is written before any
-#                          change (default /root/zeus-route-revert.sql)
-#   ZEUS_ROUTES_TSV        a route table dumped by pbx/p0-snapshot.sh, to judge
-#                          routes off-host; check-only, since applying from a
-#                          dump cannot be right
 # ═══════════════════════════════════════════════════════════════════
 set -euo pipefail
 
@@ -85,17 +65,6 @@ fi
 PBX_TARGET="${PBX_TARGET:-local}"
 FREEPBX_AMI_USER="${FREEPBX_AMI_USER:-pbxportal}"
 FREEPBX_ARI_USER="${FREEPBX_ARI_USER:-pbxportal}"
-# AVA (first-response voice agent) gets its own ARI user: it owns the
-# asterisk-ai-voice-agent Stasis application, while the portal user only
-# originates/hangs up. Generate one when the operator leaves it blank so a
-# fresh PBX is AVA-ready without hand-editing pbx.env — and keep the engine
-# and the PBX reading the SAME value (compose passes AVA_ARI_* through).
-AVA_ARI_USER="${AVA_ARI_USER:-zeus-ava}"
-if [ -z "${AVA_ARI_SECRET:-}" ]; then
-  AVA_ARI_SECRET="$(openssl rand -hex 16)"
-  echo "  ! AVA_ARI_SECRET not set — generated one for this run; persist it in" >&2
-  echo "    pbx.env or the AVA engine will fail ARI authentication after a restart" >&2
-fi
 ARI_HTTP_PORT="${ARI_HTTP_PORT:-8088}"
 : "${FREEPBX_AMI_SECRET:?FREEPBX_AMI_SECRET is required (see scripts/pbx.env.example)}"
 : "${FREEPBX_ARI_SECRET:?FREEPBX_ARI_SECRET is required (see scripts/pbx.env.example)}"
@@ -156,8 +125,6 @@ render_fragments() {
       -e "s/__AMI_SECRET__/${FREEPBX_AMI_SECRET}/g" \
       -e "s/__ARI_USER__/${FREEPBX_ARI_USER}/g" \
       -e "s/__ARI_SECRET__/${FREEPBX_ARI_SECRET}/g" \
-      -e "s/__AVA_ARI_USER__/${AVA_ARI_USER}/g" \
-      -e "s/__AVA_ARI_SECRET__/${AVA_ARI_SECRET}/g" \
       -e "s/__ARI_HTTP_PORT__/${ARI_HTTP_PORT}/g" \
       -e "s|__AMI_PERMIT__|${AMI_PERMIT_LINE}|g" \
       "$frag" > "${STAGE_DIR}/$(basename "$frag")"
@@ -181,14 +148,9 @@ CONVERGE_PY="${SCRIPT_DIR}/asterisk_converge.py"
 #       must survive), zeus contexts replace, [from-internal-custom] append-shared.
 #   ari.conf — the real ARI config Asterisk reads; zeus's [<user>] section
 #       converges in while [general] and other products' ARI users pass through.
-#       Note: on the FreePBX builds this stack ships, ari.conf is a SYMLINK
-#       into the arimanager module and ari_additional.conf is regenerated on
-#       every Apply Config — which is why the AVA user below goes to
-#       ari_additional_custom.conf (included by ari.conf, module-owned-adjacent,
-#       and the file the shared voice plane already uses for Capstone's
-#       [dograh]). ari_custom.conf is NOT included on these builds.
-#   ari_additional_custom.conf — AVA's own ARI user (see that fragment).
-CONVERGE_OWNED="extensions_custom.conf ari.conf ari_additional_custom.conf"
+#       ari_custom.conf is NOT included on these builds, so the section has to
+#       live in the file Asterisk actually reads.
+CONVERGE_OWNED="extensions_custom.conf ari.conf"
 
 _is_converge_owned() {
   local name="$1" owned
@@ -198,112 +160,9 @@ _is_converge_owned() {
   return 1
 }
 
-# ── the one GENERATED context ──────────────────────────────────────────
-# Every other context in extensions_custom.conf is stored in pbx/asterisk/.
-# [zeus-ai-accounts] is not: it is a per-account decision, so it is rendered
-# from the portal's accounts and the Capstone hand-off gate then follows
-# billing instead of a file someone has to remember to re-render.
-# pbx/ava_routing.py writes ZEUS_CAPSTONE_ADDON=1 only for accounts the portal
-# recorded as entitled, and treats a MISSING record as not entitled — so the
-# cached-database render on its own can only ever be too strict, never too
-# generous.
-#
-# THE PORTAL IS THE SOURCE, not its cache. GET /api/admin/voice-routing is the
-# routing authority and re-checks the add-on gate against Magnate on every
-# call, so fetching it (with PBX_SYNC_TOKEN) is what keeps this context in step
-# with billing. Reading the cache instead would freeze the plan at whatever it
-# was the last time an operator opened the screen — a lapsed subscription
-# would never un-wire, and a gate that is inactive in this deployment (see
-# src/lib/addons.ts) would never show up as entitled.
-#
-# ZEUS_PORTAL_DB names the cache explicitly; otherwise it is located through
-# the compose volume the portal writes. That path is the FALLBACK for a portal
-# that is down or has no token configured, and it stays fail-closed on a
-# missing record: without a portal there is no authority to say otherwise.
-# When neither is readable — a fresh host, a portal that has never run — the
-# static placeholder stands.
-AVA_ROUTING_PY="${SCRIPT_DIR}/ava_routing.py"
-ACCOUNTS_DIR=""
-ACCOUNTS_SRC=""
-# The same plan, left where the route converger can read it: the DIDs whose
-# inbound routes must point at zeus-ai-router,s,1 are the DIDs this plan names,
-# and nothing else on the PBX is this repo's to move (pbx/ava_routes.py).
-ACCOUNTS_PLAN=""
-# Set in render_account_routing, when the portal answered and the cache is what
-# the accounts block fell back to. Declared here because this script runs under
-# `set -u`: an unset name is a crash, not an empty string.
-ACCOUNTS_DB=""
-
-# The other half of P1: the inbound route per DID. See converge_routes below.
-ROUTES_PY="${SCRIPT_DIR}/ava_routes.py"
-ROUTER_DEST="zeus-ai-router,s,1"
-ROUTE_REVERT_OUT="${ZEUS_ROUTE_REVERT_OUT:-/root/zeus-route-revert.sql}"
-ROUTE_SRC=()
-
 cleanup() {
   [ -n "${work:-}" ] && rm -rf "$work"
-  [ -n "${ACCOUNTS_DIR:-}" ] && rm -rf "$ACCOUNTS_DIR"
   return 0
-}
-
-portal_db() {
-  if [ -n "${ZEUS_PORTAL_DB:-}" ]; then
-    [ -f "$ZEUS_PORTAL_DB" ] && printf '%s\n' "$ZEUS_PORTAL_DB"
-    return 0
-  fi
-  local mp
-  mp="$(docker volume inspect zeus-portal-data \
-        --format '{{.Mountpoint}}' 2>/dev/null)" || return 0
-  [ -n "$mp" ] && [ -f "${mp}/pbx.db" ] && printf '%s\n' "${mp}/pbx.db"
-  return 0
-}
-
-# Renders [zeus-ai-accounts] into a fragment the converge tool merges last, so
-# its context replaces the placeholder in the static file.
-render_account_routing() {
-  local db out plan
-  ACCOUNTS_DIR="$(mktemp -d)"
-  trap cleanup EXIT
-  out="${ACCOUNTS_DIR}/accounts.conf"
-
-  # Preferred path: ask the portal, which re-checks the gate against Magnate.
-  # A 503 from the portal (indecisive gate) is deliberately NOT recovered from
-  # here: the authority declining to answer must not be papered over with a
-  # cached answer, which is the stale-plan failure this exists to avoid. The
-  # PBX then keeps the fragment it already has.
-  if [ -n "${PBX_SYNC_TOKEN:-}" ]; then
-    plan="${ACCOUNTS_DIR}/accounts.json"
-    if curl -fsS --max-time 20 \
-         -H "Authorization: Bearer ${PBX_SYNC_TOKEN}" \
-         "${ZEUS_PORTAL_URL:-http://127.0.0.1:3001}/api/admin/voice-routing" \
-         -o "$plan" 2>/dev/null \
-       && python3 "$AVA_ROUTING_PY" --accounts-json "$plan" --out "$out" 2>/dev/null; then
-      ACCOUNTS_SRC="$out"
-      ACCOUNTS_PLAN="$plan"
-      return 0
-    fi
-    echo "zeus-pbx: portal routing plan unavailable — using the cached database" >&2
-  fi
-
-  db="$(portal_db)"
-  if [ -z "$db" ]; then
-    echo "zeus-pbx: no portal database — [zeus-ai-accounts] keeps the default agent" >&2
-    return 0
-  fi
-  if ! python3 "$AVA_ROUTING_PY" --db "$db" --out "$out"; then
-    # A plan that cannot be read is not a plan. Leave the placeholder rather
-    # than converge a half-rendered account list onto a live PBX.
-    rm -rf "$ACCOUNTS_DIR"
-    ACCOUNTS_DIR=""
-    echo "zeus-pbx: could not render accounts from ${db} — keeping the default agent" >&2
-    return 0
-  fi
-  ACCOUNTS_SRC="$out"
-  # The cache is not the routing authority (see the note above), so the routes
-  # converge from it only as the same fallback the accounts block uses — and
-  # never when the portal answered, which is the ACCOUNTS_PLAN path.
-  ACCOUNTS_PLAN=""
-  ACCOUNTS_DB="$db"
 }
 
 apply_target() {
@@ -334,115 +193,6 @@ reload_pbx() {
   else
     fwconsole reload 2>/dev/null || asterisk -rx 'core reload' 2>/dev/null || true
   fi
-}
-
-# ── the DID ingress: every platform DID must reach the router ──────────
-# P1 of docs/ava-capstone-convergence.md is *one ingress*, and rendering
-# [zeus-ai-accounts] is only half of it. The other half is a row in FreePBX's
-# `incoming` table per DID, and a route that points somewhere else answers calls
-# as the wrong thing while looking configured — which is how every DID came to
-# be unwired in a deployment where both products believed the numbers were
-# routed, and nothing noticed, because a route that points elsewhere still
-# answers. pbx/ava_routes.py owns that half, and it reads the *same* plan this
-# run renders the accounts block from, so a route and the entry it dispatches to
-# cannot disagree.
-#
-# Two rules the tool carries, which this call site must not weaken: it converges
-# rows that already exist (a DID with no inbound route is refused to a human,
-# never invented), and it only ever touches DIDs the plan names — a ring group,
-# a partner's number and a pattern route like _2XX are somebody else's phone
-# service.
-#
-# ZEUS_ROUTES_TSV is the off-host rehearsal input: a route table dumped by
-# pbx/p0-snapshot.sh, judged with no PBX reachable. It is check-only — writing
-# routes from a dump is not a thing that can be right. The live route change is
-# a database write, so it happens *before* reload_pbx, which is what makes it
-# visible to the dialplan.
-# ── judging the DID routes, and applying them ──────────────────────────
-# Judge and apply are separate functions because BOTH paths have to judge. The
-# apply path is not only reached from `--check`: the timer runs
-# `bootstrap --check`, then the apply when that fails, so an apply that judged
-# nothing would report "already in sync" on a PBX whose fragments are in sync
-# and whose DIDs all point elsewhere — the exact configured-looking failure this
-# phase exists to remove, and it would never have cleared itself.
-#
-# The tool's status is carried through whole rather than collapsed to "drift":
-#   0  every platform DID reaches the router
-#   1  routes off it that an apply converges
-#   3  nothing this tool may write, and a row only a human can add
-#   2  no PBX reachable / table unreadable — not a finding
-# 1 and 3 differ in the caller's action, not in the report: a 1 is worth an
-# apply, a 3 is not. An apply for a 3 rewrites no row and still reloads a live
-# phone system, so a timer tick would do that every 15 minutes forever; and a
-# `--check` fails on both, so the gap is never quiet.
-judge_routes() {
-  local out rc args=()
-  ROUTES_RC=0
-  if [ ! -f "$ROUTES_PY" ]; then
-    echo "zeus-pbx: pbx/ava_routes.py is missing — DID routes not judged" >&2
-    return 0
-  fi
-  if [ "${#ROUTE_SRC[@]}" -eq 0 ]; then
-    echo "zeus-pbx: no routing plan (the portal was unreachable and no cached database was found) — DID routes not judged" >&2
-    return 0
-  fi
-  args=("${ROUTE_SRC[@]}")
-  if [ -n "${ZEUS_ROUTES_TSV:-}" ]; then
-    # The dump is a rehearsal input, and a dump is always the check's: writing
-    # routes from a dump is not a thing that can be right.
-    args+=(--routes-tsv "$ZEUS_ROUTES_TSV")
-  fi
-  # `|| rc=$?`, not `; rc=$?`: under `set -e` a failed command substitution in an
-  # assignment aborts the shell before the next statement, so the status this
-  # function exists to report would kill the run instead of being reported. The
-  # same shape is used below for the apply.
-  rc=0
-  out="$(python3 "$ROUTES_PY" "${args[@]}" --check 2>&1)" || rc=$?
-  printf '%s\n' "$out" | sed 's/^/zeus-pbx: /' >&2
-  ROUTES_RC=$rc
-  case "$rc" in
-    0) return 0 ;;
-    2)
-      # No PBX on this host, or a route table that could not be read: not a
-      # finding. A host running part of the group is not a drifted host.
-      echo "zeus-pbx: DID routes could not be judged (no PBX reachable) — not drift" >&2
-      return 0
-      ;;
-    3)
-      echo "drift: DID inbound routes (a platform DID has no route for this repo to converge)" >&2
-      return 3
-      ;;
-    *)
-      echo "drift: DID inbound routes (not every platform DID reaches ${ROUTER_DEST})" >&2
-      return 1
-      ;;
-  esac
-}
-
-converge_routes() {
-  local out rc args=()
-  if [ ! -f "$ROUTES_PY" ] || [ "${#ROUTE_SRC[@]}" -eq 0 ]; then
-    return 0
-  fi
-  args=("${ROUTE_SRC[@]}")
-  if [ -n "${ZEUS_ROUTES_TSV:-}" ]; then
-    echo "zeus-pbx: ZEUS_ROUTES_TSV is a check-only rehearsal input — judging the live routes instead" >&2
-  fi
-
-  # The undo is written by the tool, before it writes anything, because an
-  # apply with no way back is the thing P0's snapshot discipline exists to
-  # prevent.
-  rc=0
-  out="$(python3 "$ROUTES_PY" "${args[@]}" --apply --revert-out "$ROUTE_REVERT_OUT" 2>&1)" || rc=$?
-  printf '%s\n' "$out" | sed 's/^/zeus-pbx: /' >&2
-  if [ "$rc" -ne 0 ]; then
-    # Fail open, like the core repair above: a DID with no inbound route at all
-    # needs a human, and refusing to converge the fragments over a row the
-    # operator can add in two clicks would take the phone system down instead.
-    # It does not go quiet — `--check` keeps failing until the route is added.
-    echo "zeus-pbx: WARNING: DID routes not fully converged (see above) — add the missing route by hand, then re-run" >&2
-  fi
-  return 0
 }
 
 # ── the FreePBX `core` module repair ───────────────────────────────────
@@ -521,17 +271,6 @@ check_core_patch() {
 }
 
 render_fragments
-render_account_routing
-
-# What the routes are judged against, in the same order of authority the
-# accounts block uses: the portal's own answer first, its cached database
-# second. Both unreadable means the routes cannot be judged, and they are not
-# guessed at from the accounts fragment alone.
-if [ -n "${ACCOUNTS_PLAN:-}" ]; then
-  ROUTE_SRC=(--accounts-json "$ACCOUNTS_PLAN")
-elif [ -n "${ACCOUNTS_DB:-}" ]; then
-  ROUTE_SRC=(--db "$ACCOUNTS_DB")
-fi
 
 # extensions_custom.conf / ari.conf are SHARED files: once another product
 # (capstone's [dograh-inbound] dialplan, [dograh] ARI user) lives in them, a
@@ -575,7 +314,7 @@ for name in $CONVERGE_OWNED; do
   else
     host="${dest}/${name}"
     # --check must not write. On a target that has no converge-owned file yet —
-    # a fresh PBX, where ari_additional_custom.conf is this repo's to create —
+    # a fresh PBX, where ari.conf is this repo's to create —
     # the shared `: > "$host"` below left an empty file behind while reporting
     # drift. A drift check runs immediately before a change, and P0's snapshot
     # runs before that; neither may alter the thing it is recording. An absent
@@ -587,14 +326,8 @@ for name in $CONVERGE_OWNED; do
     fi
   fi
   [ -f "$host" ] || : > "$host"
-  # converge applies sources in order, so the rendered accounts fragment goes
-  # last and wins for [zeus-ai-accounts].
-  extra=()
-  [ "$name" = "extensions_custom.conf" ] && [ -n "$ACCOUNTS_SRC" ] && \
-    extra=(--source "$ACCOUNTS_SRC")
   if ! python3 "$CONVERGE_PY" --target "$host" --source "${STAGE_DIR}/${name}" \
-       ${extra[@]+"${extra[@]}"} \
-       --owner zeus --append from-internal-custom --check 2>/dev/null; then
+     --owner zeus --append from-internal-custom --check 2>/dev/null; then
     echo "drift: ${name} (shared config)" >&2
     drift=1
   fi
@@ -602,33 +335,13 @@ done
 
 if [ "$CHECK" = 1 ]; then
   check_core_patch || drift=1
-  judge_routes || drift=1
   if [ "$drift" = 1 ]; then
-    if [ "$ROUTES_RC" = 3 ]; then
-      # The one out-of-sync state an apply cannot clear, so the message must not
-      # point at the apply: the route row is not this repo's to write.
-      echo "zeus-pbx: out of sync — a platform DID needs an inbound route added in FreePBX" >&2
-    else
-      echo "zeus-pbx: out of sync (run pbx/bootstrap-zeus-pbx.sh to apply)" >&2
-    fi
+    echo "zeus-pbx: out of sync (run pbx/bootstrap-zeus-pbx.sh to apply)" >&2
     exit 1
   fi
   echo "zeus-pbx: in sync"
   exit 0
 fi
-
-# Judged on this path too, and after the fragments so the report reads in the
-# order the work happens. `drift` is what an apply writes; `route_gap` is what
-# only a person can, and is deliberately NOT folded into `drift` — an apply that
-# runs for a gap rewrites nothing and still reloads a live phone system, which a
-# 15-minute timer would then do forever.
-route_gap=0
-ROUTES_RC=0
-judge_routes || ROUTES_RC=$?
-case "$ROUTES_RC" in
-  1) drift=1 ;;
-  3) route_gap=1 ;;
-esac
 
 if [ "$drift" = 1 ] || [ "$RELOAD" = 1 ]; then
   apply_target
@@ -641,11 +354,7 @@ if [ "$drift" = 1 ] || [ "$RELOAD" = 1 ]; then
   for name in $CONVERGE_OWNED; do
     host="${work:+${work}/}${name}"
     [ "$PBX_TARGET" = "container" ] || host="${dest}/${name}"
-    extra=()
-    [ "$name" = "extensions_custom.conf" ] && [ -n "$ACCOUNTS_SRC" ] && \
-      extra=(--source "$ACCOUNTS_SRC")
     python3 "$CONVERGE_PY" --target "$host" --source "${STAGE_DIR}/${name}" \
-      ${extra[@]+"${extra[@]}"} \
       --owner zeus --append from-internal-custom
     if [ "$PBX_TARGET" = "container" ]; then
       docker compose -f "$REPO_ROOT/docker-compose.full.yml" cp \
@@ -655,19 +364,8 @@ if [ "$drift" = 1 ] || [ "$RELOAD" = 1 ]; then
       chmod 640 "$host" 2>/dev/null || true
     fi
   done
-  # Before the reload, not after: the routes are rows FreePBX builds its
-  # dialplan from, so a change is live only once the dialplan is rebuilt.
-  converge_routes
   reload_pbx
   echo "zeus-pbx: applied (${PBX_TARGET})"
 else
-  if [ "$route_gap" = 1 ]; then
-    # Nothing was written and nothing will be: the remaining gap is a route row a
-    # person adds in FreePBX. Non-zero so the timer's wrapper says so in the
-    # journal rather than reporting a clean sync that never happened — the check
-    # keeps failing either way.
-    echo "zeus-pbx: fragments in sync; DID routes need a human (see above) — not applied" >&2
-    exit 1
-  fi
   echo "zeus-pbx: already in sync"
 fi

@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """The structural-parity checklist's Zeus-side rows, closed off-host.
 
-`docs/ava-capstone-convergence.md` §8 is the gate for retiring Capstone's
+`docs/voice-convergence.md` §8 is the gate for retiring Capstone's
 bundled PBX, and its own reading rules say what this repo owes it: rows **1, 2
 and 12** must be verifiable *here*, without `.30`, so the other side can flip a
 default without taking the voice plane down with it. Three rows, three things
@@ -121,14 +121,14 @@ class Row1DialplanTest(unittest.TestCase):
         # wholesale.
         self.assertFalse([name for name in _sections(self.zeus) if "dograh" in name])
 
-    def test_zeus_reaches_a_capstone_workflow_only_through_the_binding(self):
-        # The variable is the whole point: a literal here is a dialplan constant
-        # for whichever workflow that extension is today, and one extension for
-        # every account — the §2.1 defect. (Comments describe the retired
-        # constant on purpose, so this reads the directives.)
+    def test_zeus_ships_no_inbound_routing_at_all(self):
+        # The DID -> workflow decision lives in FreePBX's `incoming` table now,
+        # so this fragment must name no destination for it. A literal would be a
+        # dialplan constant for one workflow; a variable would be a second
+        # routing authority beside the row that actually answers the call.
+        # (Comments describe the retired router on purpose, so read directives.)
         executable = _executable(self.zeus)
-        self.assertIsNone(re.search(r"dograh-inbound,\s*\d", executable))
-        self.assertIn("dograh-inbound,${ZEUS_CAPSTONE_TARGET}", executable)
+        self.assertIsNone(re.search(r"dograh-inbound", executable))
 
     def test_the_two_owners_converge_without_either_losing_a_context(self):
         # The two timers fire in whatever order they fire in, and neither may
@@ -188,30 +188,19 @@ class Row2AriTest(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         cls.portal = _read(os.path.join(PBX_ASTERISK, "ari.conf"))
-        cls.ava = _read(os.path.join(PBX_ASTERISK, "ari_additional_custom.conf"))
         cls.bootstrap = _read(BOOTSTRAP)
 
-    def test_the_two_fragments_define_disjoint_users(self):
-        portal_sections = _sections(self.portal)
-        ava_sections = _sections(self.ava)
-        self.assertEqual(portal_sections, ["__ARI_USER__"])
-        self.assertEqual(ava_sections, ["__AVA_ARI_USER__"])
-        self.assertFalse(set(portal_sections) & set(ava_sections))
+    def test_the_portal_fragment_defines_exactly_one_user(self):
+        # Zeus owns one ARI user. Anything else in here is a second owner, which
+        # sorcery refuses wholesale: a duplicate object costs EVERY ARI user, not
+        # just the one repeated.
+        self.assertEqual(_sections(self.portal), ["__ARI_USER__"])
 
-    def test_ava_s_user_is_not_also_written_to_the_file_capstone_shares(self):
-        # ari.conf `#include`s ari_additional_custom.conf, so a user defined in
-        # both is a duplicate object and sorcery refuses the whole file. The
-        # fragment says so in prose; this is the assertion behind it.
-        self.assertNotIn("__AVA_ARI_USER__", self.portal)
-        self.assertNotIn("__ARI_USER__", self.ava)
-        self.assertIn("duplicate", self.portal)
-
-    def test_both_ari_files_are_converge_owned(self):
-        # Wholesale-copied, either fragment clobbers the other product's users.
+    def test_the_portal_fragment_is_converge_owned(self):
+        # Wholesale-copied, it would clobber another product's ARI users.
         owned = re.search(r"^CONVERGE_OWNED=\"(.*)\"$", self.bootstrap, re.M)
         self.assertIsNotNone(owned, "CONVERGE_OWNED is what routes these through converge")
         self.assertIn("ari.conf", owned.group(1).split())
-        self.assertIn("ari_additional_custom.conf", owned.group(1).split())
 
     def test_converging_every_product_leaves_one_of_each_user(self):
         """The row's own failure mode: a duplicate object, not a missing one.
@@ -224,19 +213,19 @@ class Row2AriTest(unittest.TestCase):
         capstone_user = "[dograh]\ntype = user\npassword = shared-with-pbx\nread_only = no\n"
         target = "[general]\nenabled = yes\n\n" + capstone_user
         merged = target
-        for fragment in (self.portal, self.ava):
+        for fragment in (self.portal,):
             merged = ac.merge_into(merged, fragment, owner="zeus")
 
         sections = _sections(merged)
         self.assertEqual(len(sections), len(set(sections)), sections)
-        self.assertEqual(sorted(sections), ["__ARI_USER__", "__AVA_ARI_USER__", "dograh", "general"])
+        self.assertEqual(sorted(sections), ["__ARI_USER__", "dograh", "general"])
         # Foreign content and FreePBX's own section pass through untouched…
         self.assertIn("password = shared-with-pbx", merged)
         self.assertIn("enabled = yes", merged)
         # …and a re-converge adds no second user and loses none, which is what
         # the ARI user must be stable against however often the timer ticks.
         again = merged
-        for fragment in (self.portal, self.ava):
+        for fragment in (self.portal,):
             again = ac.merge_into(again, fragment, owner="zeus")
         self.assertEqual(sorted(_sections(again)), sorted(sections))
         self.assertEqual(again.count("type = user"), merged.count("type = user"))

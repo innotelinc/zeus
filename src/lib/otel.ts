@@ -3,7 +3,7 @@
  *
  * The estate has one observability spine: `AI_CALL_ID` (= Asterisk `UNIQUEID`)
  * is meant to answer "what happened on this call?" across AVA, Capstone, the
- * n8n grader and Grist (docs/ava-capstone-convergence.md, D7). The spans for
+ * n8n grader and Grist (docs/voice-convergence.md, D7). The spans for
  * that spine belong in one trace, and on a co-hosted box they belong in ONE
  * SigNoz — Capstone's — rather than a second ClickHouse that only Zeus reads.
  *

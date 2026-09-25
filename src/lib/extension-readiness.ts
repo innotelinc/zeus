@@ -6,7 +6,7 @@
  * broken half:
  *
  *   1. **A leftover second endpoint.** A box provisioned before the endpoint
- *      decision (`docs/ava-capstone-convergence.md` §11) still has
+ *      decision (`docs/voice-convergence.md` §11) still has
  *      `pjsip_ext_<ext>.conf` on disk, which defines `[<ext>]` beside the
  *      endpoint FreePBX generates. If anything loads it, res_pjsip is being
  *      handed two objects with one id and may refuse the whole file; if nothing

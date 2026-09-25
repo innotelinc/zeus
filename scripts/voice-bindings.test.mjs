@@ -1,50 +1,37 @@
 /**
- * Per-DID Capstone bindings: the mirrored rule, and the SQL it is stored by.
+ * Per-DID Capstone bindings: the rule the target is held to, and the SQL it is
+ * stored by.
  *
  * `src/lib/voice-bindings.ts` is the write path for `voice_bindings`, the table
  * that says which interview workflow each of an account's numbers reaches. Two
  * things can go wrong silently here, and a typecheck sees neither:
  *
- *  1. **The rule drifts.** The stored target is interpolated into
- *     `DIALPLAN_EXISTS(dograh-inbound,${ZEUS_CAPSTONE_TARGET},1)`, and the
- *     renderer (`pbx/ava_routing.py`) refuses anything outside
- *     `^[A-Za-z0-9_.:-]{1,64}$`, aborting the whole plan — which leaves the PBX
- *     on its last good fragment. `src/lib/dialplan-values.ts` mirrors that
- *     charset, and the first test here runs the same candidates through both
- *     sides and compares. A comment claiming parity is not parity.
+ *  1. **The rule widens.** The stored target is interpolated into
+ *     `DIALPLAN_EXISTS(dograh-inbound,${ZEUS_CAPSTONE_TARGET},1)`, so a value
+ *     containing `)` or `}` can close that call and inject the rest. The
+ *     charset used to be mirrored by the renderer that wrote the plan
+ *     (`pbx/ava_routing.py`, retired with the AVA engine) and this file ran the
+ *     same candidates through both sides. With the renderer gone,
+ *     `src/lib/dialplan-values.ts` is the only definition, so the test below
+ *     pins its verdicts one candidate at a time — a `{1,64}` that became
+ *     `{1,}` still has to fail it.
  *
- *  2. **The row is stored in a form nothing reads.** `pbx/ava_routing.py` keys
+ *  2. **The row is stored in a form nothing reads.** The plan lookup keys
  *     bindings on `phone_numbers.did` as stored, so the write path resolves the
  *     account's own number rather than trusting what a form sent. A second
- *     check is that a stored value survives `render(validate(...))` — the
- *     renderer's own code, not just its regex.
+ *     check is that what the API accepted is what comes back out of the table.
  *
  * The database half runs against the project's real `scripts/schema.sql` and
  * migrations, in a throwaway working directory (the portal's `db.ts` reads them
  * from `process.cwd()`), so the join and the upsert are the ones that ship.
  */
 import assert from "node:assert/strict";
-import { execFileSync } from "node:child_process";
 import { cpSync, mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, before, describe, it } from "node:test";
 
 import { REPO, load, transpile } from "./ts-probe.mjs";
-
-/** The renderer, run as its own process — it is Python, and it is the authority. */
-function python(script, arg) {
-  return execFileSync("python3", ["-c", script, arg], { cwd: join(REPO, "pbx"), encoding: "utf8" });
-}
-
-const hasPython = (() => {
-  try {
-    execFileSync("python3", ["-c", "import sys"], { stdio: "ignore" });
-    return true;
-  } catch {
-    return false;
-  }
-})();
 
 let values;
 let bindings;
@@ -95,31 +82,51 @@ after(() => {
   if (cwd) rmSync(cwd, { recursive: true, force: true });
 });
 
-describe("the mirrored Capstone target rule", () => {
-  const candidates = [
-    "8005", "a", "A", "0", "workflow-1", "a.b_c:d", "x".repeat(64),
-    "", " ", "8005)", "(", "${X}", "$[1]", "#comment", ";x", "a b", "a/b",
-    "x".repeat(65), "café", "8005\n8006", "8005,1", "*", "%{X}",
+describe("the Capstone target rule", () => {
+  // Every candidate is a way of closing `DIALPLAN_EXISTS(...)` early or of
+  // naming something the dialplan cannot look up; the accepted ones are the
+  // workflow extensions the provider actually hands out.
+  const verdicts = [
+    ["8005", true],
+    ["a", true],
+    ["A", true],
+    ["0", true],
+    ["workflow-1", true],
+    ["a.b_c:d", true],
+    ["x".repeat(64), true],
+    ["", false],
+    [" ", false],
+    ["8005)", false],
+    ["(", false],
+    ["${X}", false],
+    ["$[1]", false],
+    ["#comment", false],
+    [";x", false],
+    ["a b", false],
+    ["a/b", false],
+    ["x".repeat(65), false],
+    ["café", false],
+    ["8005\n8006", false],
+    ["8005,1", false],
+    ["*", false],
+    ["%{X}", false],
   ];
 
-  it("is exactly the renderer's SAFE_TOKEN_RE", { skip: !hasPython }, () => {
-    const tsVerdicts = Object.fromEntries(candidates.map((v) => [v, values.isSafeCapstoneTarget(v)]));
-    const pyVerdicts = JSON.parse(
-      python(
-        [
-          "import json, sys",
-          "import ava_routing as r",
-          "print(json.dumps({c: bool(r.SAFE_TOKEN_RE.match(c)) for c in json.loads(sys.argv[1])}))",
-        ].join("\n"),
-        JSON.stringify(candidates),
-      ),
-    );
+  it("accepts exactly the workflow targets and refuses the rest", () => {
+    for (const [value, accepted] of verdicts) {
+      assert.equal(
+        values.isSafeCapstoneTarget(value),
+        accepted,
+        `${JSON.stringify(value)} should ${accepted ? "" : "not "}be a target`,
+      );
+    }
+  });
 
-    assert.deepEqual(tsVerdicts, pyVerdicts);
-    // Guard against a candidate list that agrees because everything passes.
-    assert.equal(pyVerdicts["8005"], true);
-    assert.equal(pyVerdicts[""], false);
-    assert.equal(pyVerdicts["8005)"], false);
+  it("is the same charset the refusal message quotes", () => {
+    // `/api/voice/agent-mapping` refuses with "must be [A-Za-z0-9_.:-], max 64".
+    // A second copy of the rule here would be a second definition, so this
+    // asserts the one definition against the promise made to the operator.
+    assert.deepEqual(values.CAPSTONE_TARGET_RE.source, "^[A-Za-z0-9_.:-]{1,64}$");
   });
 });
 
@@ -167,24 +174,13 @@ describe("setBinding", () => {
     assert.equal(bindings.accountLines("u1")[0].capstone_binding, null);
   });
 
-  it("stores a value the renderer accepts and emits", { skip: !hasPython }, () => {
+  it("stores a target the API accepts, and reads it back verbatim", () => {
     bindings.setBinding("u1", "7745057135", "8005");
     const stored = bindings.accountLines("u1")[0].capstone_binding;
 
-    const rendered = python(
-      [
-        "import json, sys",
-        "import ava_routing as r",
-        "plan = json.loads(sys.argv[1])",
-        "print(r.render(r.validate(plan)))",
-      ].join("\n"),
-      JSON.stringify({
-        accounts: [
-          { did: "7745057135", account: "u1", capstone_addon: true, capstone_target: stored },
-        ],
-      }),
-    );
-
-    assert.match(rendered, /Set\(ZEUS_CAPSTONE_TARGET=8005\)/);
+    // What the PUT route let through is what the plan lookup will read: no
+    // normalisation on the way in, and none on the way out.
+    assert.equal(stored, "8005");
+    assert.ok(values.isSafeCapstoneTarget(stored));
   });
 });

@@ -371,7 +371,7 @@ Templates: `.env.example` (npm/dev), `.env.docker.example` (Docker). Key groups:
 | `NPM_LETSENCRYPT_EMAIL` | Let's Encrypt email for proxy-host certs |
 | `NPM_WILDCARD_CERT` / `NPM_DNS_PROVIDER` / `NPM_TSIG_NAMESERVER` / `NPM_TSIG_KEY_NAME` / `NPM_TSIG_KEY_SECRET` / `NPM_TSIG_ALGORITHM` | Wildcard cert via DNS-01 (TSIG/rfc2136) — auto-provisioned |
 | `OLLAMA_URL` / `OLLAMA_MODEL` | Model endpoint + fallback for AI voicemail summaries |
-| `VOICEMAIL_SUMMARY_URL` / `VOICEMAIL_SUMMARY_MODEL` | The summary path's own pin — endpoint and model, kept off the call path's `AVA_LLM_MODEL` so one model's free-tier cooldown cannot silence the other. Fall back to `OLLAMA_URL` / `OLLAMA_MODEL` |
+| `VOICEMAIL_SUMMARY_URL` / `VOICEMAIL_SUMMARY_MODEL` | The summary path's own pin — endpoint and model, kept off the shared `OLLAMA_MODEL` so one model's free-tier cooldown cannot silence the other. Fall back to `OLLAMA_URL` / `OLLAMA_MODEL` |
 | `NEXT_PUBLIC_BRAND_NAME` | White-label brand override |
 | `SESSION_SECRET` | Session signing key (auto-generated if unset) |
 | `VOIPMS_API_USERNAME` / `_PASSWORD` / `VOIPMS_WEBHOOK_SECRET` | VoIP.ms API + SMS webhook |

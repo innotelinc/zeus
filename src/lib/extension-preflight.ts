@@ -180,7 +180,7 @@ export function judgeExtension(intent: ExtensionIntent, observed: ObservedExtens
       "settle the endpoint's owner first — `python3 " +
         "pbx/pjsip_owner_check.py --live --extension " +
         ext +
-        "` names the two files (docs/ava-capstone-convergence.md §11.5)",
+        "` names the two files (docs/voice-convergence.md §11.5)",
     );
   }
 
