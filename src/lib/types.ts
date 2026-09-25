@@ -49,6 +49,14 @@ export interface FreePBXExtension {
   device_state: string;
   created_at: string;
   updated_at: string;
+  /**
+   * Why the softphone will or will not register, attached server-side.
+   *
+   * Optional: it is a judgement about the PBX's own config directory, so it is
+   * only present on rows that came through a reader that took it (see
+   * `withSoftphoneReadiness`), and its absence means "not asked", not "fine".
+   */
+  softphone?: import("./extension-readiness").SoftphoneReadiness;
 }
 
 export interface SmsConversation {

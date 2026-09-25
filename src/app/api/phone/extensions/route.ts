@@ -2,14 +2,15 @@ import { NextResponse } from "next/server";
 import { requireUser, badRequest } from "@/lib/api-helpers";
 import db from "@/lib/db";
 import * as freepbx from "@/lib/freepbx";
-import { getAmiClient } from "@/lib/ami";
 import {
   provisionFragment,
   readFragmentState,
   removeFragment,
   type SoftphoneState,
 } from "@/lib/pjsip-endpoint";
+import { reloadPjsipIfLive } from "@/lib/pjsip-reload";
 import { judgeExtension, isValidExtension } from "@/lib/extension-preflight";
+import { withSoftphoneReadiness } from "@/lib/extension-readiness-server";
 import { readObservedExtensions } from "@/lib/extension-preflight-live";
 import { randomUUID } from "node:crypto";
 import type { FreePBXExtension } from "@/lib/types";
@@ -20,30 +21,13 @@ export async function GET() {
   const { user, error } = await requireUser();
   if (error) return error;
 
-  const extensions = db
-    .prepare("SELECT * FROM freepbx_extensions WHERE user_id = ? ORDER BY created_at DESC")
-    .all(user.id) as FreePBXExtension[];
+  const extensions = withSoftphoneReadiness(
+    db
+      .prepare("SELECT * FROM freepbx_extensions WHERE user_id = ? ORDER BY created_at DESC")
+      .all(user.id) as FreePBXExtension[],
+  );
 
   return NextResponse.json({ extensions });
-}
-
-/**
- * Reload res_pjsip so a *provisioned* endpoint appears.
- *
- * Only ever called when an operator-owned file already includes the fragment.
- * The reload is what makes a written fragment live, so calling it while the
- * fragment is loaded any other way is how a duplicate `[<ext>]` — the object id
- * FreePBX generates for the same extension — gets activated, and a duplicate
- * object id makes sorcery refuse the whole pjsip configuration. A reload is
- * cheap; losing every endpoint on the box is not.
- */
-async function reloadPjsipIfLive(state: SoftphoneState): Promise<void> {
-  if (!state.provisioned) return;
-  const ami = getAmiClient();
-  if (!ami.isConnected) return;
-  await ami
-    .sendAction({ Action: "Command", Command: "module reload res_pjsip.so" })
-    .catch(() => {});
 }
 
 export async function POST(req: Request) {

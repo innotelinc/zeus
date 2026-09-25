@@ -3,6 +3,7 @@ import { requireUser } from "@/lib/api-helpers";
 import db from "@/lib/db";
 import { getAmiClient } from "@/lib/ami";
 import { queryExtensionState } from "@/lib/ami-handler";
+import { withSoftphoneReadiness } from "@/lib/extension-readiness-server";
 import type { PhoneNumber, FreePBXExtension } from "@/lib/types";
 
 export const dynamic = "force-dynamic";
@@ -15,9 +16,13 @@ export async function GET() {
     .prepare("SELECT * FROM phone_numbers WHERE user_id = ? ORDER BY created_at DESC")
     .all(user.id) as PhoneNumber[];
 
-  const extensions = db
-    .prepare("SELECT * FROM freepbx_extensions WHERE user_id = ? ORDER BY created_at DESC")
-    .all(user.id) as FreePBXExtension[];
+  // Readiness is attached before the AMI refresh below, so the row a screen
+  // re-reads after a repair carries the same judgement the repair returned.
+  const extensions = withSoftphoneReadiness(
+    db
+      .prepare("SELECT * FROM freepbx_extensions WHERE user_id = ? ORDER BY created_at DESC")
+      .all(user.id) as FreePBXExtension[],
+  );
 
   // Live AMI state refresh for extensions showing "unknown" or stale state.
   // Runs in parallel so multiple extensions don't add sequential latency.

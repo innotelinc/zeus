@@ -6,6 +6,7 @@ import type { PhoneNumber, FreePBXExtension } from "@/lib/types";
 import { useToast } from "@/components/ToastProvider";
 import { PlusIcon, RefreshIcon, CheckCircleIcon, SearchIcon, PhoneIcon, XIcon, TrashIcon, AlertCircleIcon } from "@/components/icons";
 import { EmptyState, PageHeader } from "@/components/ui";
+import { readinessLabel } from "@/lib/extension-readiness";
 
 interface Props {
   numbers: PhoneNumber[];
@@ -36,6 +37,7 @@ export default function PhoneSection({ numbers: initialNumbers, extensions: init
   const [provisioning, setProvisioning] = useState(false);
   const [deletingExt, setDeletingExt] = useState<string | null>(null);
   const [confirmDeleteExt, setConfirmDeleteExt] = useState<string | null>(null);
+  const [repairing, setRepairing] = useState<string | null>(null);
 
   const maxNumbers = plan === "business" ? 5 : 1;
 
@@ -131,14 +133,12 @@ export default function PhoneSection({ numbers: initialNumbers, extensions: init
         body: JSON.stringify({ extensionId: extForm.id, name: extForm.name, email: extForm.email }),
       });
       if (res.success) {
-        setExtensions(prev => [...prev, {
-          id: res.extensionId, user_id: "", extension_id: res.extensionId,
-          extension_name: extForm.name, extension_secret: res.secret,
-          voicemail_enabled: 1, voicemail_pin: null, status: "active",
-          device_state: "offline", created_at: new Date().toISOString(), updated_at: new Date().toISOString(),
-        }]);
         setProvisionMode(false);
         setExtForm({ id: "", name: "", email: "" });
+        // Re-read rather than appending a row built here: the new extension's
+        // softphone readiness is a judgement about the PBX's config directory,
+        // and "ready" is not something this side can assume.
+        await refresh();
         toast.success("Extension provisioned.");
       }
     } catch (e) {
@@ -147,6 +147,44 @@ export default function PhoneSection({ numbers: initialNumbers, extensions: init
       // the whole point — the old path showed a raw collision and nothing else.
       toast.error(apiErrorMessage(e, "Provisioning failed"));
     } finally { setProvisioning(false); }
+  }
+
+  /**
+   * Adopt the secret the PBX renders, and rewrite the WebRTC endpoint with it.
+   *
+   * The two data causes of "Offline" in one action: a row with no secret, and a
+   * row whose secret FreePBX never rendered. The include is not written — that
+   * is the endpoint-ownership decision, and the response names the line to add.
+   */
+  async function repairExtension(ext: FreePBXExtension) {
+    setRepairing(ext.id);
+    try {
+      const res = await api<{
+        adopted_pbx_secret: boolean;
+        softphone: FreePBXExtension["softphone"];
+      }>("/api/phone/extensions/repair", {
+        method: "POST",
+        body: JSON.stringify({ id: ext.id }),
+      });
+      setExtensions(prev =>
+        prev.map(e => (e.id === ext.id ? { ...e, softphone: res.softphone } : e)),
+      );
+      toast.success(
+        res.adopted_pbx_secret
+          ? `Adopted the secret the PBX renders for Ext ${ext.extension_id}.`
+          : `Rewrote the softphone endpoint for Ext ${ext.extension_id}.`,
+      );
+      if (res.softphone && res.softphone.state === "not-loaded") {
+        toast.info(
+          `Still not loaded — add "${res.softphone.requiredInclude}" to pjsip_custom_post.conf.`,
+        );
+      }
+    } catch (e) {
+      // The refusal carries `reason` + `repair`; surfacing them is the point.
+      toast.error(apiErrorMessage(e, "Repair failed"));
+    } finally {
+      setRepairing(null);
+    }
   }
 
   async function deleteExtension(extDbId: string, extNumber: string) {
@@ -340,10 +378,37 @@ export default function PhoneSection({ numbers: initialNumbers, extensions: init
                           thing on the card the operator must read. */}
                       <div className="font-mono text-lg font-semibold text-[var(--foreground)]">Ext {ext.extension_id}</div>
                       <div className="text-xs text-[var(--text-secondary)]">{ext.extension_name}{ext.voicemail_enabled ? " · Voicemail enabled" : ""}</div>
+                      {/* "Offline" alone is one word for three different
+                          faults; this names the one to fix first. The full
+                          sentence is the tooltip, because it carries the file
+                          and line the operator has to touch. */}
+                      {ext.softphone && (
+                        <div
+                          className={`mt-1 flex items-center gap-1.5 text-xs ${
+                            ext.softphone.state === "ready" ? "text-mint-400" : "text-sun-400"
+                          }`}
+                          title={ext.softphone.summary}
+                        >
+                          {ext.softphone.state === "ready" ? (
+                            <CheckCircleIcon size={12} />
+                          ) : (
+                            <AlertCircleIcon size={12} />
+                          )}
+                          {readinessLabel(ext.softphone)}
+                        </div>
+                      )}
                     </div>
                   </div>
                   <div className="flex items-center gap-2">
                     <span className={`rounded-full px-2.5 py-0.5 text-[11px] font-medium ${st.bg}`}>{st.label}</span>
+                    {ext.softphone && ext.softphone.state !== "ready" && (
+                      <button type="button" onClick={() => void repairExtension(ext)}
+                        disabled={repairing === ext.id}
+                        className="rounded-lg px-2.5 py-1.5 text-xs font-medium text-sun-400 transition hover:bg-sun-400/10 disabled:opacity-50"
+                        title="Adopt the secret the PBX renders for this extension and rewrite its WebRTC endpoint">
+                        {repairing === ext.id ? "Repairing…" : "Repair"}
+                      </button>
+                    )}
                     <button type="button" onClick={() => setConfirmDeleteExt(ext.id)}
                       className="rounded-lg p-1.5 text-white/20 transition hover:text-rose-400 hover:bg-rose-500/10 opacity-0 group-hover:opacity-100"
                       title={`Remove Ext ${ext.extension_id}`}>
