@@ -1,11 +1,19 @@
 "use client";
 
-import { useState, useEffect, useRef, useMemo } from "react";
+import { useState, useEffect, useRef } from "react";
+import { createPortal } from "react-dom";
 import { UserAgent, Registerer, SessionState } from "sip.js";
 import type { FreePBXExtension, PhoneNumber } from "@/lib/types";
 import { api } from "@/lib/client-api";
 import { PhoneIcon } from "@/components/icons";
 import { useToast } from "@/components/ToastProvider";
+import { WSS_STORAGE_KEY, softphoneWssUrl } from "@/lib/softphone-wss";
+
+/**
+ * Window name for the pop-out. Reused on every open, so a second click focuses
+ * the phone that is already out rather than stacking a second registration.
+ */
+const POPOUT_NAME = "zeus-softphone";
 
 interface Props {
   extensions: FreePBXExtension[];
@@ -50,21 +58,36 @@ export default function SoftphoneSection({ extensions, phoneNumbers }: Props) {
   const originatingRef = useRef(false);
   const originateTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const remotePartyRef = useRef("");
+  // Held as a ref as well as state so the unmount cleanup can close the window
+  // without capturing a stale render's value.
+  const popoutWindowRef = useRef<Window | null>(null);
 
   const selectedExt = extensions.find((e) => e.id === selectedExtId);
 
-  const wssUrl = useMemo(() => {
-    if (typeof window === "undefined") return "wss://localhost:8089/ws";
-    // 1. User override from Settings (localStorage)
-    const stored = localStorage.getItem("wssUrl");
+  // ── Pop-out ──────────────────────────────────────────────────────────────
+  // The phone can be detached into its own window. The panel is portalled out
+  // (see `createPortal` below) rather than re-mounted in the new window, so the
+  // SIP session, its timers and every ref stay exactly where they are: popping
+  // out mid-call moves the UI and nothing else. A second copy would register the
+  // extension twice and drop whichever leg answered second.
+  //
+  // Only the mount node is state — it decides where the panel renders. The
+  // window itself is a ref, because nothing reads it during render.
+  const [popoutRoot, setPopoutRoot] = useState<HTMLElement | null>(null);
+
+  // The socket URL now comes from one rule (src/lib/softphone-wss.ts) instead of
+  // a per-file `:8089/ws` fallback. This is only the immediate value: the
+  // authoritative one arrives from /api/rtc-config below, because
+  // NEXT_PUBLIC_FREEPBX_WSS_URL is inlined at build time and so cannot be
+  // changed on a released image.
+  const [wssUrl, setWssUrl] = useState(() => {
+    if (typeof window === "undefined") return "";
+    // 1. User override from Settings (localStorage) — an explicit choice wins.
+    const stored = localStorage.getItem(WSS_STORAGE_KEY);
     if (stored) return stored;
-    // 2. Env var (set in docker-compose)
-    if (process.env.NEXT_PUBLIC_FREEPBX_WSS_URL) {
-      return process.env.NEXT_PUBLIC_FREEPBX_WSS_URL;
-    }
-    // 3. Fallback: same hostname as dashboard
-    return `wss://${window.location.hostname}:8089/ws`;
-  }, []);
+    // 2. Derived from this dashboard's own hostname (white-label safe).
+    return softphoneWssUrl({}, window.location.hostname);
+  });
 
   // ICE servers come from the server at runtime (/api/rtc-config) rather than
   // from process.env.NEXT_PUBLIC_TURN_* here: those are inlined at build time,
@@ -82,9 +105,23 @@ export default function SoftphoneSection({ extensions, phoneNumbers }: Props) {
       try {
         const res = await fetch("/api/rtc-config", { cache: "no-store" });
         if (!res.ok) return;
-        const data = (await res.json()) as { iceServers?: RTCIceServer[] };
+        const data = (await res.json()) as {
+          iceServers?: RTCIceServer[];
+          wssUrl?: string;
+        };
         if (!cancelled && Array.isArray(data?.iceServers) && data.iceServers.length > 0) {
           setIceServers(data.iceServers);
+        }
+        // The server's answer beats the derived default, but never the
+        // operator's saved override — that is a deliberate choice about their
+        // own deployment, and this is only a better default.
+        if (
+          !cancelled &&
+          typeof data?.wssUrl === "string" &&
+          data.wssUrl &&
+          !localStorage.getItem(WSS_STORAGE_KEY)
+        ) {
+          setWssUrl(data.wssUrl);
         }
       } catch {
         // No toast: the softphone still registers and calls still connect on
@@ -122,11 +159,25 @@ export default function SoftphoneSection({ extensions, phoneNumbers }: Props) {
   useEffect(() => {
     return () => {
       cleanupAll();
+      // The session dies with this component, so an orphaned popup would be a
+      // phone that looks connected and can do nothing.
+      try {
+        popoutWindowRef.current?.close();
+      } catch {
+        // Already closed by the user.
+      }
     };
   }, []);
 
   async function connectExtension() {
     if (!selectedExt) return;
+    if (!wssUrl) {
+      // Every socket URL in this app ends in `/ws` and starts with `wss://`; an
+      // empty one means neither the server nor the derivation supplied one, and
+      // `new URL("")` below would throw something unreadable.
+      toast.error("No WebSocket address is configured — set one in Settings → Softphone.");
+      return;
+    }
     setCallState("registering");
 
     cleanupAll();
@@ -480,6 +531,67 @@ export default function SoftphoneSection({ extensions, phoneNumbers }: Props) {
     }
   }
 
+  /**
+   * Detach the phone into its own window.
+   *
+   * The panel is **portalled** into the popup rather than re-mounted there
+   * (see the `createPortal` in the return below), so the SIP session, its
+   * timers, the active call and every ref stay exactly where they are: popping
+   * out moves the UI and nothing else. Mounting a second copy would register
+   * the extension twice and Asterisk would drop whichever leg answered second.
+   *
+   * A blank popup has none of this app's styling, so the stylesheets are cloned
+   * across first — otherwise the phone renders as unstyled HTML.
+   */
+  function openPopout() {
+    const win = window.open(
+      "",
+      POPOUT_NAME,
+      "width=420,height=700,menubar=no,toolbar=no,location=no,status=no,resizable=yes",
+    );
+    if (!win) {
+      toast.error("Pop-out blocked — allow pop-ups for this site, then try again.");
+      return;
+    }
+
+    win.document.title = "Zeus Softphone";
+    const head = win.document.head;
+    // This app's CSS is served from the same origin, so the cloned <link>s
+    // resolve in the popup as-is.
+    document
+      .querySelectorAll('link[rel="stylesheet"], style')
+      .forEach((node) => head.appendChild(node.cloneNode(true)));
+
+    const root = win.document.createElement("div");
+    root.id = "zeus-softphone-root";
+    win.document.body.appendChild(root);
+    win.document.body.style.margin = "0";
+
+    // The window being closed must be treated exactly like "Bring back", or the
+    // panel would stay portalled into a document that no longer exists and the
+    // phone would vanish from both places.
+    win.addEventListener("pagehide", () => {
+      popoutWindowRef.current = null;
+      setPopoutRoot(null);
+    });
+
+    popoutWindowRef.current = win;
+    setPopoutRoot(root);
+    win.focus();
+  }
+
+  /** Pull the phone back into the dashboard and close the popup. */
+  function closePopout() {
+    const win = popoutWindowRef.current;
+    popoutWindowRef.current = null;
+    setPopoutRoot(null);
+    try {
+      win?.close();
+    } catch {
+      // Already closed by the user.
+    }
+  }
+
   function handleVolumeChange(v: number) {
     setVolume(v);
     if (remoteAudioRef.current) {
@@ -496,38 +608,49 @@ export default function SoftphoneSection({ extensions, phoneNumbers }: Props) {
   const inCall = callState === "in-call" || callState === "held" || callState === "ringing-out" || callState === "ringing-in";
   const canDial = callState === "idle" || callState === "dialing";
 
-  return (
-    <div className="fixed bottom-0 left-0 right-0 z-50">
-      <audio ref={remoteAudioRef} autoPlay className="hidden" />
+  /*
+   * The three pieces of chrome, defined here rather than inline so the same
+   * element can be rendered in either document — `bar` and the popped-out strip
+   * stay in the dashboard tab, `panel` renders inline or is portalled into the
+   * pop-out window. One definition each, so the two placements cannot drift.
+   */
+  const bar = (
+    <button
+      type="button"
+      onClick={() => setExpanded(true)}
+      className="flex w-full items-center justify-center gap-2 border-t border-white/[0.08] bg-ink-900/95 backdrop-blur-xl px-4 py-3 text-sm font-medium text-white/60 transition hover:text-white hover:bg-ink-850/95"
+    >
+      <PhoneIcon size={18} className={callState === "in-call" ? "text-mint-400" : callState === "ringing-in" ? "text-sun-400 animate-pulse" : ""} />
+      {callState === "idle" && "WebRTC Softphone — Click to open"}
+      {callState === "disconnected" && "Softphone — Connect an extension"}
+      {callState === "in-call" && `📞 ${activeRemoteId || "On call"} · ${formatDuration(callDuration)}`}
+      {callState === "ringing-in" && `Incoming from ${incomingCaller}`}
+      {callState === "held" && `⏸ ${activeRemoteId || "On hold"} · ${formatDuration(callDuration)}`}
+      {callState === "ringing-out" && `Calling ${dialNumber}...`}
+      {callState === "registering" && "Connecting..."}
+    </button>
+  );
 
-      {/* Collapsed bar */}
-      {!expanded && (
-        <button
-          type="button"
-          onClick={() => setExpanded(true)}
-          className="flex w-full items-center justify-center gap-2 border-t border-white/[0.08] bg-ink-900/95 backdrop-blur-xl px-4 py-3 text-sm font-medium text-white/60 transition hover:text-white hover:bg-ink-850/95"
-        >
-          <PhoneIcon size={18} className={callState === "in-call" ? "text-mint-400" : callState === "ringing-in" ? "text-sun-400 animate-pulse" : ""} />
-          {callState === "idle" && "WebRTC Softphone — Click to open"}
-          {callState === "disconnected" && "Softphone — Connect an extension"}
-          {callState === "in-call" && `📞 ${activeRemoteId || "On call"} · ${formatDuration(callDuration)}`}
-          {callState === "ringing-in" && `Incoming from ${incomingCaller}`}
-          {callState === "held" && `⏸ ${activeRemoteId || "On hold"} · ${formatDuration(callDuration)}`}
-          {callState === "ringing-out" && `Calling ${dialNumber}...`}
-          {callState === "registering" && "Connecting..."}
-        </button>
-      )}
-
-      {/* Expanded panel */}
-      {expanded && (
+  const panel = (
         <div className="border-t border-white/[0.08] bg-ink-900/95 backdrop-blur-xl animate-slide-up">
-          <button
-            type="button"
-            onClick={() => setExpanded(false)}
-            className="flex w-full items-center justify-center border-b border-white/[0.06] px-4 py-1.5 text-xs text-white/30 transition hover:text-white/50"
-          >
-            ▼ Hide softphone
-          </button>
+          <div className="flex w-full items-center justify-center gap-2 border-b border-white/[0.06] px-4 py-1.5 text-xs text-white/30">
+            <button
+              type="button"
+              onClick={() => setExpanded(false)}
+              className="transition hover:text-white/50"
+            >
+              ▼ Hide softphone
+            </button>
+            <span className="text-white/15">·</span>
+            <button
+              type="button"
+              onClick={openPopout}
+              className="transition hover:text-white/50"
+              title="Open the softphone in its own window"
+            >
+              ⧉ Pop out
+            </button>
+          </div>
 
           <div className="mx-auto max-w-7xl px-5 py-4 sm:px-8">
             <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:gap-8">
@@ -776,7 +899,47 @@ export default function SoftphoneSection({ extensions, phoneNumbers }: Props) {
             </div>
           </div>
         </div>
+  );
+
+  return (
+    <div className="fixed bottom-0 left-0 right-0 z-50">
+      {/* The audio element deliberately stays in THIS document even when the
+          panel is popped out. The stream is attached to it by ref (see
+          `attachMedia`), so moving it into the popup would mean re-attaching on
+          every detach — and a call already in progress would go silent for the
+          duration. Keeping it here means popping out is purely a UI move. */}
+      <audio ref={remoteAudioRef} autoPlay className="hidden" />
+
+      {popoutRoot ? (
+        /* Popped out: a thin strip stays behind so the call is still visible
+           here and can be pulled back. */
+        <div className="flex w-full items-center justify-center gap-3 border-t border-white/[0.08] bg-ink-900/95 px-4 py-2.5 text-sm text-white/60 backdrop-blur-xl">
+          <PhoneIcon
+            size={16}
+            className={callState === "in-call" ? "text-mint-400" : callState === "ringing-in" ? "text-sun-400 animate-pulse" : ""}
+          />
+          <span>Softphone is in its own window</span>
+          {callState === "in-call" && (
+            <span className="font-mono text-white/80">{formatDuration(callDuration)}</span>
+          )}
+          <button type="button" onClick={closePopout} className="btn-ghost px-3 py-1 text-xs">
+            Bring back
+          </button>
+        </div>
+      ) : (
+        <>
+          {/* Collapsed bar */}
+          {!expanded && bar}
+
+          {/* Expanded panel */}
+          {expanded && panel}
+        </>
       )}
+
+      {/* The panel itself, portalled into the popup's document once it exists.
+          The session above is untouched by this: same component, same state,
+          same call — only the DOM it renders into changes. */}
+      {popoutRoot && createPortal(panel, popoutRoot)}
     </div>
   );
 }

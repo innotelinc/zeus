@@ -6,12 +6,11 @@ import { AlertCircleIcon, CheckCircleIcon } from "@/components/icons";
 import { useToast } from "@/components/ToastProvider";
 import type { User } from "@/lib/types";
 import Link from "next/link";
+import { WSS_STORAGE_KEY, softphoneWssUrl } from "@/lib/softphone-wss";
 
 interface Props {
   user: User;
 }
-
-const WSS_STORAGE_KEY = "wssUrl";
 
 // The Integrations panel used to report a hardcoded "Connection active" for
 // every service, so a genuinely unconfigured one (VoIP.ms with no API
@@ -52,7 +51,18 @@ export default function SettingsSection({ user }: Props) {
   const [saving, setSaving] = useState(false);
   const [pwdSaving, setPwdSaving] = useState(false);
 
-  const defaultWss = process.env.NEXT_PUBLIC_FREEPBX_WSS_URL ?? `wss://${typeof window !== "undefined" ? window.location.hostname : "localhost"}:8089/ws`;
+  // The default the resolver picks, which seeds the field and backs Reset. It
+  // starts from the shared rule (src/lib/softphone-wss.ts) so this field and the
+  // softphone panel cannot disagree, and is replaced by /api/rtc-config's answer
+  // below — the server's own value, which is the one the panel actually uses.
+  //
+  // The old default was `wss://<host>:8089/ws`. On a deployment that terminates
+  // TLS at a proxy — which is every deployment here — nothing is listening on
+  // :8089 from the browser, so the field offered an address that could not
+  // register and Reset restored it.
+  const [defaultWss, setDefaultWss] = useState(() =>
+    softphoneWssUrl({}, typeof window !== "undefined" ? window.location.hostname : ""),
+  );
   const [wssUrl, setWssUrl] = useState(defaultWss);
   const [wssSaved, setWssSaved] = useState(false);
   // localStorage exists only in the browser, and this component is rendered on
@@ -68,6 +78,30 @@ export default function SettingsSection({ user }: Props) {
       setSavedWss(stored);
     }, 0);
     return () => window.clearTimeout(initial);
+  }, []);
+
+  // The server's resolved socket URL, so what this screen shows as the default
+  // is what the softphone will dial. A failed fetch leaves the derived value.
+  useEffect(() => {
+    let cancelled = false;
+    api<{ wssUrl?: string }>("/api/rtc-config")
+      .then((res) => {
+        if (cancelled || !res?.wssUrl) return;
+        const resolved = res.wssUrl;
+        setDefaultWss(resolved);
+        // Only move the field itself when the operator has not saved their own
+        // value — rewriting a deliberate override under them would be worse
+        // than showing a stale default.
+        setWssUrl((current) =>
+          localStorage.getItem(WSS_STORAGE_KEY) ? current : resolved,
+        );
+      })
+      .catch(() => {
+        // Keep the derived default.
+      });
+    return () => {
+      cancelled = true;
+    };
   }, []);
 
   // Integration statuses are probed by the server; a failed fetch just leaves
@@ -210,8 +244,10 @@ export default function SettingsSection({ user }: Props) {
         <div>
           <h2 className="text-lg font-semibold text-white">Softphone WebSocket</h2>
           <p className="mt-1 text-sm text-white/45">
-            WebSocket URL for the WebRTC softphone. Must point to the Asterisk WSS endpoint (port 8089).
-            Change this if your PBX is on a different hostname.
+            WebSocket URL for the WebRTC softphone — the Asterisk WSS endpoint,
+            reached through the reverse proxy as <code>wss://ws.&lt;domain&gt;/ws</code>.
+            Change this if your PBX is on a different hostname. Leave it empty to
+            use the address this server resolves.
           </p>
         </div>
         <div className="flex gap-3">
@@ -219,7 +255,7 @@ export default function SettingsSection({ user }: Props) {
             className="flex-1 rounded-xl border border-white/[0.08] bg-white/[0.04] px-4 py-2.5 text-sm font-mono text-white placeholder:text-white/20 focus:border-brand-500/50 focus:outline-none"
             value={wssUrl}
             onChange={(e) => { setWssUrl(e.target.value); setWssSaved(false); }}
-            placeholder="wss://ws.zeus.innotel.us:8089/ws"
+            placeholder="wss://ws.zeus.innotel.us/ws"
           />
           <button type="button" onClick={saveWssUrl} disabled={wssSaved}
             className={`btn-primary px-4 py-2 text-sm ${wssSaved ? "opacity-50" : ""}`}>
