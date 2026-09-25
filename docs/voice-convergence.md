@@ -2,10 +2,11 @@
 
 **Status:** historical design record. The AVA engine this document was written
 around has been retired: every call now enters `[dograh-inbound]` directly, and
-the `[zeus-ai-*]` contexts, the `voice` compose profile and the AVA ARI user are
-gone (see [`unified-console.md`](unified-console.md) §5). The decisions and the
-reasoning below are kept because live code still cites them by section — read
-every AVA reference as "the engine that held this role before Dograh".
+the `[zeus-ai-*]` contexts and the `voice` compose profile are gone (see
+[`unified-console.md`](unified-console.md) §5). Its ARI user is the one piece
+that outlived it, and it was removed on 2026-09-25 (§2.4). The decisions and the
+reasoning below are kept because live code still cites them by section — read every AVA reference as "the engine that held this role before
+Dograh".
 
 **The one-sentence goal:** one voice plane where a call is answered once, knows
 who it is and what it may buy, can move between an IVR agent and a structured
@@ -16,31 +17,41 @@ switch, not a third brain.
 
 ## 1. Where we are today
 
-Three systems answer, grade, and switch calls. Each works; the seams between
-them are where every incident has come from.
+Two products answer and grade calls over one switch. Each works; the seams
+between them are where every incident has come from.
 
 | Layer | What it is today | State |
 |---|---|---|
 | **FreePBX / Asterisk 18** | trunks, DIDs, extensions, ring groups, voicemail, CDR/CEL | live on `.30` (`zeus-freepbx`) |
-| **AVA v7.6.1** (pinned `5d8f888`) | `ai-engine` + `ai-engine-admin` + `local-ai-server`; Stasis app `asterisk-ai-voice-agent`; AudioSocket media on `:8097`; agents in `agents.db` | containers **up**, but **not fronting calls** |
+| ~~**AVA v7.6.1**~~ (was pinned `5d8f888`) | `ai-engine` + `ai-engine-admin` + `local-ai-server`; Stasis app `asterisk-ai-voice-agent`; AudioSocket media on `:8097`; agents in `agents.db` | **retired** — no containers and no `voice` profile on `.30`, its `[zeus-ai-*]` contexts are out of the live dialplan, and the ARI user it left behind was removed 2026-09-25 (§2.4) |
 | **Capstone / dograh** | `dograh-api` (`:8000`, `/api/v1`), dograh UI (`:3010`), pipecat pipelines, interview workflows + grading → n8n → Grist (`:8484`) | live; **fronting all DIDs** |
-| **Zeus portal** (Next.js) | accounts, DIDs, `account_addons`, `voice_agents`, Magnate add-on gate, PBX sync, AVA admin proxy | live |
+| **Zeus portal** (Next.js) | accounts, DIDs, `account_addons`, `voice_bindings`, Magnate add-on gate, PBX sync, its own Dograh-backed voice API (`/api/voice/*`) | live |
 
-**The routing on `.30` right now** (it was reverted to this state deliberately —
-see §8, P0):
+**The routing on `.30` right now**, read from FreePBX's own `incoming` table and
+the effective dialplan it generates (`dialplan show ext-did-0002`):
 
 ```
 voipms_pjsip (context=from-trunk) → from-pstn → ext-did → ext-did-0002
-  4132643964 → dograh-inbound,8008,1 → Stasis(dograh_72e590ef66eb)
+  3025551002 → dograh-inbound,8003,1 → Stasis(dograh_72e590ef66eb)
+  4132643964 → dograh-inbound,8000,1 → Stasis(dograh_72e590ef66eb)
+  4132951200 → dograh-inbound,8003,1 → Stasis(dograh_72e590ef66eb)
+  4135612020 → dograh-inbound,8003,1 → Stasis(dograh_72e590ef66eb)
+  8579901777 → dograh-inbound,8003,1 → Stasis(dograh_72e590ef66eb)
   7745057135 → dograh-inbound,8005,1 → Stasis(dograh_72e590ef66eb)
+  7745057136 → ext-group,329 (the fax service — not an interview line)
   catch-all  → dograh-inbound,8003,1 → Stasis(dograh_72e590ef66eb)
-  7745057136 → ext-group,329 (ring group — not an interview line)
 ```
 
-So today Capstone is the front door, and the `[zeus-ai-*]` contexts in the repo
-are **not** in the live dialplan. `zeus-pbx-sync.timer` is **disabled** — it was
-turned off during the rollback because it would have re-converged the dialplan
-underneath the restore.
+`8000`–`8008` are rows in the same table — every workflow is also dialable as an
+extension — and `4138808180 → from-did-direct,4132912045,1` is a FreePBX-only
+route that no portal account holds.
+
+So Capstone is the front door, every platform DID names a workflow, and the
+`[zeus-ai-*]` contexts are **not** in the live dialplan. `zeus-pbx-sync.timer`
+is **enabled**, and every tick judges this ingress with `pbx/dograh_routes.py`
+before it considers the fragments: read-only, because which workflow a DID
+should reach is a portal decision and the row is FreePBX's, so the timer reports
+the rows a person has to fix rather than writing them (`pbx/README.md`).
 
 ---
 
@@ -57,11 +68,15 @@ dialplan resolved one. **Closed 2026-09-22:** 824 is an entry point into
 `[zeus-ai-interview]`, which dispatches on the account's `ZEUS_CAPSTONE_TARGET`
 and refuses rather than guessing — see §7 P2.
 
-Live proof of how sharp this is: DID `7745057135` is labelled *"Dograh Voice
-Agent (Job Interview)"* in FreePBX and dials `8005`, but dograh's number `8005`
-is bound to workflow 12 **Philosophy**, and workflow 6 **Job Interview** has no
-number bound at all. The label, the extension, and the product's binding are
-three independent facts that nothing reconciles.
+The case that produced this section, re-measured 2026-09-25: DID `7745057135` is
+labelled *"Dograh Voice Agent (Job Interview)"* in FreePBX, dials `8005`, and
+Dograh's own `telephony_phone_numbers` binds `8005` to workflow 6 **Job
+Interview** — the three facts agree today. The document recorded the opposite
+when it was written (`8005` bound to workflow 12 **Philosophy**, workflow 6 with
+no number at all), and nothing reconciled them in between; that is the point.
+The label, the extension, and the engine's binding are three stores, and §5's
+`voice_bindings` exists so one of them is *derived* from the others rather than
+maintained beside them.
 
 ### 2.2 Call state cannot cross the hand-off
 
@@ -88,11 +103,18 @@ routes *into* Capstone from a static context is standing on sand.
 | codec/frame | G.711 µ-law, 20 ms | G.711 µ-law, 20 ms, 160-frame packets (visible in the plaintext `MEDIA_START` frame) |
 
 The formats agree, which is why transfers work at all — but by luck, not
-contract. `pbx/ava_ari_check.py` existed precisely because a secret mismatch
-between engine and `ari.conf` was invisible until a call failed; and today a
-duplicate `[zeus-ava]` section in `ari.conf` made Asterisk reject the **entire
-file**, so *no* ARI user loaded and no Stasis app could register. Nothing in
-the architecture prevents a third variant of that.
+contract. `pbx/ava_ari_check.py` (deleted with the engine) existed precisely
+because a secret mismatch between engine and `ari.conf` was invisible until a
+call failed; and a duplicate `[zeus-ava]` section once made Asterisk reject the
+**entire** file, so *no* ARI user loaded and no Stasis app could register.
+Nothing in the architecture prevents a third variant of that — and the
+retirement finished late: `[zeus-ava]` stayed a **loaded ARI user** on `.30`
+long after the engine itself was gone. Deleting the fragment from the repo did
+not delete the user, because the section lived in `ari_additional_custom.conf` —
+a file no converge-owned fragment covers, so no apply ever rewrote it. Removed
+2026-09-25: the section was deleted from the volume, `res_ari` reloaded, and the
+dead `AVA_ARI_*` keys dropped from `pbx.env`; `.30` now carries `dograh` and the
+portal's own user, and the portal's credentials still answer 200.
 
 ### 2.5 Extension provisioning is a side effect, not an operation
 
@@ -414,21 +436,28 @@ converged from it.
 | `users` | the account | — |
 | `phone_numbers(did, user_id, status)` | DIDs | — |
 | `account_addons(addon, entitled)` | Magnate decision, cached for audit | — |
-| `voice_agents(user_id, agent_slug)` | which AVA agent answers | — |
+| `voice_agents(user_id, agent_slug)` | the account-wide agent slug — an AVA-era attribute the admin routing plan still publishes and no engine consumes; the per-number answer is `voice_bindings` | — |
 | **`voice_bindings(user_id, did, capstone_binding)`** | **new** — which Capstone workflow/agent this account's interview line reaches | new |
 | **`voice_calls(call_id, account_id, did, agent_slug, capstone_binding, started, ended, disposition, handoffs)`** | **new** — one row per call, one id across products | new |
 | **`pbx_objects(kind, ref, owner, fingerprint)`** | **new** — what the provisioner created, so it can be reconciled and reversed | new |
 
-`capstone_binding` is the missing join that makes §2.1 impossible: the FreePBX
-route label, the `AI_AGENT`, and the product's number→workflow binding all
-render from this one row, and a mismatch is a failed preflight rather than a
-surprise on a live call.
+`capstone_binding` is the join §2.1 asks for: the FreePBX route label, the
+account-wide agent, and the engine's number→workflow binding are meant to render
+from this one row, so a mismatch is a failed preflight rather than a surprise on
+a live call. It is a *record* today, not yet the source — the renderer that
+published it into `[zeus-ai-*]` went with the engine, so this row and FreePBX's
+`incoming` table agree because a person keeps them agreeing rather than because
+one is derived from the other. `pbx/dograh_routes.py` reports that agreement on
+every timer tick: read it, not enforce it.
 
 ---
 
 ## 6. Feature inventory — where each lands
 
-Everything either product does today, and what happens to it.
+Everything either product did when this was written, and where the design put
+it. The middle column is the state at the time, not the state now: where a row
+names AVA, read it as the engine that held that feature before Dograh — Dograh
+is the only agent answering today (§1).
 
 | Feature | Today | In this design |
 |---|---|---|
@@ -532,14 +561,15 @@ later can be trusted. P0 also makes the two silent failure modes loud.
 **As built (2026-09-21/22):** the snapshot is `pbx/p0-snapshot.sh` (read-only,
 names every probe it could not run in its `MANIFEST`); the trunk repair is
 `pbx/patch-freepbx-trunk-next-id.py`, in the image entrypoint *and* re-asserted
-by every apply; the ARI assertion is the `voice-preflight` one-shot that
-`ai-engine` waits on, with `--require-engine-env` for the case where a missing
-`.env` is itself the defect; the D7 claims are `pbx/d7_assert.py`, also
-reachable as `./scripts/smoke-test.sh voice`. The sync's first run is safe
-because `manager_custom.conf` moved to the entrypoint-owned set and
-`http_custom.conf` stopped overriding FreePBX's own `enablestatic`. The unit now
-runs `scripts/zeus-pbx-sync.sh`, so the credential gate stands *in front of* the
-apply rather than beside it (`scripts/tests/test_pbx_sync_unit.py` pins that).
+by every apply; the ARI assertion was the `voice-preflight` one-shot and
+`pbx/ava_ari_check.py`, and both went with the engine — what survives is the
+shape, a judgement that can sit in front of the apply; the D7 claims are
+`pbx/d7_assert.py`, also reachable as `./scripts/smoke-test.sh voice`. The
+sync's first run is safe because `manager_custom.conf` moved to the
+entrypoint-owned set and `http_custom.conf` stopped overriding FreePBX's own
+`enablestatic`. The unit now runs `scripts/zeus-pbx-sync.sh`, so the DID-ingress
+judgement stands *in front of* the apply rather than beside it
+(`scripts/tests/test_pbx_sync_unit.py` pins that).
 The detections and the commands are in [`pbx/README.md`](../pbx/README.md) §
 Voice plane gates and D7 assertions.
 
@@ -1133,12 +1163,12 @@ does not need `.30`, and is explicit about which half that is:
   product's marked segment stays its own, and the pair is a fixed point for both
   owners — which is what makes the two independent `--check` runs mean
   something rather than pass by construction.
-* **Row 2** — the two ARI fragments define disjoint users (`ari.conf` the
-  portal's, `ari_additional_custom.conf` AVA's, `CONVERGE_OWNED` naming both),
-  and converging them beside a Capstone `[dograh]` yields each user exactly
+* **Row 2** — `ari.conf` defines the portal's user and `CONVERGE_OWNED` names
+  it, and converging it beside a Capstone `[dograh]` yields each user exactly
   once with `[general]` and the foreign user untouched. The duplicate is the
   failure this row exists for: sorcery refuses the *whole* file over one
-  repeated object, so one duplicate costs every ARI user.
+  repeated object, so one duplicate costs every ARI user. (AVA's second
+  fragment went with the engine; the row survives because the risk does.)
 * **Row 12** — read from the sibling Capstone checkout (`CAPSTONE_COMPOSE`,
   else `../capstone/docker-compose.yml`; **skipped, never passed**, when it is
   absent): `freepbx`, `coturn` and the bundled `portal` each carry a non-empty
