@@ -11,7 +11,7 @@ import {
   AlertCircleIcon,
 } from "@/components/icons";
 import { useToast } from "@/components/ToastProvider";
-import { Badge, Dot, Button, Card, CardHeader, EmptyState, PageHeader, Stat, Tabs } from "@/components/ui";
+import { Badge, Dot, Button, Card, CardHeader, EmptyState, PageHeader, Select, Stat, Tabs } from "@/components/ui";
 // `import type` is erased entirely at compile time, so these shapes reach the
 // browser without pulling `lib/dograh.ts` — and the API key it reads — into the
 // client bundle.
@@ -410,29 +410,26 @@ export default function VoiceSection({
                       </p>
                     </div>
                     <div className="flex items-center gap-2">
-                      {/* A select, not a text field: the value has to be a workflow
+                      {/* A picker, not a text field: the value has to be a workflow
                           that exists, and a free-text box invites the operator to
                           discover that at call time instead of here. */}
-                      <select
-                        aria-label={`Agent for ${line.did}`}
-                        className="w-56 rounded-lg border px-3 py-1.5 text-sm outline-none transition focus:border-brand-500/50"
-                        style={{
-                          background: "var(--input-bg)",
-                          borderColor: "var(--input-border)",
-                          color: "var(--foreground)",
-                        }}
+                      <Select
+                        ariaLabel={`Agent for ${line.did}`}
+                        className="w-56"
+                        size="sm"
                         value={draft}
-                        onChange={(e) =>
-                          setDrafts((prev) => ({ ...prev, [line.did]: e.target.value }))
+                        onChange={(value) =>
+                          setDrafts((prev) => ({ ...prev, [line.did]: value }))
                         }
-                      >
-                        <option value="">No agent — refuse to an operator</option>
-                        {activeAgents.map((agent) => (
-                          <option key={agent.id} value={String(agent.id)}>
-                            {agent.name}
-                          </option>
-                        ))}
-                      </select>
+                        placeholder="No agent — refuse to an operator"
+                        options={[
+                          { value: "", label: "No agent — refuse to an operator" },
+                          ...activeAgents.map((agent) => ({
+                            value: String(agent.id),
+                            label: agent.name,
+                          })),
+                        ]}
+                      />
                       <Button size="sm" disabled={busy || !changed} onClick={() => void saveBinding(line.did, draft.trim())}>
                         Save
                       </Button>

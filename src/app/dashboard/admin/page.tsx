@@ -5,7 +5,7 @@ import { api } from "@/lib/client-api";
 import type { User, PlanInfo } from "@/lib/types";
 import { useToast } from "@/components/ToastProvider";
 import { PlusIcon, TrashIcon, UserIcon } from "@/components/icons";
-import { PageHeader, Stat } from "@/components/ui";
+import { PageHeader, Select, Stat } from "@/components/ui";
 import { ResellersSection } from "@/components/dashboard/ResellersSection";
 import AdminVoicePlan from "@/components/dashboard/AdminVoicePlan";
 
@@ -258,23 +258,18 @@ export default function AdminPage() {
                   placeholder="John Doe" value={createForm.name}
                   onChange={(e) => setCreateForm({ ...createForm, name: e.target.value })} />
               </label>
-              <label className="block space-y-1.5">
+              <div className="block space-y-1.5">
                 <span className="text-xs font-medium text-white/50">Plan</span>
-                <select className="w-full rounded-xl border px-4 py-2.5 text-sm outline-none transition focus:border-brand-500/50"
-                  style={{ background: 'var(--input-bg)', borderColor: 'var(--input-border)', color: 'var(--foreground)' }}
-                  value={createForm.plan} onChange={(e) => setCreateForm({ ...createForm, plan: e.target.value })}>
-                  {plans.map((p) => (<option key={p.id} value={p.id}>{p.name}</option>))}
-                </select>
-              </label>
-              <label className="block space-y-1.5">
+                <Select ariaLabel="Plan" value={createForm.plan}
+                  onChange={(plan) => setCreateForm({ ...createForm, plan })}
+                  options={plans.map((p) => ({ value: p.id, label: p.name }))} />
+              </div>
+              <div className="block space-y-1.5">
                 <span className="text-xs font-medium text-white/50">Role</span>
-                <select className="w-full rounded-xl border px-4 py-2.5 text-sm outline-none transition focus:border-brand-500/50"
-                  style={{ background: 'var(--input-bg)', borderColor: 'var(--input-border)', color: 'var(--foreground)' }}
-                  value={createForm.role} onChange={(e) => setCreateForm({ ...createForm, role: e.target.value })}>
-                  <option value="">User</option>
-                  <option value="admin">Admin</option>
-                </select>
-              </label>
+                <Select ariaLabel="Role" value={createForm.role}
+                  onChange={(role) => setCreateForm({ ...createForm, role })}
+                  options={[{ value: "", label: "User" }, { value: "admin", label: "Admin" }]} />
+              </div>
             </div>
             <button type="button" onClick={createUser} disabled={creating}
               className="btn-primary mt-4 px-5 py-2 text-sm">
@@ -301,29 +296,18 @@ export default function AdminPage() {
                   <td className="py-3 px-3 font-mono text-xs text-white/70">{u.email}</td>
                   <td className="py-3 px-3 text-white/80">{u.name}</td>
                   <td className="py-3 px-3">
-                    <select
-                      className="rounded-lg border px-2 py-1 text-xs outline-none transition focus:border-brand-500/50"
-                      style={{ background: 'var(--input-bg)', borderColor: 'var(--input-border)', color: 'var(--foreground)' }}
+                    <Select ariaLabel={`Plan for ${u.email}`} className="w-32" size="sm"
                       value={u.plan}
-                      onChange={(e) => updateUser(u.id, { plan: e.target.value })}
+                      onChange={(plan) => updateUser(u.id, { plan })}
                       disabled={updating === u.id}
-                    >
-                      {plans.map((p) => (
-                        <option key={p.id} value={p.id}>{p.name}</option>
-                      ))}
-                    </select>
+                      options={plans.map((p) => ({ value: p.id, label: p.name }))} />
                   </td>
                   <td className="py-3 px-3">
-                    <select
-                      className="rounded-lg border px-2 py-1 text-xs outline-none transition focus:border-brand-500/50"
-                      style={{ background: 'var(--input-bg)', borderColor: 'var(--input-border)', color: 'var(--foreground)' }}
+                    <Select ariaLabel={`Role for ${u.email}`} className="w-28" size="sm"
                       value={u.role ?? ""}
-                      onChange={(e) => updateUser(u.id, { role: e.target.value || null })}
+                      onChange={(role) => updateUser(u.id, { role: role || null })}
                       disabled={updating === u.id}
-                    >
-                      <option value="">User</option>
-                      <option value="admin">Admin</option>
-                    </select>
+                      options={[{ value: "", label: "User" }, { value: "admin", label: "Admin" }]} />
                   </td>
                   <td className="py-3 px-3 text-xs text-white/40">
                     {new Date(u.created_at).toLocaleDateString()}
