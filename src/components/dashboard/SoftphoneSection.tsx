@@ -2,11 +2,13 @@
 
 import { useState, useEffect, useRef } from "react";
 import { createPortal } from "react-dom";
+import Link from "next/link";
 import { Registerer, RegistererState, SessionState, UserAgent } from "sip.js";
 import type { FreePBXExtension, PhoneNumber } from "@/lib/types";
 import { api } from "@/lib/client-api";
 import { PhoneIcon } from "@/components/icons";
 import { Select } from "@/components/ui";
+import { connectable, notConnectable } from "@/lib/extension-readiness";
 import { useToast } from "@/components/ToastProvider";
 import { WSS_STORAGE_KEY, softphoneWssUrl } from "@/lib/softphone-wss";
 
@@ -74,6 +76,12 @@ export default function SoftphoneSection({ extensions, phoneNumbers }: Props) {
   const registrationErrorRef = useRef<string>("");
 
   const selectedExt = extensions.find((e) => e.id === selectedExtId);
+
+  // What this panel may offer, and what it must explain instead. Readiness is
+  // attached server-side (see `withSoftphoneReadiness`); an extension nobody has
+  // judged is still offered, because "not asked" is not "cannot".
+  const offerable = connectable(extensions);
+  const blocked = notConnectable(extensions);
 
   // ── Pop-out ──────────────────────────────────────────────────────────────
   // The phone can be detached into its own window. The panel is portalled out
@@ -193,6 +201,13 @@ export default function SoftphoneSection({ extensions, phoneNumbers }: Props) {
 
   async function connectExtension() {
     if (!selectedExt) return;
+    // The list only offers registrable extensions, but a row can go bad between
+    // render and click (a repair on another tab, a fragment removed on the box),
+    // and the picker is not the authority on that — the row is.
+    if (selectedExt.softphone && selectedExt.softphone.state !== "ready") {
+      toast.error(selectedExt.softphone.summary);
+      return;
+    }
     if (!wssUrl) {
       // Every socket URL in this app ends in `/ws` and starts with `wss://`; an
       // empty one means neither the server nor the derivation supplied one, and
@@ -754,27 +769,53 @@ export default function SoftphoneSection({ extensions, phoneNumbers }: Props) {
                       </p>
                     ) : (
                       <div className="space-y-3">
-                        {/* The number is the label and the name the hint, so the
-                            thing being chosen is never the quiet half of the row. */}
-                        <Select
-                          ariaLabel="Extension to connect"
-                          value={selectedExtId}
-                          onChange={setSelectedExtId}
-                          placeholder="Select an extension…"
-                          options={extensions.map((ext) => ({
-                            value: ext.id,
-                            label: `Ext ${ext.extension_id}`,
-                            hint: ext.extension_name ?? "Unnamed",
-                          }))}
-                        />
-                        <button
-                          type="button"
-                          onClick={connectExtension}
-                          disabled={!selectedExtId}
-                          className="btn-primary w-full py-2 text-xs"
-                        >
-                          Connect
-                        </button>
+                        {offerable.length > 0 && (
+                          <>
+                            {/* The number is the label and the name the hint, so the
+                                thing being chosen is never the quiet half of the row. */}
+                            <Select
+                              ariaLabel="Extension to connect"
+                              value={selectedExtId}
+                              onChange={setSelectedExtId}
+                              placeholder="Select an extension…"
+                              options={offerable.map((ext) => ({
+                                value: ext.id,
+                                label: `Ext ${ext.extension_id}`,
+                                hint: ext.extension_name ?? "Unnamed",
+                              }))}
+                            />
+                            <button
+                              type="button"
+                              onClick={connectExtension}
+                              disabled={!selectedExtId}
+                              className="btn-primary w-full py-2 text-xs"
+                            >
+                              Connect
+                            </button>
+                          </>
+                        )}
+                        {/* Named rather than merely omitted: a list that drops
+                            them silently reads as "it was never created", and
+                            the reason is the thing that gets it fixed. */}
+                        {blocked.length > 0 && (
+                          <div className="space-y-1 text-xs leading-relaxed text-sun-400">
+                            <p>
+                              {offerable.length > 0
+                                ? "Not offered — these cannot register yet:"
+                                : "No extension here can register yet:"}
+                            </p>
+                            <ul className="space-y-0.5">
+                              {blocked.map(({ extension, reason }) => (
+                                <li key={extension.id} title={extension.softphone?.summary}>
+                                  <span className="font-mono">Ext {extension.extension_id}</span> — {reason}
+                                </li>
+                              ))}
+                            </ul>
+                            <Link href="/dashboard/numbers" className="inline-block underline">
+                              Fix on Phone Numbers →
+                            </Link>
+                          </div>
+                        )}
                       </div>
                     )}
                   </>

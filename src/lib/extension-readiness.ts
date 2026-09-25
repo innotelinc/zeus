@@ -120,6 +120,48 @@ export function assessSoftphone(
   };
 }
 
+/** An extension this module can consider offering to the softphone. */
+export interface OfferableExtension {
+  extension_id: string;
+  /**
+   * Absent means "not asked" — see `FreePBXExtension.softphone` — which is not
+   * the same as "unusable", and the difference decides whether it is offered.
+   */
+  softphone?: SoftphoneReadiness;
+}
+
+/**
+ * The extensions the softphone may be connected to.
+ *
+ * Only `ready` is offerable. An *undecided* one is offered: absence means no
+ * reader ran, and dropping an extension from the list because nobody asked the
+ * PBX is how a working phone disappears with no explanation. The connect itself
+ * is checked against the registerer's own state either way
+ * (`SoftphoneSection.connectExtension`), so an undecided extension fails loudly
+ * at connect time rather than silently at pick time.
+ */
+export function connectable<T extends OfferableExtension>(extensions: T[]): T[] {
+  return extensions.filter((ext) => !ext.softphone || ext.softphone.state === "ready");
+}
+
+/**
+ * The extensions that cannot register, each with the reason to show for it.
+ *
+ * Returned rather than merely filtered out: a list that quietly omits an
+ * extension reads as "it was never created", and the reason *is* the repair.
+ */
+export function notConnectable<T extends OfferableExtension>(
+  extensions: T[],
+): Array<{ extension: T; reason: string }> {
+  const blocked: Array<{ extension: T; reason: string }> = [];
+  for (const ext of extensions) {
+    if (ext.softphone && ext.softphone.state !== "ready") {
+      blocked.push({ extension: ext, reason: readinessLabel(ext.softphone) });
+    }
+  }
+  return blocked;
+}
+
 /** The one-line state for a list row, where the full summary would not fit. */
 export function readinessLabel(readiness: SoftphoneReadiness): string {
   switch (readiness.state) {
