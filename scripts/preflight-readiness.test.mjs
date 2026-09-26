@@ -28,6 +28,7 @@ import { after, before, describe, it } from "node:test";
 import { load, transpile } from "./ts-probe.mjs";
 
 let live;
+let freepbx;
 const dirs = [];
 
 before(async () => {
@@ -39,6 +40,7 @@ before(async () => {
     "src/lib/freepbx.ts",
   ]);
   live = await load(gen, "extension-preflight-live");
+  freepbx = await load(gen, "freepbx");
   // The portal's env has these set on a real host; a test must exercise the
   // unreadable case deterministically rather than inherit the runner's.
   delete process.env.FREEPBX_URL;
@@ -94,5 +96,92 @@ describe("preflight source readiness", () => {
     assert.match(line, /not mounted/);
     // The repair is stated once, not repeated per source.
     assert.equal(line.match(/provision_extension\.py/g).length, 1);
+  });
+});
+
+describe("the extension list read", () => {
+  /** Answer the token call and the GQL call from one stub. */
+  function stub(payload) {
+    const saved = globalThis.fetch;
+    globalThis.fetch = async (url) => {
+      const target = String(url);
+      if (target.includes("/api/token")) {
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({ access_token: "test-token", expires_in: 3600 }),
+        };
+      }
+      if (target.includes("command=gql")) {
+        return { ok: true, status: 200, json: async () => payload };
+      }
+      throw new Error(`unexpected fetch: ${target}`);
+    };
+    return () => {
+      globalThis.fetch = saved;
+    };
+  }
+
+  before(() => {
+    process.env.FREEPBX_URL = "http://pbx.test";
+    process.env.FREEPBX_CLIENT_ID = "pbxportal-api";
+    process.env.FREEPBX_CLIENT_SECRET = "a-test-secret";
+  });
+
+  after(() => {
+    delete process.env.FREEPBX_URL;
+    delete process.env.FREEPBX_CLIENT_ID;
+    delete process.env.FREEPBX_CLIENT_SECRET;
+  });
+
+  it("reads the wrapper FreePBX 17 actually returns", async () => {
+    // Measured on `.30`: `data.fetchAllExtensions` is `{"extension":[…]}`. An
+    // `Array.isArray` on that object threw, so `/api/health` reported the create
+    // gate degraded and every Add refused with a 503 while the PBX answered the
+    // query perfectly well.
+    const restore = stub({
+      data: {
+        fetchAllExtensions: {
+          extension: [
+            { extensionId: "12000", tech: "pjsip" },
+            { extensionId: "1500", tech: "pjsip" },
+          ],
+        },
+      },
+    });
+    try {
+      const rows = await freepbx.fetchAllExtensions();
+      assert.deepEqual(
+        rows.map((r) => r.extensionId),
+        ["12000", "1500"],
+      );
+      assert.equal(rows[0].tech, "pjsip");
+    } finally {
+      restore();
+    }
+  });
+
+  it("still reads a bare list, and the row either way", async () => {
+    const restore = stub({
+      data: { fetchAllExtensions: [{ extension: { extensionId: "101", tech: "pjsip" } }] },
+    });
+    try {
+      const rows = await freepbx.fetchAllExtensions();
+      assert.deepEqual(
+        rows.map((r) => r.extensionId),
+        ["101"],
+      );
+    } finally {
+      restore();
+    }
+  });
+
+  it("refuses a shape it cannot trust instead of reading it as no extensions", async () => {
+    const restore = stub({ data: { fetchAllExtensions: null } });
+    try {
+      await assert.rejects(() => freepbx.fetchAllExtensions(), /did not return a list/);
+    } finally {
+      restore();
+    }
   });
 });
