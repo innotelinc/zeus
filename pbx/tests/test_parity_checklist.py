@@ -73,6 +73,18 @@ def _sections(text):
     return re.findall(r"^\s*\[([^\]]+)\]\s*(?:;.*)?$", text, re.M)
 
 
+def _matches_any_dialled_number(pattern: str) -> bool:
+    """Whether an Asterisk extension pattern matches any ordinary dialled number.
+
+    `X` is 0-9, `Z` is 1-9, and `.`/`!` are one-or-more / zero-or-more of
+    anything — so `_Z.`, `_X.`, `_X` and `_.` each match a ten-digit number. The
+    leading `_` is stripped first; `_Z.` is the shape that shipped and broke
+    outbound.
+    """
+    body = pattern.lstrip("_").upper()
+    return body in {"Z.", "X.", "X", "Z", ".", "Z!", "X!"}
+
+
 def _segment(text, owner):
     """The lines an owner's append-shared segment holds, markers included."""
     lines = text.splitlines()
@@ -120,6 +132,25 @@ class Row1DialplanTest(unittest.TestCase):
         # (8000-8007) live inside the shared context, which neither side owns
         # wholesale.
         self.assertFalse([name for name in _sections(self.zeus) if "dograh" in name])
+
+    def test_the_shipped_fragment_defines_no_dialled_number_catch_all(self):
+        """The pattern that killed outbound: `_Z.` in [from-zeus-portal].
+
+        [from-internal-custom] includes that context, and FreePBX's generated
+        [from-internal] includes it BEFORE the outbound routes — so a pattern
+        that matches a dialled number there swallows the call before any route
+        (and its digit normalisation) is reached. `Z` is any digit 1-9 and `.`
+        is one-or-more, so `_Z.` matched every ordinary number a phone dials,
+        ran `NoOp` then `Hangup`, and outbound calls never completed while the
+        trunk stayed registered. Measured live: dialling 4134210134 logged
+        `Executing [4134210134@from-internal:1] NoOp("PJSIP/…", "Zeus portal
+        extension 4134210134")` then `Hangup()`, never `outrt-*`.
+        """
+        executable = _executable(self.zeus)
+        patterns = re.findall(r"exten\s*=>\s*(_[^,\s]+)", executable)
+        offending = [p for p in patterns if _matches_any_dialled_number(p)]
+        self.assertEqual(offending, [],
+                         f"a local pattern would swallow outbound dialling: {offending}")
 
     def test_zeus_ships_no_inbound_routing_at_all(self):
         # The DID -> workflow decision lives in FreePBX's `incoming` table now,

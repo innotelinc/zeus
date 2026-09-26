@@ -19,7 +19,7 @@ operational shape.
 | `dograh_routes.py` | Judge whether every DID the portal sells reaches a `dograh-inbound,<workflow>,1` row in FreePBX's own `incoming` table — see [One ingress](#one-ingress-every-platform-did-names-a-workflow). **Read-only, deliberately:** which workflow a DID should reach is a portal decision and the row is FreePBX's, so the tool names the disagreement instead of inventing a route. A DID the portal marks `fax_enabled` is excused the fax service's own destination, and `--incoming-tsv` judges a route table dumped by `p0-snapshot.sh` with no PBX reachable. Exit 1 = a DID is off the workflow or unrouted, 2 = cannot tell |
 | `extension_mirror.py` | Judge whether every FreePBX user is an extension the portal's `freepbx_extensions` mirror names — **one direction only** (the mirror also carries rows the PBX does not own as users: the fax service lines, a demo softphone), read-only, `--users-tsv` judges a user table dumped by `p0-snapshot.sh` with no PBX reachable. Exit 1 = a phone nothing in the portal can manage, 2 = cannot tell — see [The portal's extension mirror](#the-portals-extension-mirror) |
 | `media_address.py` | Keep the address Asterisk advertises to a LAN phone (`media_address` on each sip/pjsip endpoint) — **entrypoint-owned**, re-derived every boot by `docker-entrypoint-full.sh` / `scripts/setup.sh` and reconciled by the `zeus-pbx-sync` timer (`scripts/zeus-pbx-sync.sh`) so an image rebuild cannot lose it. Writes its own file `pjsip_media_custom.conf` and one `#include` in the portal-shared `pjsip.endpoint_custom_post.conf`; refuses a docker/loopback address. `--check` / `--apply`, `--devices-tsv` judges off-host. Exit 1 = an apply converges it, 2 = cannot tell — see [The media address Asterisk advertises](#the-media-address-asterisk-advertises-container--lan-phones) |
-| `outbound_route.py` | Keep the route that normalises a dialled number — the one that gives a ten-digit call the `1` VoIP.ms terminates on. **Entrypoint-owned**, converged on boot by `docker-entrypoint-full.sh` / `scripts/setup.sh` and reconciled every tick by `scripts/zeus-pbx-sync.sh`. Creates the route (`PSTN` by default, `PBX_OUTBOUND_ROUTE` to rename) if missing, restores the legacy `PSTN` patterns (seven-digit -> `1413`, ten-digit -> `1`, eleven-digit and `011.` as-is), attaches the VoIP.ms trunk first, and lifts the route above any bare `X.` catch-all — FreePBX evaluates routes in sequence order, so a catch-all ahead of it swallows the call before the normalisation is reached. Refuses (exit 2) when there is no trunk row to attach. `--check` / `--apply`, `--local` for the in-container / bare-metal MySQL. Exit 1 = an apply converges it — see [The outbound route](#the-outbound-route-a-dialled-number-reaches-the-carrier) |
+| `outbound_route.py` | Keep the route that normalises a dialled number — the one that gives a ten-digit call the `1` VoIP.ms terminates on. **Entrypoint-owned**, converged on boot by `docker-entrypoint-full.sh` / `scripts/setup.sh` and reconciled every tick by `scripts/zeus-pbx-sync.sh`. Creates the route (`PSTN` by default, `PBX_OUTBOUND_ROUTE` to rename) if missing, restores the legacy `PSTN` patterns (seven-digit -> `1413`, ten-digit -> `1`, eleven-digit and `011.` as-is), attaches the VoIP.ms trunk first, and lifts the route above anything ahead of it that would take the same calls — a catch-all like `X.`, or a duplicate route pointed at another trunk. FreePBX evaluates routes in sequence order, so a route ahead swallows the call before the named route and its normalisation are reached. Refuses (exit 2) when there is no trunk row to attach. `--check` / `--apply`, `--local` for the in-container / bare-metal MySQL. Exit 1 = an apply converges it — see [The outbound route](#the-outbound-route-a-dialled-number-reaches-the-carrier) |
 | `pjsip_owner_check.py` | Who owns the PJSIP endpoint for an extension — the load tree, the duplicate ids, and who carries the `#include`. Read-only, `--json` for the raw measurement, exit 1 on a two-owner state — see [Who owns a PJSIP endpoint](#who-owns-a-pjsip-endpoint) |
 | `provision_extension.py` | **The one owner of extension/device creation** (D6): check-then-create through FreePBX's own `addDevice`/`addUser`, with a preflight that refuses on an orphaned `sip`/`pjsip` row, leftover `AMPUSER` state, a half-created extension or a two-owner endpoint. `--check` / `--apply`, `--observed-json` to judge off-host, exit 1 = an apply converges it, 3 = only a person can — see [One provisioning path](#one-provisioning-path-for-extensions) |
 | `d7_assert.py` | The three D7 claims about the live stack (call recorded, Dograh's ARI app registered, one gateway serving the model pins this repo still holds — the summary path's `VOICEMAIL_SUMMARY_MODEL`, since the call path's belongs to Dograh). `--call` places a self-contained probe call. Exit 2 = nothing could be evaluated |
@@ -420,7 +420,16 @@ is that change, made explicit and idempotent:
 | The route | `PSTN` by default — created if missing, `PBX_OUTBOUND_ROUTE` to rename |
 | The patterns | The legacy `PSTN` normalisation: seven-digit -> `1413`, ten-digit -> `1`, eleven-digit `1NXXNXXXXXX` and `011.` passed through |
 | The trunk | The VoIP.ms PJSIP trunk (`VOIPMS_TRUNK_NAME`, default `voipms_pjsip`), first in the list |
-| The priority | Lifted above any bare `X.` catch-all, which FreePBX would otherwise match first |
+| The priority | Lifted above anything ahead of it that would take the same calls — a catch-all, or a duplicate route pointed at another trunk |
+
+**The measured cause was not the route.** Dialling `4134210134` logged
+`Executing [4134210134@from-internal:1] NoOp("PJSIP/…", "Zeus portal extension
+4134210134")` then `Hangup()` — the call never reached `outrt-*` at all. The
+culprit was `exten => _Z.` in `[from-zeus-portal]` (see [The portal context must
+not match a dialled number](#the-portal-context-must-not-match-a-dialled-number)).
+The route matters second: the live box also carries three routes with identical
+dial patterns (`voipms` -> a custom trunk, `PSTN` -> `voipms_pjsip`, `FAX` -> the
+IAX trunk), and the first one takes the call however correct `PSTN` is.
 
 ```bash
 # judge (0 in sync, 1 an apply converges it, 2 cannot tell), and converge by hand
@@ -429,11 +438,11 @@ docker exec zeus-freepbx python3 /opt/zeus/pbx/outbound_route.py --check --local
 python3 pbx/outbound_route.py --apply --local         # inside the container / bare metal
 ```
 
-**Only the named route is touched.** A catch-all route that is not the one named
-here is reported and moved *below* the route, never deleted or rewritten — a fax
-route with its own caller ID (see `docs/legacy-voice-migration.md`) is an
-operator's decision this tool has no business making. The move is the smallest
-one that makes the route reachable: every other route keeps its relative order.
+**Only the named route is touched.** A route that is not the one named here is
+reported and moved *below* the route, never deleted or rewritten — a fax route
+with its own caller ID (see `docs/legacy-voice-migration.md`) is an operator's
+decision this tool has no business making. The move is the smallest one that
+makes the route reachable: every other route keeps its relative order.
 
 **It refuses rather than invents a trunk.** An outbound route references its
 trunk by a row in FreePBX's own `trunks` table, and `dialout-trunk` builds the
@@ -451,6 +460,32 @@ a rebuilt box re-derives the route instead of needing a GUI edit; and the
 (`scripts/zeus-pbx-sync.sh`), which is what heals a box whose image predates the
 change or whose route was hand-edited back to a bare `X.`. Exit 1 is "an apply
 converges this", exit 2 is "no evidence" — never a pass.
+
+## The portal context must not match a dialled number
+
+`[from-zeus-portal]` is included by `[from-internal-custom]`, and FreePBX's
+generated `[from-internal]` includes *that* **before** the module-generated
+contexts — the outbound routes among them. So any pattern in the portal context
+is consulted before any route, and one that matches a dialled number swallows
+the call before the route (and its digit normalisation) is ever reached.
+
+The fragment shipped `exten => _Z.` as a placeholder "anchor" for the portal's
+dynamically-added softphone extensions. In Asterisk, `Z` is any digit 1-9 and
+`.` is one-or-more, so `_Z.` matches **every ordinary number a phone dials**:
+outbound calls hit `NoOp` then `Hangup` locally, and never reached a trunk.
+Measured on `.30` (2026-09-25): dialling `4134210134` from extension `7745057135`
+logged `Executing [4134210134@from-internal:1] NoOp("PJSIP/…", "Zeus portal
+extension 4134210134")` then `Hangup()` in the same second. The trunk stayed
+`Registered`, inbound worked, and every other check stayed green — the same
+shape as a one-way-audio fault.
+
+The context is therefore shipped **empty**: portal softphone extensions are
+added as explicit `exten => <ext>,1,…` lines (their own numbers, never a
+wildcard), so nothing is needed until an account exists. Two guards keep it that
+way: `pbx/tests/test_parity_checklist.py` fails if the shipped fragment defines
+any pattern that matches a dialled number, and `./scripts/smoke-test.sh pbx`
+fails if the live dialplan answers a ten-digit sample in a context other than an
+`outrt-*` route — or reaches one without prepending the `1`.
 
 ## TURN / WebRTC media (one relay for both products)
 
