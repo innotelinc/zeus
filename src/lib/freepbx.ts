@@ -161,18 +161,27 @@ export interface FreePbxExtensionRow {
  * answer to "what extensions exist", so the portal is asking the authority
  * rather than re-deriving it from tables it cannot see.
  *
- * The response is normalised defensively — the api module has shipped the row
- * both as `{ extension: { … } }` and flat — because a shape change must surface
- * as "the preflight could not read the PBX" (a refusal), never as "no
- * extensions exist" (a create over an existing number). A malformed body is
+ * The response is normalised defensively — the api module has shipped the rows
+ * both as `{ extension: [ … ] }` (what FreePBX 17 returns) and as a bare list,
+ * and each row both as `{ extension: { … } }` and flat — because a shape change
+ * must surface as "the preflight could not read the PBX" (a refusal), never as
+ * "no extensions exist" (a create over an existing number). A malformed body is
  * therefore an error, not an empty list.
+ *
+ * The top-level wrapper is the shape this read got wrong first: measured on
+ * `.30`, `data.fetchAllExtensions` is `{"extension":[…]}` for all eight
+ * extensions, so an `Array.isArray` on it threw and `/api/health` reported the
+ * create gate degraded — every extension Add refused with a 503 while the PBX
+ * answered the query perfectly well.
  */
 export async function fetchAllExtensions(): Promise<FreePbxExtensionRow[]> {
   const query = `query { fetchAllExtensions { extension { extensionId tech } } }`;
   const data = await gql<{ fetchAllExtensions?: unknown }>(query);
 
   const raw = data?.fetchAllExtensions;
-  if (!Array.isArray(raw)) {
+  const wrapped = (raw as { extension?: unknown } | null | undefined)?.extension;
+  const list = Array.isArray(raw) ? raw : Array.isArray(wrapped) ? wrapped : null;
+  if (list === null) {
     throw new Error(
       "fetchAllExtensions did not return a list — the PBX API's shape is not what " +
         "this preflight reads, so it cannot tell whether an extension exists",
@@ -180,7 +189,7 @@ export async function fetchAllExtensions(): Promise<FreePbxExtensionRow[]> {
   }
 
   const rows: FreePbxExtensionRow[] = [];
-  for (const entry of raw) {
+  for (const entry of list) {
     const row = (entry as { extension?: unknown })?.extension ?? entry;
     const extensionId = String((row as { extensionId?: unknown })?.extensionId ?? "").trim();
     if (!extensionId) continue;
