@@ -141,6 +141,32 @@ class JudgeTest(unittest.TestCase):
                        trunks=[(TRUNK_ID, TRUNK)])
         findings, _ = or_.judge(_state([route]), "PSTN")
         self.assertIn("patterns", [f.state for f in findings])
+        self.assertIn("catch-all", [f.state for f in findings])
+
+    def test_the_live_working_patterns_are_left_alone(self):
+        # What the live box actually runs: both rules, plus an eleven-digit
+        # pass-through of its own (`ZNXXNXXXXXX`). The rules are what matter, so
+        # this is in sync and an apply rewrites no pattern — only the order.
+        live = [or_.Pattern("", "NXXNXXXXXX", "1"),
+                or_.Pattern("", "NXXXXXX", "1413"),
+                or_.Pattern("", "ZNXXNXXXXXX", "")]
+        route = _route(2, "PSTN", 1, patterns=live, trunks=[(TRUNK_ID, TRUNK)])
+        voipms = _route(1, "voipms", 0, patterns=live, trunks=[(0, "voipms")])
+        findings, plan = or_.judge(_state([voipms, route]), "PSTN")
+        self.assertEqual([f.state for f in findings], ["shadowed"])
+        self.assertEqual(plan.patterns, tuple(live))
+        self.assertEqual(plan.order, (2, 1))
+
+    def test_a_route_missing_the_country_code_rule_is_drift(self):
+        # The failure this tool exists for: the route dials ten digits as-is.
+        route = _route(1, "PSTN", 0,
+                       patterns=[or_.Pattern("", "NXXXXXX", "1413"),
+                                 or_.Pattern("", "ZNXXNXXXXXX", "")],
+                       trunks=[(TRUNK_ID, TRUNK)])
+        findings, plan = or_.judge(_state([route]), "PSTN")
+        self.assertIn("patterns", [f.state for f in findings])
+        # A missing rule is repaired with the legacy set.
+        self.assertEqual(plan.patterns, or_.desired_patterns())
 
     def test_a_route_without_the_trunk_is_named(self):
         route = _route(1, "PSTN", 0, patterns=or_.desired_patterns())

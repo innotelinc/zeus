@@ -18,9 +18,12 @@ adopting it meant changing the priority of a live dial plan. This tool is that
 change, made explicit and idempotent rather than left to a GUI edit:
 
   * the route (`name`, default `PSTN`) is created if it is missing;
-  * its patterns are the legacy `PSTN` normalisation, restored exactly —
-    seven-digit local -> `1413`, ten-digit -> `1`, eleven-digit and `011.`
-    international passed through;
+  * it normalises what a phone dials, which is the whole point of the route:
+    ten-digit -> `1` (the country code VoIP.ms terminates on) and seven-digit ->
+    `1413` (the area code). Those two rules are *required*; a route that already
+    has them keeps its own extra patterns, because rewriting a working dial plan
+    to a byte-exact list is churn. A route created from scratch gets the legacy
+    set as well — eleven-digit and `011.` international passed through;
   * the VoIP.ms PJSIP trunk is attached, first, so the call leaves by it;
   * and the route is lifted above anything ahead of it that would take the same
     calls — a bare catch-all (`X.`, or the `_Z.` the portal dialplan shipped),
@@ -76,6 +79,19 @@ LEGACY_PATTERNS: tuple[tuple[str, str, str], ...] = (
     ("", "NXXNXXXXXX", "1"),
     ("", "1NXXNXXXXXX", ""),
     ("", "011.", ""),
+)
+
+# The two rules that ARE the fix, and the only ones an existing route must carry.
+# A route is compared against these rather than against the full set above: the
+# box this was written for passes eleven digits through with `ZNXXNXXXXXX`
+# (`Z` is 1-9, so it also covers `1NXXNXXXXXX`), and rewriting a *working*
+# dial plan to a byte-exact list is churn, not a repair. Extras are preserved;
+# what is required is that ten-digit dialling gets the country code and
+# seven-digit gets the area code, and that no catch-all is present to swallow
+# a number before these are reached.
+REQUIRED_PATTERNS: tuple[tuple[str, str, str], ...] = (
+    ("", "NXXNXXXXXX", "1"),
+    ("", "NXXXXXX", "1413"),
 )
 
 # A pattern that matches every number a phone dials, however long. One of these
@@ -239,7 +255,13 @@ def shadowers(routes: tuple[Route, ...], target: Route) -> list[Route]:
 
 
 def desired_patterns() -> tuple[Pattern, ...]:
+    """The full set a route created from scratch gets."""
     return tuple(Pattern(prefix=p, match=m, prepend=v) for p, m, v in LEGACY_PATTERNS)
+
+
+def required_patterns() -> tuple[Pattern, ...]:
+    """The normalisation rules an existing route must carry (superset, not equal)."""
+    return tuple(Pattern(prefix=p, match=m, prepend=v) for p, m, v in REQUIRED_PATTERNS)
 
 
 def _order(routes: tuple[Route, ...], target: Route | None,
@@ -292,23 +314,28 @@ def judge(state: State, name: str) -> tuple[list[Finding], Plan | None]:
             repair=f"apply: create route {name!r} with the legacy PSTN patterns",
         ))
 
+    patterns_ok = True
     if target is not None:
         have = {(p.prefix, p.match, p.prepend) for p in target.patterns}
-        want = {(p.prefix, p.match, p.prepend) for p in desired}
-        if have != want:
-            missing = sorted(want - have)
-            extra = sorted(have - want)
+        missing = sorted({(p.prefix, p.match, p.prepend) for p in required_patterns()} - have)
+        catching = [p for p in target.patterns if is_catch_all(p)]
+        patterns_ok = not missing and not catching
+        if missing:
             findings.append(Finding(
                 state="patterns",
-                detail=(
-                    f"route {target.route_id} ({target.name}) patterns differ: "
-                    + ("missing " + ", ".join(f"{m}+{v}" if v else m for _, m, v in missing)
-                       if missing else "")
-                    + ("; " if missing and extra else "")
-                    + ("not wanted " + ", ".join(f"{m}+{v}" if v else m for _, m, v in extra)
-                       if extra else "")
-                ),
-                repair="apply: replace the route's patterns with the legacy PSTN set",
+                detail=f"route {target.route_id} ({target.name}) does not normalise "
+                       + ", ".join(f"{m} + {v}" if v else m for _, m, v in missing)
+                       + " — a dialled number leaves without the digits the trunk needs",
+                repair="apply: add the missing legacy PSTN pattern(s)",
+            ))
+        if catching:
+            findings.append(Finding(
+                state="catch-all",
+                detail=f"route {target.route_id} ({target.name}) holds "
+                       + ", ".join(sorted({normalised_match(p) for p in catching}))
+                       + " — a pattern that matches every dialled number, so whatever "
+                       "it is ordered before never runs",
+                repair="apply: replace the catch-all with the legacy PSTN patterns",
             ))
         attached = [tid for tid, _ in target.trunks]
         if state.trunk_id not in attached:
@@ -350,10 +377,17 @@ def judge(state: State, name: str) -> tuple[list[Finding], Plan | None]:
     else:
         trunk_ids = ()
 
+    # An existing route keeps its own patterns when they already normalise —
+    # only a missing rule or a catch-all is rewritten.
+    if target is not None and patterns_ok:
+        patterns = target.patterns
+    else:
+        patterns = desired
+
     plan = Plan(
         route_id=target.route_id if target else -1,
         name=name,
-        patterns=desired,
+        patterns=patterns,
         trunk_ids=trunk_ids,
         order=_order(state.routes, target, created),
         created=created,
