@@ -44,16 +44,21 @@ change, made explicit and idempotent rather than left to a GUI edit:
     # inside the container, or on bare metal: the local MySQL and Asterisk
     python3 pbx/outbound_route.py --apply --local
 
+    # an operator consolidating the estate: also remove these duplicate routes
+    python3 pbx/outbound_route.py --apply --drop-route voipms
+
 Exit codes follow `pbx/media_address.py`: 1 means an apply converges the estate,
 2 means the question could not be answered (no PBX, no trunk, no route table) —
 never a pass.
 
-What this tool deliberately does NOT do: it does not touch any other route. A
-catch-all route that is not the one named here is left where it is, reported,
-and simply moved below — deleting or rewriting somebody else's route is not a
-normalisation, and a fax route with its own caller ID (see
-`docs/legacy-voice-migration.md`) is an operator's decision this file has no
-business making.
+What this tool deliberately does NOT do: it does not touch any other route
+unless an operator names one with `--drop-route`. A catch-all route that is not
+the one named here is left where it is, reported, and simply moved below —
+deleting or rewriting somebody else's route is not a normalisation, and a fax
+route with its own caller ID (see `docs/legacy-voice-migration.md`) is an
+operator's decision this file has no business making. `--drop-route NAME` is
+that decision made explicit: it removes only the route named, only when asked,
+never on a timer tick, and reports it like any other finding.
 """
 from __future__ import annotations
 
@@ -494,6 +499,25 @@ def render_apply_sql(plan: Plan) -> str:
     return "\n".join(lines)
 
 
+def render_drop_sql(route_ids: tuple[int, ...]) -> str:
+    """Remove the routes an operator named, and their own child rows.
+
+    Only reachable through `--drop-route`, so a convergence the sync timer runs
+    never deletes anything: the named route's own rows go with it, and the next
+    `render_apply_sql` rewrites the sequence from the routes that remain.
+    """
+    ids = sorted({int(i) for i in route_ids})
+    if not ids:
+        return ""
+    joined = ", ".join(str(i) for i in ids)
+    return "\n".join([
+        f"DELETE FROM outbound_route_patterns WHERE route_id IN ({joined});",
+        f"DELETE FROM outbound_route_trunks WHERE route_id IN ({joined});",
+        f"DELETE FROM outbound_route_sequence WHERE route_id IN ({joined});",
+        f"DELETE FROM outbound_routes WHERE route_id IN ({joined});",
+    ])
+
+
 def ensure_route(plan: Plan, *, local: bool, container: str) -> Plan:
     """Create the route when it is missing, returning the plan with its real id."""
     if not plan.created:
@@ -546,6 +570,9 @@ def main(argv: list[str] | None = None) -> int:
                         help="write the route (default: judge only)")
     parser.add_argument("--check", action="store_true",
                         help="judge and exit 0/1/2 (the default; writes nothing)")
+    parser.add_argument("--drop-route", action="append", default=[], metavar="NAME",
+                        help="also remove a duplicate route by name (repeatable; "
+                             "an operator's explicit decision, never automatic)")
     args = parser.parse_args(argv)
 
     local = args.local
@@ -570,7 +597,20 @@ def main(argv: list[str] | None = None) -> int:
         )
         return 2
 
+    drop_names = {name.strip() for name in args.drop_route if name.strip()}
+    doomed = [r for r in state.routes if r.name in drop_names and r.name != args.name]
+
     findings, plan = judge(state, args.name)
+    if doomed:
+        named = ", ".join(f"{r.route_id} ({r.name})" for r in doomed)
+        findings.append(Finding(
+            state="duplicate-route",
+            detail=f"route(s) {named} duplicate {args.name}'s dial patterns and were "
+                   "named for removal — the first of them takes the call while "
+                   f"{args.name} never runs",
+            repair=f"apply: delete the named duplicate route(s) {named}",
+        ))
+
     where = "the local PBX" if local else container
     print(f"outbound-route: {len(state.routes)} route(s) on {where}, "
           f"trunk {args.trunk} is {state.trunk_id}")
@@ -588,6 +628,13 @@ def main(argv: list[str] | None = None) -> int:
         return 1
 
     try:
+        if doomed:
+            mysql(render_drop_sql(tuple(r.route_id for r in doomed)),
+                  local=local, container=container)
+            # The sequence is rewritten from what is left, so re-read the PBX
+            # rather than plan against routes that are now gone.
+            state = load_state(local=local, container=container, trunk_name=args.trunk)
+            findings, plan = judge(state, args.name)
         plan = ensure_route(plan, local=local, container=container)
         mysql(render_apply_sql(plan), local=local, container=container)
     except pbx_db.RouteError as exc:
@@ -603,14 +650,20 @@ def main(argv: list[str] | None = None) -> int:
         print(f"outbound-route: {exc} — written but not verified", file=sys.stderr)
         return 2
     remaining, _ = judge(state, args.name)
-    if remaining:
+    still_named = [r for r in state.routes if r.name in drop_names and r.name != args.name]
+    if remaining or still_named:
         for finding in remaining:
             print(f"  still: {finding.state}: {finding.detail}", file=sys.stderr)
+        for route in still_named:
+            print(f"  still: route {route.route_id} ({route.name}) was named for "
+                  "removal and is still here", file=sys.stderr)
         print(f"outbound-route: route {args.name!r} did not converge", file=sys.stderr)
         return 1
+    dropped = (f" (removed duplicate route(s) "
+               f"{', '.join(r.name for r in doomed)})") if doomed else ""
     print(f"outbound-route: route {args.name!r} converged (normalises dialled "
           f"numbers, trunk {args.trunk} first, ahead of anything that would take "
-          "its calls)")
+          f"its calls){dropped}")
     return 0
 
 

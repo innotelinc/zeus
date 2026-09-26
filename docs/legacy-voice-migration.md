@@ -6,7 +6,7 @@ the record of moving its accounts across, and the two tools that do it:
 | Tool | Moves |
 |---|---|
 | `pbx/legacy_voice_migrate.py` | extensions, device secrets, User Management password hashes, ring groups, inbound routes |
-| `scripts/legacy_portal_merge.py` | portal accounts, phone numbers and extension rows |
+| `scripts/legacy_portal_merge.py` | portal accounts, phone numbers and extension rows (`adopt` adds one the snapshot does not carry) |
 
 Both are idempotent and take `plan`, `apply` and (PBX side) `verify`. `plan`
 says what would change and writes nothing.
@@ -173,6 +173,34 @@ re-checks it every tick — see [pbx/README.md → The outbound route](../pbx/RE
 The fax route and its caller ID are still an operator's decision and are not
 written.
 
+### Consolidated: the duplicate `voipms` route is gone
+
+The box carried three routes with identical dial patterns — `voipms` (a custom
+trunk), `PSTN` (`voipms_pjsip`) and `FAX` (the IAX trunk). With the patterns the
+same, only the first one ever runs, so `voipms` was a pure duplicate of the
+converged route, and an operator removed it explicitly:
+
+```
+python3 pbx/outbound_route.py --apply --drop-route voipms
+```
+
+`--drop-route` is opt-in by name — the sync timer never passes it, so a
+self-healing tick cannot delete a route a person put there. `FAX` is
+**deliberately kept**: its caller ID is the open decision below, and this tool
+will not make a caller-ID change on its own.
+
+## A phone the portal did not know
+
+`4132912045` (“Wendel”) is a real FreePBX `users`/`devices` pair with no
+`freepbx_extensions` row: a line made outside the portal, invisible to every
+portal screen. The portal's own create path cannot adopt it — it refuses an
+extension FreePBX already owns (`409 extension_exists`) — so the merge tool grew
+that half. `scripts/legacy_portal_merge.py adopt --extension <ext> --apply` reads
+the extension off the PBX (or out of `accounts.json`, which carries the legacy
+secret and PIN) and writes the one mirror row, owned by the account the merge
+rule picks or one named with `--account`. It is idempotent and plans without
+writing until `--apply`.
+
 ## Still open
 
 * **Mailboxes** — the six accounts that had voicemail on the source have none on
@@ -180,8 +208,9 @@ written.
   intent from `accounts.json` so each box keeps the source PIN.
 * **The four fax ATAs** must be reprovisioned from IAX2 to SIP (item 2 above).
 * **The fax route** — the legacy `FAX` route (its own digit normalisation and the
-  fax caller ID) is still the source's; only the `PSTN` normalisation is
-  converged. Adopting it is a caller-ID decision, not a migration step.
+  fax caller ID) is still on the box, kept by operator decision when the
+  duplicate `voipms` route was removed. Collapsing it into `PSTN` is a
+  caller-ID decision, not a migration step.
 * **Portal email addresses** — replace the placeholder addresses with the
   customers' real ones, which is also what makes SSO bind to the right account.
 * **`7745057135` moved to Denovo Credit Corporation**, off the demo account,

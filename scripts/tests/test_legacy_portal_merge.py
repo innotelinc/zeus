@@ -7,9 +7,14 @@ Run:  python3 -m unittest discover -s scripts/tests -v
 """
 from __future__ import annotations
 
+import contextlib
+import io
+import json
 import sys
+import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 REPO = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(REPO / "scripts"))
@@ -138,6 +143,93 @@ class ExtensionPlanTests(unittest.TestCase):
         lines, _ = merge.plan_extensions(accounts, set(), owners)
         self.assertIn("3291", lines[0])
         self.assertIn("12000", lines[1])
+
+    def test_an_explicit_owner_overrides_the_merge_rule(self):
+        # What `adopt --account` needs: the extension placed under the account
+        # the operator names, not the one the legacy rule would guess.
+        owners = {"Elsewhere": "u9"}
+        _, statements = merge.plan_extensions(
+            {"4132912045": account(extension="4132912045", name="Wendel")}, set(), owners,
+            owner_for=lambda _extension: "Elsewhere")
+        self.assertIn("'u9'", statements[0])
+
+
+class AdoptionTests(unittest.TestCase):
+    """The half the snapshot cannot cover: an extension created after it."""
+
+    def test_the_default_owner_is_the_same_rule_the_merge_uses(self):
+        # 4132912045 is not one of the routed DIDs, so it hangs off the
+        # corporate account exactly as any other device extension does.
+        self.assertEqual(merge.owner_of("4132912045"), merge.CORPORATE)
+
+    def test_a_live_account_is_read_off_the_pbx_in_the_snapshot_shape(self):
+        with mock.patch.object(merge.pbx_db, "mysql_exec",
+                               return_value="Wendel\tnovm\n") as exec_:
+            got = merge.read_pbx_account("4132912045", "zeus-freepbx")
+        self.assertEqual(got["extension"], "4132912045")
+        self.assertEqual(got["name"], "Wendel")
+        self.assertEqual(got["voicemail"], "novm")
+        # The secret is never invented.
+        self.assertIsNone(got["secret"])
+        self.assertIn("'4132912045'", exec_.call_args.args[1])
+
+    def test_an_extension_the_pbx_does_not_have_is_none(self):
+        with mock.patch.object(merge.pbx_db, "mysql_exec", return_value=""):
+            self.assertIsNone(merge.read_pbx_account("4099999999", "zeus-freepbx"))
+
+    def test_a_snapshot_entry_is_preferred_over_the_live_pbx(self):
+        # It carries the legacy secret and PIN, so the portal and the PBX keep
+        # agreeing on the credentials the migration already wrote.
+        with tempfile.NamedTemporaryFile("w", suffix=".json", delete=False) as handle:
+            json.dump({"source_host": "voice", "accounts": [
+                {"extension": "4132912045", "name": "Wendel", "secret": "legacy"}]},
+                handle)
+            path = handle.name
+        try:
+            found = merge.account_from_snapshot(path, "4132912045")
+        finally:
+            Path(path).unlink()
+        self.assertEqual(found["secret"], "legacy")
+
+    def test_a_missing_snapshot_is_not_an_error(self):
+        self.assertIsNone(merge.account_from_snapshot("/nonexistent.json", "4132912045"))
+
+    def _run(self, argv, *, account, resolve="zeus-freepbx"):
+        out, err = io.StringIO(), io.StringIO()
+        with mock.patch.object(merge.pbx_db, "resolve_container", return_value=resolve), \
+             mock.patch.object(merge, "read_pbx_account", return_value=account), \
+             mock.patch.object(merge, "rows", return_value=[]), \
+             mock.patch.object(merge, "sqlite") as sqlite_:
+            with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+                rc = merge.main(argv)
+        return rc, out.getvalue(), err.getvalue(), sqlite_
+
+    def test_adopt_plans_without_writing_until_apply(self):
+        rc, out, _, sqlite_ = self._run(
+            ["adopt", "--extension", "4132912045", "--accounts", "/nonexistent.json"],
+            account={"extension": "4132912045", "name": "Wendel", "voicemail": "novm"})
+        self.assertEqual(rc, 0, out)
+        self.assertIn("plan only", out)
+        sqlite_.assert_not_called()
+
+    def test_adopt_apply_writes_the_mirror_row(self):
+        rc, out, _, sqlite_ = self._run(
+            ["adopt", "--extension", "4132912045", "--accounts", "/nonexistent.json",
+             "--apply"],
+            account={"extension": "4132912045", "name": "Wendel", "voicemail": "novm"})
+        self.assertEqual(rc, 0, out)
+        self.assertIn("applied", out)
+        sql = sqlite_.call_args.args[0]
+        self.assertIn("INSERT INTO freepbx_extensions", sql)
+        self.assertIn("'4132912045'", sql)
+
+    def test_an_extension_that_is_not_on_the_pbx_is_not_adopted(self):
+        rc, _, err, sqlite_ = self._run(
+            ["adopt", "--extension", "4099999999", "--accounts", "/nonexistent.json"],
+            account=None)
+        self.assertEqual(rc, 1)
+        self.assertIn("not a FreePBX extension", err)
+        sqlite_.assert_not_called()
 
 
 if __name__ == "__main__":

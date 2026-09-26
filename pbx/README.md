@@ -19,7 +19,7 @@ operational shape.
 | `dograh_routes.py` | Judge whether every DID the portal sells reaches a `dograh-inbound,<workflow>,1` row in FreePBX's own `incoming` table — see [One ingress](#one-ingress-every-platform-did-names-a-workflow). **Read-only, deliberately:** which workflow a DID should reach is a portal decision and the row is FreePBX's, so the tool names the disagreement instead of inventing a route. A DID the portal marks `fax_enabled` is excused the fax service's own destination, and `--incoming-tsv` judges a route table dumped by `p0-snapshot.sh` with no PBX reachable. Exit 1 = a DID is off the workflow or unrouted, 2 = cannot tell |
 | `extension_mirror.py` | Judge whether every FreePBX user is an extension the portal's `freepbx_extensions` mirror names — **one direction only** (the mirror also carries rows the PBX does not own as users: the fax service lines, a demo softphone), read-only, `--users-tsv` judges a user table dumped by `p0-snapshot.sh` with no PBX reachable. Exit 1 = a phone nothing in the portal can manage, 2 = cannot tell — see [The portal's extension mirror](#the-portals-extension-mirror) |
 | `media_address.py` | Keep the address Asterisk advertises to a LAN phone (`media_address` on each sip/pjsip endpoint) — **entrypoint-owned**, re-derived every boot by `docker-entrypoint-full.sh` / `scripts/setup.sh` and reconciled by the `zeus-pbx-sync` timer (`scripts/zeus-pbx-sync.sh`) so an image rebuild cannot lose it. Writes its own file `pjsip_media_custom.conf` and one `#include` in the portal-shared `pjsip.endpoint_custom_post.conf`; refuses a docker/loopback address. `--check` / `--apply`, `--devices-tsv` judges off-host. Exit 1 = an apply converges it, 2 = cannot tell — see [The media address Asterisk advertises](#the-media-address-asterisk-advertises-container--lan-phones) |
-| `outbound_route.py` | Keep the route that normalises a dialled number — the one that gives a ten-digit call the `1` VoIP.ms terminates on. **Entrypoint-owned**, converged on boot by `docker-entrypoint-full.sh` / `scripts/setup.sh` and reconciled every tick by `scripts/zeus-pbx-sync.sh`. Creates the route (`PSTN` by default, `PBX_OUTBOUND_ROUTE` to rename) if missing, requires the two normalisation rules (ten-digit -> `1`, seven-digit -> `1413`) — preserving any extra patterns an existing route already has — attaches the VoIP.ms trunk first, and lifts the route above anything ahead of it that would take the same calls — a catch-all like `X.`, or a duplicate route pointed at another trunk. FreePBX evaluates routes in sequence order, so a route ahead swallows the call before the named route and its normalisation are reached. Refuses (exit 2) when there is no trunk row to attach. `--check` / `--apply`, `--local` for the in-container / bare-metal MySQL. Exit 1 = an apply converges it — see [The outbound route](#the-outbound-route-a-dialled-number-reaches-the-carrier) |
+| `outbound_route.py` | Keep the route that normalises a dialled number — the one that gives a ten-digit call the `1` VoIP.ms terminates on. **Entrypoint-owned**, converged on boot by `docker-entrypoint-full.sh` / `scripts/setup.sh` and reconciled every tick by `scripts/zeus-pbx-sync.sh`. Creates the route (`PSTN` by default, `PBX_OUTBOUND_ROUTE` to rename) if missing, requires the two normalisation rules (ten-digit -> `1`, seven-digit -> `1413`) — preserving any extra patterns an existing route already has — attaches the VoIP.ms trunk first, and lifts the route above anything ahead of it that would take the same calls — a catch-all like `X.`, or a duplicate route pointed at another trunk. FreePBX evaluates routes in sequence order, so a route ahead swallows the call before the named route and its normalisation are reached. Refuses (exit 2) when there is no trunk row to attach. `--check` / `--apply`, `--local` for the in-container / bare-metal MySQL, and `--drop-route NAME` to remove a duplicate route an operator names (never automatic). Exit 1 = an apply converges it — see [The outbound route](#the-outbound-route-a-dialled-number-reaches-the-carrier) |
 | `pjsip_owner_check.py` | Who owns the PJSIP endpoint for an extension — the load tree, the duplicate ids, and who carries the `#include`. Read-only, `--json` for the raw measurement, exit 1 on a two-owner state — see [Who owns a PJSIP endpoint](#who-owns-a-pjsip-endpoint) |
 | `provision_extension.py` | **The one owner of extension/device creation** (D6): check-then-create through FreePBX's own `addDevice`/`addUser`, with a preflight that refuses on an orphaned `sip`/`pjsip` row, leftover `AMPUSER` state, a half-created extension or a two-owner endpoint. `--check` / `--apply`, `--observed-json` to judge off-host, exit 1 = an apply converges it, 3 = only a person can — see [One provisioning path](#one-provisioning-path-for-extensions) |
 | `d7_assert.py` | The three D7 claims about the live stack (call recorded, Dograh's ARI app registered, one gateway serving the model pins this repo still holds — the summary path's `VOICEMAIL_SUMMARY_MODEL`, since the call path's belongs to Dograh). `--call` places a self-contained probe call. Exit 2 = nothing could be evaluated |
@@ -436,13 +436,19 @@ IAX trunk), and the first one takes the call however correct `PSTN` is.
 python3 pbx/outbound_route.py --check                 # from the host, into zeus-freepbx
 docker exec zeus-freepbx python3 /opt/zeus/pbx/outbound_route.py --check --local
 python3 pbx/outbound_route.py --apply --local         # inside the container / bare metal
+python3 pbx/outbound_route.py --apply --drop-route voipms   # consolidate: remove a duplicate by name
 ```
 
 **Only the named route is touched.** A route that is not the one named here is
 reported and moved *below* the route, never deleted or rewritten — a fax route
 with its own caller ID (see `docs/legacy-voice-migration.md`) is an operator's
 decision this tool has no business making. The move is the smallest one that
-makes the route reachable: every other route keeps its relative order.
+makes the route reachable: every other route keeps its relative order. When an
+operator *does* want a duplicate gone, `--drop-route NAME` (repeatable) is how
+they say so: the named route and its own rows are deleted, the sequence is
+rewritten from what remains, and a `--check` that names it reports it until it
+is. The sync timer never passes the flag, so a self-healing tick cannot delete a
+route a person put there.
 
 **It refuses rather than invents a trunk.** An outbound route references its
 trunk by a row in FreePBX's own `trunks` table, and `dialout-trunk` builds the
@@ -925,7 +931,8 @@ is the only reason the portal knows a phone exists at all: it carries the
 softphone settings, the voicemail flag and PIN, and the account whose screens
 manage it. Two writers keep it — the portal's create path
 (`src/app/api/phone/extensions/route.ts`) and `scripts/legacy_portal_merge.py`,
-which writes one row per extension that predates the portal — so “every FreePBX
+which writes one row per extension that predates the portal and, with its
+`adopt` mode, one for an extension created after — so “every FreePBX
 user is a portal extension” is the estate's own convention, not a rule invented
 here.
 
@@ -935,6 +942,21 @@ screen, while every screen that does exist is correct. Measured on this estate,
 `4132912045` (“Wendel”) is a real `users`/`devices` pair and the only one of the
 box's eight extensions with no mirror row — and it was found because a person
 read the two tables side by side.
+
+**That gap has a writer now.** The portal's own create path refuses an
+extension FreePBX already owns (`409 extension_exists`), so a line made outside
+the portal could not be brought in through the UI at all. `scripts/legacy_portal_merge.py
+adopt --extension <ext>` reads the extension off the PBX (or out of the legacy
+snapshot, when it is there — the snapshot carries the device secret and voicemail
+PIN) and writes the single `freepbx_extensions` row, owned by the same account
+the merge rule would pick or one named with `--account`. It is the same row
+shape the create path and the merge write, idempotent, and plans without writing
+until `--apply`.
+
+```bash
+python3 scripts/legacy_portal_merge.py adopt --extension 4132912045          # say what would change
+python3 scripts/legacy_portal_merge.py adopt --extension 4132912045 --apply  # write the row
+```
 
 `pbx/extension_mirror.py` is that read, as a verdict:
 
@@ -949,7 +971,7 @@ things:
 | status | meaning | what the caller does |
 | --- | --- | --- |
 | `0` | every FreePBX user is named by the mirror | nothing |
-| `1` | an extension on the PBX is in no mirror row | add it in the portal, or remove it from the PBX with `delUser`/`delDevice` — only a person can |
+| `1` | an extension on the PBX is in no mirror row | add it — `scripts/legacy_portal_merge.py adopt --extension <ext> --apply` writes the one row the portal needs — or remove it from the PBX with `delUser`/`delDevice`; which is a person's call |
 | `2` | no portal database, no PBX, an unread table, an empty mirror, or a PBX that names no user | nothing — a host running part of the group is not a drifted host |
 
 Three things about it are deliberate:
