@@ -129,6 +129,18 @@ class ExtensionPlanTests(unittest.TestCase):
         self.assertIn("'1234'", statements[0])
         self.assertIn(", 1, '1234', 'active'", statements[0])
 
+    def test_a_carried_secret_is_said_and_an_absent_one_is_not_invented(self):
+        owners = {merge.CORPORATE: "u1"}
+        carried = account(extension="1001", secret="legacy-secret")
+        lines, _ = merge.plan_extensions({"1001": carried}, set(), owners)
+        self.assertIn("secret=legacy", lines[0])
+        # An extension read off the PBX has no snapshot secret; the row is NULL
+        # and the line says so rather than claiming a credential was moved.
+        live = account(extension="1001", secret=None)
+        lines, statements = merge.plan_extensions({"1001": live}, set(), owners)
+        self.assertNotIn("secret=legacy", lines[0])
+        self.assertIn("NULL", statements[0])
+
     def test_an_extension_without_voicemail_gets_no_pin(self):
         owners = {merge.CORPORATE: "u1"}
         _, statements = merge.plan_extensions(

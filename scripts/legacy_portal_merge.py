@@ -165,8 +165,10 @@ def plan_extensions(accounts, existing_extensions, owners, owner_for=None):
             continue
         vm_yes = str(account.get("voicemail", "")).lower() not in ("novm", "", "none")
         pin = (account.get("vm") or {}).get("pin") if vm_yes else None
+        secret_note = ("secret=legacy" if account.get("secret")
+                       else "secret=none (Repair adopts the PBX's)")
         lines.append(f"ADD    {extension:11} {account['name'][:24]:24} -> {who:26} "
-                     f"vm={'yes' if vm_yes else 'no'} secret=legacy")
+                     f"vm={'yes' if vm_yes else 'no'} {secret_note}")
         statements.append(
             "INSERT INTO freepbx_extensions (id, user_id, extension_id, extension_name, "
             "extension_secret, voicemail_enabled, voicemail_pin, status, created_at, "
