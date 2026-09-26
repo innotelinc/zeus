@@ -36,6 +36,52 @@ if [ -f "${REPO_ROOT}/pbx/dograh_routes.py" ] && [ -f "$PORTAL_DB" ]; then
   fi
 fi
 
+# ── Media address: judged, and converged on drift ────────────────
+# The boot entrypoint `docker-entrypoint-full.sh` converges the address Asterisk
+# advertises to a LAN phone into `pjsip_media_custom.conf`. On a box whose image
+# predates that change the entrypoint never runs it, and nothing else notices:
+# the endpoint answers, it just hands the phone the container's own (unreachable)
+# address, and one-way audio is the only symptom. So the timer does it — checked
+# on every tick, and *applied* when out of sync, because unlike a DID route this
+# value is auto-derivable and the tool is idempotent. That is what re-derives it
+# on a rebuilt box with no 45–90 minute image rebuild, and the window below
+# (OnBootSec) is what makes it happen after a boot.
+PBX_CONTAINER="${PBX_CONTAINER:-zeus-freepbx}"
+# Explicit env wins, then the route-selected LAN address — the unit does not
+# carry LAN_IP, and the address this file advertises is by project rule the
+# host's LAN address. The tool refuses a docker/loopback value, so a wrong
+# answer is skipped rather than written.
+MEDIA_ADDRESS="${PJSIP_MEDIA_ADDRESS:-${LAN_IP:-$(ip -4 route get 1 2>/dev/null | sed -n 's/.*src \([0-9.]*\).*/\1/p' | head -1)}}"
+
+# The endpoint list is the PBX's own `devices` table, read inside the container.
+media_run() {
+  docker exec -i -e ZEUS_MEDIA_ADDRESS="$MEDIA_ADDRESS" -e ZEUS_MEDIA_MODE="$1" \
+    "$PBX_CONTAINER" sh -s <<'INNER' 2>&1
+mysql -N -B -u root asterisk -e "SELECT id FROM devices WHERE tech IN ('sip','pjsip')" \
+  | python3 /opt/zeus/pbx/media_address.py --devices-tsv - \
+      --address "$ZEUS_MEDIA_ADDRESS" --asterisk-dir /etc/asterisk "$ZEUS_MEDIA_MODE"
+INNER
+}
+
+media_say() { printf '%s\n' "$1" | sed 's/^media-address: /  media-address: /' >&2; }
+
+if [ -n "$MEDIA_ADDRESS" ] \
+   && docker exec "$PBX_CONTAINER" test -f /opt/zeus/pbx/media_address.py >/dev/null 2>&1; then
+  media_rc=0
+  media_out="$(media_run --check)" || media_rc=$?
+  [ -n "$media_out" ] && media_say "$media_out"
+  if [ "$media_rc" = 1 ]; then
+    media_rc=0
+    media_out="$(media_run --apply)" || media_rc=$?
+    [ -n "$media_out" ] && media_say "$media_out"
+    docker exec "$PBX_CONTAINER" asterisk -rx "module reload res_pjsip.so" >/dev/null 2>&1 || true
+    echo "zeus-pbx-sync: media addresses re-applied (pbx/media_address.py)" >&2
+  fi
+  if [ "$media_rc" != 0 ]; then
+    echo "zeus-pbx-sync: media addresses could not be judged (media-address exit $media_rc) — check LAN_IP/PJSIP_MEDIA_ADDRESS and the PBX" >&2
+  fi
+fi
+
 if "$BOOTSTRAP" --check >/dev/null 2>&1; then
   echo "zeus-pbx-sync: in sync"
   exit 0

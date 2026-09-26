@@ -107,6 +107,16 @@ if mysql_q "SELECT 1;" > /dev/null; then
       note "routes/$t.tsv FAILED (table not readable)"
     fi
   done
+  # FreePBX's own extension list, in the exact shape `pbx/extension_mirror.py
+  # --users-tsv` reads (`SELECT extension, name FROM users`), so the mirror can
+  # be judged off-host later — the same way `routes/incoming.tsv` feeds
+  # `pbx/dograh_routes.py --incoming-tsv`. Without it a mirror judgement needs
+  # the live box, and the whole point of the snapshot is to answer afterwards.
+  if mysql_q "SELECT extension, name FROM users;" > "$OUT/routes/users.tsv" 2>/dev/null; then
+    note "routes/users.tsv ($(wc -l < "$OUT/routes/users.tsv") rows)"
+  else
+    note "routes/users.tsv FAILED (table not readable)"
+  fi
   if mysql_cdr "SELECT COUNT(*), COALESCE(MAX(calldate),'none'), COALESCE(MIN(calldate),'none') FROM cdr;" \
        > "$OUT/cdr.txt" 2>/dev/null && [ -s "$OUT/cdr.txt" ]; then
     note "cdr.txt (asteriskcdrdb): $(cat "$OUT/cdr.txt")"

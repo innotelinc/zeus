@@ -203,6 +203,21 @@ describe("the readiness judgement", () => {
     assert.equal(verdict.secretDiffers, false);
   });
 
+  it("surfaces the address the phone is told to send its media to", () => {
+    const withMedia = readiness.assessSoftphone(ID, "same", "same", webrtcState(), "192.168.1.30");
+    assert.equal(withMedia.state, "ready");
+    assert.equal(withMedia.mediaAddress, "192.168.1.30");
+    assert.match(withMedia.summary, /media_address=192\.168\.1\.30/);
+    assert.equal(readiness.mediaAddressLabel(withMedia), "Media 192.168.1.30");
+
+    // Absent is a real, visible answer: it is the one-way-audio state, so the
+    // summary names it rather than staying silent about it.
+    const withoutMedia = readiness.assessSoftphone(ID, "same", "same", webrtcState());
+    assert.equal(withoutMedia.mediaAddress, "");
+    assert.equal(readiness.mediaAddressLabel(withoutMedia), "");
+    assert.match(withoutMedia.summary, /No media address is set/);
+  });
+
   it("labels every state it can return", () => {
     const states = new Set([
       readiness.assessSoftphone(ID, "s", "s", webrtcState()).state,

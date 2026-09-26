@@ -406,6 +406,40 @@ PYEOF
   chown asterisk:asterisk "${ASTERISK_ETC}/pjsip.transports.conf" 2>/dev/null || true
 fi
 
+# ── The media address Asterisk advertises to LAN phones ─────────────────────
+# A phone on the LAN is handed the address it should send media to in the answer
+# SDP. Inside the container Asterisk's own local address is the docker bridge
+# (172.x), which the phone cannot reach: it sends its voice and every DTMF digit
+# there, Asterisk receives none of it, and `rtp_timeout=30` hangs the call up —
+# while the caller still hears the prompts, so it reads as a voicemail fault.
+# The trunks need the WAN address (`external_media_address`) and must NOT get
+# this, which is exactly why it is per endpoint. `pbx/media_address.py` converges
+# `media_address=<LAN IP>` onto each sip/pjsip endpoint in `pjsip_media_custom.conf`
+# (operator-owned; FreePBX #includes it after the endpoints), so a rebuilt box
+# gets the lines back on boot instead of needing hand edits — see pbx/README.md.
+MEDIA_ADDRESS="${PJSIP_MEDIA_ADDRESS:-${LAN_IP:-}}"
+if [ -z "$MEDIA_ADDRESS" ] && [[ "${STUN_HOST}" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+  MEDIA_ADDRESS="${STUN_HOST}"
+fi
+if [ -n "$MEDIA_ADDRESS" ] && [ -f /opt/zeus/pbx/media_address.py ]; then
+  set +e
+  mysql -u root asterisk -N -B 2>/dev/null \
+    -e "SELECT id FROM devices WHERE tech IN ('sip','pjsip')" \
+    | python3 /opt/zeus/pbx/media_address.py --devices-tsv - \
+        --address "$MEDIA_ADDRESS" --asterisk-dir "$ASTERISK_ETC" --apply
+  media_rc=$?
+  set -e
+  if [ "$media_rc" = 0 ]; then
+    # res_pjsip caches the endpoints; a fresh file is not live until it reloads.
+    asterisk -rx "module reload res_pjsip.so" >/dev/null 2>&1 || true
+    echo ">>> media_address=${MEDIA_ADDRESS} converged onto the LAN endpoints"
+  else
+    echo ">>> WARNING: media_address not converged (rc=${media_rc}); a LAN phone may be handed an unreachable address (pbx/media_address.py)" >&2
+  fi
+elif [ -z "$MEDIA_ADDRESS" ]; then
+  echo ">>> WARNING: no LAN media address (set LAN_IP or PJSIP_MEDIA_ADDRESS); LAN phones may be handed the container's own address" >&2
+fi
+
 # ── Dograh external-media WebSocket ─────────────────────────────────────────
 # The add-on's entrypoint owns this file normally, but it lives on the shared
 # asterisk-config volume and its default URI is `host.docker.internal`, which

@@ -104,6 +104,15 @@ DEFAULT_DIR = "/etc/asterisk"
 WSS_TRANSPORT_FILE = "pjsip_wss.conf"
 EXT_FRAGMENT_RE = re.compile(r"^pjsip_ext_(?P<ext>[A-Za-z0-9_.-]+)\.conf$")
 
+# The per-endpoint media addresses (pbx/media_address.py's file) and the operator
+# file that `#include`s it. Carrying append sections without a surviving include
+# is the media half of the same defect as an orphaned `pjsip_ext_*.conf`: the
+# file is on disk, Asterisk never reads it, and every LAN phone is handed the
+# container's own address.
+MEDIA_FILE = "pjsip_media_custom.conf"
+MEDIA_INCLUDE_HOST = "pjsip.endpoint_custom_post.conf"
+MEDIA_KEY = "media_address="
+
 # FreePBX stamps its generated files with this header. It is the primary
 # evidence; the name list below is the fallback for a file that lost or never
 # had it (a truncated write, an older image).
@@ -429,9 +438,10 @@ def verdict_endpoint(
             findings.append(
                 Finding(
                     True,
-                    f"{appended} carries [{ext}](+), which extends that endpoint with "
-                    f"WebRTC media instead of defining a second object — the endpoint "
-                    f"decision (docs/voice-convergence.md §11)",
+                    f"{appended} carries [{ext}](+), which extends that endpoint instead "
+                    f"of defining a second object — the endpoint decision "
+                    f"(docs/voice-convergence.md §11). The portal writes WebRTC settings "
+                    f"there; pbx/media_address.py writes the advertised media address.",
                 )
             )
     elif endpoint_defs:
@@ -767,6 +777,34 @@ def appended_extensions(files: dict[str, ConfigFile]) -> set[str]:
     }
 
 
+def media_include_finding(raw: dict[str, str], closure: list[str]) -> Finding:
+    """Whether the LAN media addresses are actually loaded.
+
+    `pjsip_media_custom.conf` is only read because an operator-owned file
+    `#include`s it, and the include can go missing with no other symptom: the
+    appends are perfect on disk and Asterisk, never told to read them, keeps
+    advertising its own local address (inside the container, the docker bridge).
+    A LAN phone then sends its voice and every DTMF digit into a subnet it cannot
+    reach, and `rtp_timeout` hangs the call up — one-way in the direction nobody
+    notices, so it reads as a voicemail fault. That is why the include is a
+    finding, not an assumption.
+    """
+    if MEDIA_FILE not in raw:
+        return Finding(
+            None, f"no {MEDIA_FILE} — no endpoint is given an advertised media address"
+        )
+    if MEDIA_KEY not in raw[MEDIA_FILE]:
+        return Finding(None, f"{MEDIA_FILE} carries no {MEDIA_KEY} append")
+    if MEDIA_FILE in closure:
+        return Finding(True, f"{MEDIA_FILE} is loaded — the endpoints' media addresses apply")
+    return Finding(
+        False,
+        f"{MEDIA_FILE} carries media_address appends but NOTHING includes it — every LAN "
+        f"phone is handed the PBX's own address (the container's) and its audio is lost; "
+        f"add `#include {MEDIA_FILE}` to {MEDIA_INCLUDE_HOST}",
+    )
+
+
 def main(argv: list[str]) -> int:
     parser = argparse.ArgumentParser(
         description="Who owns the PJSIP endpoint for an extension?",
@@ -867,6 +905,8 @@ def main(argv: list[str]) -> int:
     for ext in wanted:
         findings.extend(verdict_endpoint(ext, files, closure, loaded))
     findings.extend(verdict_includes(include_carriers(files)))
+
+    findings.append(media_include_finding(raw, closure))
 
     dangling = missing_includes(files)
     if dangling:

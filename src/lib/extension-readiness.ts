@@ -58,6 +58,13 @@ export interface SoftphoneReadiness {
   requiredSection: string;
   /** A pre-decision `pjsip_ext_<ext>.conf` is still on disk. */
   duplicateFragment: boolean;
+  /**
+   * The address the extension's endpoint is told to advertise, or `""` when
+   * none is set yet. Shown because the failure is silent: with no media address
+   * a LAN phone is handed the PBX container's own (address it cannot reach) and
+   * loses its voice and every DTMF digit in the one direction nobody hears.
+   */
+  mediaAddress: string;
   /** One sentence naming the state, and the first thing to fix about it. */
   summary: string;
 }
@@ -74,6 +81,7 @@ export function assessSoftphone(
   portalSecret: string | null | undefined,
   pbxSecret: string,
   state: SoftphoneState,
+  mediaAddress = "",
 ): SoftphoneReadiness {
   const secretPresent = Boolean(portalSecret);
   const pbxSecretPresent = Boolean(pbxSecret);
@@ -86,6 +94,7 @@ export function assessSoftphone(
     loaded: state.provisioned,
     requiredSection: state.section,
     duplicateFragment: state.legacyFragment,
+    mediaAddress,
   };
 
   if (state.legacyFragment) {
@@ -133,8 +142,17 @@ export function assessSoftphone(
     summary:
       `Ready: the stored secret matches the PBX's, and ${state.file} appends the WebRTC ` +
       `settings to the endpoint FreePBX generates for [${extensionId}] — one object, so ` +
-      `routing, voicemail and this softphone all agree.`,
+      `routing, voicemail and this softphone all agree.` +
+      (mediaAddress
+        ? ` The phone is handed media_address=${mediaAddress}.`
+        : ` No media address is set yet, so the phone is handed the PBX's own address ` +
+          `(unreachable from the LAN) until the next boot converges it.`),
   };
+}
+
+/** The advertised media address for a list row, or `""` when there is none. */
+export function mediaAddressLabel(readiness: SoftphoneReadiness): string {
+  return readiness.mediaAddress ? `Media ${readiness.mediaAddress}` : "";
 }
 
 /** An extension this module can consider offering to the softphone. */

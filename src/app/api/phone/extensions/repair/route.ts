@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 import { requireUser, badRequest } from "@/lib/api-helpers";
 import db from "@/lib/db";
-import { POST_FILE, provisionWebrtc, readWebrtcState, removeLegacyFragment, sectionHeader } from "@/lib/pjsip-endpoint";
+import { MEDIA_FILE, POST_FILE, provisionMediaAddress, provisionWebrtc, readWebrtcState, removeLegacyFragment, sectionHeader } from "@/lib/pjsip-endpoint";
 import { pbxSecretFor } from "@/lib/pjsip-secret";
 import { reloadPjsipIfLive } from "@/lib/pjsip-reload";
 import { assessSoftphone } from "@/lib/extension-readiness";
@@ -74,7 +74,12 @@ export async function POST(req: Request) {
 
   // One write, in a file the portal owns, appending to an object FreePBX owns.
   const softphone = provisionWebrtc(ext.extension_id);
-  const reloaded = await reloadPjsipIfLive(before);
+  // A repair also fixes the address the phone is handed, for a box that was
+  // built before it was set (nothing wrote this file on older boots).
+  const media = provisionMediaAddress(ext.extension_id);
+  const reloaded = await reloadPjsipIfLive(
+    media.written ? { ...softphone, provisioned: true } : before,
+  );
 
   if (adopted) {
     db.prepare("UPDATE freepbx_extensions SET extension_secret = ? WHERE id = ? AND user_id = ?").run(
@@ -84,7 +89,7 @@ export async function POST(req: Request) {
     );
   }
 
-  const readiness = assessSoftphone(ext.extension_id, secret, pbxSecret, softphone);
+  const readiness = assessSoftphone(ext.extension_id, secret, pbxSecret, softphone, media.address);
   return NextResponse.json({
     success: true,
     extensionId: ext.extension_id,
@@ -93,6 +98,9 @@ export async function POST(req: Request) {
     adopted_pbx_secret: adopted,
     removed_leftover_endpoint_file: removedLegacy,
     reloaded_pjsip: reloaded,
+    media_address_file: MEDIA_FILE,
+    media_address: media.address,
+    media_address_written: media.written,
     softphone: readiness,
   });
 }

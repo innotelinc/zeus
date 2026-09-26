@@ -142,6 +142,13 @@ services:
       # host.docker.internal, ast_sockaddr_resolve fails on it and silently
       # disables STUN.
       PJSIP_STUN_TURN_ADDR: ${PJSIP_STUN_TURN_ADDR:-}
+      # The address Asterisk advertises to a LAN phone for its media (answer
+      # SDP), converged per endpoint by pbx/media_address.py from the entrypoint
+      # on every boot. PROJECT RULE: a real LAN address, never a docker range —
+      # the phone cannot route to the container, and its voice/DTMF are lost.
+      # Defaults to LAN_IP, then (in the entrypoint) to the host of
+      # PJSIP_STUN_TURN_ADDR. The trunks get the WAN address instead, never this.
+      PJSIP_MEDIA_ADDRESS: ${PJSIP_MEDIA_ADDRESS:-${LAN_IP:-}}
       # LAN subnet(s) Asterisk treats as on-net, comma separated. Defaults to
       # the /24 of PJSIP_STUN_TURN_ADDR. Never a docker range: a foreign subnet
       # recorded by another stack leaves Asterisk classifying addresses that do
@@ -290,6 +297,17 @@ services:
       ASTERISK_AMI_PORT: "5038"
       ASTERISK_AMI_USERNAME: ${FREEPBX_AMI_USER:-pbxportal}
       ASTERISK_AMI_SECRET: ${FREEPBX_AMI_SECRET:-}
+
+      # ── The media address a newly created softphone is handed ──
+      # When the portal creates a softphone it writes the same
+      # `[<ext>](+) media_address=` section the boot owner converges
+      # (src/lib/pjsip-endpoint.ts -> provisionMediaAddress), so a phone added
+      # *between* boots is not deaf until the next restart. It writes nothing
+      # when no reachable address is configured, so the value has to reach the
+      # portal as well as the PBX. PROJECT RULE: the host's LAN address, never
+      # a docker range (a phone cannot route to the container). Defaults to
+      # LAN_IP; /api/health reports `softphone_media` when it is missing.
+      PJSIP_MEDIA_ADDRESS: ${PJSIP_MEDIA_ADDRESS:-${LAN_IP:-}}
 
       # ── Call-context read (GET /api/voice/context/{token}) ──
       # Bearer credential for the machines that read a call's context: Capstone

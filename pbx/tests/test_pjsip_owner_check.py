@@ -683,6 +683,38 @@ class CliTest(unittest.TestCase):
         self.assertIn("no configuration was read", err)
 
 
+class MediaIncludeTest(unittest.TestCase):
+    """The media addresses are loaded, or every LAN phone is deaf in one direction."""
+
+    MEDIA = "[101](+)\nmedia_address=192.168.1.30\n"
+
+    def _finding(self, media_text, carriers):
+        raw = {
+            "pjsip.conf": f"#include {check.MEDIA_INCLUDE_HOST}\n",
+            check.MEDIA_INCLUDE_HOST: carriers,
+            check.MEDIA_FILE: media_text,
+        }
+        files = check.load_files(raw)
+        return check.media_include_finding(raw, check.include_closure(files, check.ENTRY))
+
+    def test_a_media_file_nothing_includes_is_a_failure(self):
+        # The failure is silent by construction: the appends are perfect on
+        # disk, and Asterisk never reads the file, so `pjsip show endpoint`
+        # still has no media_address and the phone sends RTP into the bridge.
+        finding = self._finding(self.MEDIA, "")
+        self.assertIs(finding.ok, False)
+        self.assertIn(f"#include {check.MEDIA_FILE}", finding.detail)
+        self.assertIn(check.MEDIA_INCLUDE_HOST, finding.detail)
+
+    def test_the_included_media_file_passes(self):
+        finding = self._finding(self.MEDIA, f"#include {check.MEDIA_FILE}\n")
+        self.assertIs(finding.ok, True)
+
+    def test_no_media_file_is_not_evaluated_never_a_pass(self):
+        self.assertIsNone(check.media_include_finding({}, []).ok)
+        self.assertIsNone(self._finding("; nothing provisioned yet\n", "").ok)
+
+
 class HelperTest(unittest.TestCase):
     def test_the_fragment_name_yields_the_extension(self):
         self.assertEqual(check.extension_of("pjsip_ext_101.conf"), "101")

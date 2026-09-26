@@ -80,6 +80,25 @@ class WrapperGatesBeforeItApplies(unittest.TestCase):
                     f"bootstrap call is not repo-root anchored: {line}",
                 )
 
+    def test_it_reconciles_the_media_address_every_tick(self):
+        """The boot entrypoint converges it; a rebuilt box needs the timer to.
+
+        A box whose image predates the entrypoint change, or a media file whose
+        `#include` someone removed, looks healthy everywhere else — the endpoint
+        answers, it just hands the phone the container's own (unreachable)
+        address, and one-way audio is the only symptom. Unlike a DID route this
+        value is auto-derivable and the tool is idempotent, so the timer both
+        checks it and applies it on drift (that is what re-derives it after a
+        boot with no 45-90 minute image rebuild).
+        """
+        self.assertIn("media_address.py", self.text)
+        self.assertIn("pjsip_media_custom.conf", self.text)
+        self.assertIn("media_run --check", self.text)
+        self.assertIn("media_run --apply", self.text)
+        # Run inside the PBX container, against its own device table.
+        self.assertIn("--devices-tsv -", self.text)
+        self.assertIn("--asterisk-dir /etc/asterisk", self.text)
+
     def test_an_unreachable_pbx_is_not_a_failed_run(self):
         """A slow PBX boot after a reboot must not fail the timer's unit."""
         tail = [line for line in self.text.splitlines() if line.strip()]

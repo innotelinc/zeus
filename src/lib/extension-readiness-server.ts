@@ -15,7 +15,7 @@
  * repair endpoint will give — a cached copy that disagrees with the repair is
  * how an operator ends up repairing something that was already fine.
  */
-import { readWebrtcState } from "./pjsip-endpoint";
+import { readMediaAddress, readWebrtcState } from "./pjsip-endpoint";
 import { pbxSecretFor } from "./pjsip-secret";
 import { assessSoftphone, type SoftphoneReadiness } from "./extension-readiness";
 
@@ -35,6 +35,7 @@ export function withSoftphoneReadiness<T extends SoftphoneCandidate>(
       row.extension_secret,
       pbxSecretFor(row.extension_id),
       readWebrtcState(row.extension_id),
+      readMediaAddress(row.extension_id),
     ),
   }));
 }
