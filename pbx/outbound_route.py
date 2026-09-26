@@ -578,7 +578,8 @@ def main(argv: list[str] | None = None) -> int:
         print(f"  {finding.state}: {finding.detail}", file=sys.stderr)
         print(f"    repair: {finding.repair}", file=sys.stderr)
     if not findings:
-        print(f"outbound-route: route {args.name!r} normalises and precedes every catch-all")
+        print(f"outbound-route: route {args.name!r} normalises dialled numbers and "
+              "precedes anything that would take its calls")
         return 0
 
     if not args.apply:
@@ -607,8 +608,9 @@ def main(argv: list[str] | None = None) -> int:
             print(f"  still: {finding.state}: {finding.detail}", file=sys.stderr)
         print(f"outbound-route: route {args.name!r} did not converge", file=sys.stderr)
         return 1
-    print(f"outbound-route: route {args.name!r} converged (legacy PSTN patterns, "
-          f"trunk {args.trunk} first, ahead of every catch-all)")
+    print(f"outbound-route: route {args.name!r} converged (normalises dialled "
+          f"numbers, trunk {args.trunk} first, ahead of anything that would take "
+          "its calls)")
     return 0
 
 
