@@ -474,6 +474,39 @@ if [ "$SCOPE" = all ] || [ "$SCOPE" = pbx ]; then
         fail "a phone is being told a media address it cannot reach:$med_bad — its voice and DTMF never arrive and rtp_timeout hangs the call up; set media_address on the endpoint (pjsip.endpoint_custom_post.conf) and 'module reload res_pjsip.so'"
       fi
     fi
+
+    # ── Outbound dialling ────────────────────────────────────────
+    # A phone dials ten digits; VoIP.ms terminates a North American call on
+    # eleven, `1` + area code + number. Two ways that silently doesn't happen,
+    # both measured on `.30`:
+    #   * a local pattern matches the number and hangs up BEFORE any route runs.
+    #     FreePBX's generated [from-internal] includes [from-internal-custom]
+    #     (and the contexts it includes, such as [from-zeus-portal]) ahead of the
+    #     module-generated contexts, so the first context `dialplan show` lists
+    #     for a number is the one that answers it. `exten => _Z.` in
+    #     [from-zeus-portal] matched every ordinary number — `Z` is 1-9 and `.`
+    #     is one-or-more — and ran NoOp then Hangup, so dialling 4134210134
+    #     logged `NoOp("PJSIP/…", "Zeus portal extension 4134210134")` and never
+    #     reached `outrt-*`;
+    #   * the route it reaches reproduces the dialled digits without the `1`.
+    # Either one leaves the trunk registered and every other check green, which
+    # is exactly why this is a caller-visible check and not a file comparison.
+    outbound_sample="${OUTBOUND_SAMPLE:-4134210134}"
+    outbound_dp="$(docker exec "$FBX" asterisk -rx "dialplan show ${outbound_sample}@from-internal" 2>/dev/null || true)"
+    if [ -z "$outbound_dp" ]; then
+      fail "the live dialplan for $outbound_sample could not be read on $FBX — cannot tell whether outbound dialling is normalised"
+    else
+      # The context listed first for this number is the one Asterisk answers it
+      # in; it must be an outbound route, not something local.
+      outbound_first="$(sed -nE "s/^\[ Included context '([^']+)'.*/\1/p; s/^\[ Context '([^']+)'.*/\1/p" <<<"$outbound_dp" | head -1)"
+      if [[ "$outbound_first" != outrt-* ]]; then
+        fail "dialling $outbound_sample is answered by '${outbound_first:-nothing}' before any outbound route — a local pattern shadows the route (an `_Z.`/`_X.` catch-all in [from-zeus-portal] does this; the trunk stays Registered while the call never leaves the PBX)"
+      elif grep -qE 'macro-dialout-trunk,s,1\([0-9]+,1\$\{EXTEN\}' <<<"$outbound_dp"; then
+        pass "a ten-digit call ($outbound_sample) is normalised to 1\${EXTEN} and dialled out"
+      else
+        fail "dialling $outbound_sample reaches ${outbound_first} but not with the country code prepended — the carrier will not terminate ten digits (pbx/outbound_route.py restores the legacy PSTN patterns)"
+      fi
+    fi
   else
     skip "PBX RTP plane (container $FBX not running)"
   fi

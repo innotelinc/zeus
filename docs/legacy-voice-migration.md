@@ -154,12 +154,20 @@ nothing new was needed there.
 ### Resolved: the route is converged now, and the catch-all was the bug
 
 The decision this section left open was answered by a call. A ten-digit number
-dialled on an extension — `4134210134` — did not complete: the normalisation the
-legacy `PSTN` route carried, and which the carrier needs (ten digits -> `1` +
-number), was never reached, because the route that answered first led with `X.`
-and prepends nothing. `pbx/outbound_route.py` writes the route instead of only
+dialled on an extension — `4134210134` — did not complete, and measured on `.30`
+the cause was not the legacy route at all: the call was answered by
+`exten => _Z.` in `[from-zeus-portal]`, which matches every ordinary number a
+phone dials and ran `NoOp` then `Hangup` before any route ran. `Z` is 1-9 and
+`.` is one-or-more; the portal context is included by `[from-internal-custom]`,
+which FreePBX includes ahead of the outbound routes. That fragment is now
+shipped empty (see [pbx/README.md → The portal context must not match a dialled
+number](../pbx/README.md#the-portal-context-must-not-match-a-dialled-number)).
+
+The route is the second half. `pbx/outbound_route.py` writes it instead of only
 reporting it: the legacy `PSTN` patterns, the VoIP.ms trunk first, and the route
-lifted above any bare catch-all. It is idempotent, so `scripts/setup.sh` and
+lifted above anything ahead of it that would take the same calls — the live box
+carries three routes with identical dial patterns, and whichever runs first
+answers the call. It is idempotent, so `scripts/setup.sh` and
 `docker-entrypoint-full.sh` apply it on boot and the `zeus-pbx-sync` timer
 re-checks it every tick — see [pbx/README.md → The outbound route](../pbx/README.md#the-outbound-route-a-dialled-number-reaches-the-carrier).
 The fax route and its caller ID are still an operator's decision and are not

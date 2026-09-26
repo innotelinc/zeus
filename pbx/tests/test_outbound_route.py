@@ -77,12 +77,27 @@ class CatchAllTest(unittest.TestCase):
         self.assertTrue(or_.is_catch_all(or_.Pattern("", "X.")))
         self.assertTrue(or_.is_catch_all(or_.Pattern("", "_x.")))
 
+    def test_the_portal_dialplan_placeholder_is_a_catch_all(self):
+        # `exten => _Z.` — Z is 1-9 and `.` is one-or-more, so it matches every
+        # ordinary number a phone dials. This is the shape that broke outbound.
+        self.assertTrue(or_.is_catch_all(or_.Pattern("", "Z.")))
+        self.assertTrue(or_.is_catch_all(or_.Pattern("", "_z!")))
+
     def test_a_prefix_takes_it_out_of_catch_all(self):
         self.assertFalse(or_.is_catch_all(or_.Pattern("9", "X.")))
 
     def test_the_legacy_patterns_are_not_catch_alls(self):
         for pattern in or_.desired_patterns():
             self.assertFalse(or_.is_catch_all(pattern), pattern)
+
+
+class TrunkQueryTest(unittest.TestCase):
+    def test_the_trunk_table_key_is_trunkid(self):
+        # The live box is FreePBX's own schema: `trunks.trunkid`, not
+        # `trunk_id`. A `t.trunk_id` join is a hard SQL error there — the bug
+        # that would have made this tool fail on the box it was written for.
+        self.assertIn("t.trunkid = a.trunk_id", or_.TRUNKS_QUERY)
+        self.assertNotIn("t.trunk_id", or_.TRUNKS_QUERY)
 
 
 class ParsingTest(unittest.TestCase):
@@ -150,6 +165,26 @@ class JudgeTest(unittest.TestCase):
         self.assertIn("shadowed", [f.state for f in findings])
         # PSTN moves above the catch-all, and the catch-all is not deleted.
         self.assertEqual(plan.order, (1, 2))
+
+    def test_a_duplicate_route_ahead_is_shadowing_too(self):
+        # The live box: three routes share the same dial patterns, and the one
+        # that runs first answers the call — so `PSTN` never runs however
+        # correct its own patterns are.
+        voipms = _route(1, "voipms", 0, patterns=or_.desired_patterns(),
+                        trunks=[(0, "voipms")])
+        pstn = _route(2, "PSTN", 1, patterns=or_.desired_patterns(),
+                      trunks=[(TRUNK_ID, TRUNK)])
+        findings, plan = or_.judge(_state([voipms, pstn]), "PSTN")
+        self.assertIn("shadowed", [f.state for f in findings])
+        self.assertEqual(plan.order, (2, 1))
+
+    def test_a_route_ahead_with_wider_patterns_is_shadowing(self):
+        wider = _route(1, "WIDER", 0,
+                       patterns=[or_.Pattern("", "X.")], trunks=[(TRUNK_ID, TRUNK)])
+        pstn = _route(2, "PSTN", 1, patterns=or_.desired_patterns(),
+                      trunks=[(TRUNK_ID, TRUNK)])
+        findings, _ = or_.judge(_state([wider, pstn]), "PSTN")
+        self.assertIn("shadowed", [f.state for f in findings])
 
     def test_a_route_ahead_that_is_not_a_catch_all_is_left_alone(self):
         # A specific route the operator put first keeps its priority.

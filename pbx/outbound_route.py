@@ -22,9 +22,13 @@ change, made explicit and idempotent rather than left to a GUI edit:
     seven-digit local -> `1413`, ten-digit -> `1`, eleven-digit and `011.`
     international passed through;
   * the VoIP.ms PJSIP trunk is attached, first, so the call leaves by it;
-  * and the route is lifted above any route whose pattern is a bare catch-all
-    (`X.`), because FreePBX evaluates routes in sequence order and a catch-all
-    in front of it swallows the call before the normalisation is ever reached.
+  * and the route is lifted above anything ahead of it that would take the same
+    calls — a bare catch-all (`X.`, or the `_Z.` the portal dialplan shipped),
+    or a second route with the same dial patterns pointed at another trunk.
+    FreePBX evaluates routes in sequence order, and this estate had both: a
+    `_Z.` extension in the context `from-internal` includes *before* the routes,
+    which hung up every dialled number, and a duplicate `voipms` route ahead of
+    `PSTN` that took the calls PSTN was meant to handle.
 
 ## Reading and writing
 
@@ -74,10 +78,13 @@ LEGACY_PATTERNS: tuple[tuple[str, str, str], ...] = (
     ("", "011.", ""),
 )
 
-# A pattern that matches every string of digits, however long. One of these in a
-# route ahead of ours swallows the call before the normalisation is reached —
-# the measured bug this tool exists to remove.
-CATCH_ALL = frozenset({"X.", "X", "."})
+# A pattern that matches every number a phone dials, however long. One of these
+# in a route ahead of ours swallows the call before the normalisation is
+# reached. `X` is 0-9 and `Z` is 1-9; `.` is one-or-more and `!` zero-or-more —
+# so `X.` is every number and `Z.` every number that starts 1-9, which is every
+# number a person dials. `Z.` is the shape that shipped in the portal dialplan
+# (`exten => _Z.`) and hung up outbound calls before any route ran.
+CATCH_ALL = frozenset({"X.", "X", ".", "Z.", "Z!", "X!"})
 
 
 @dataclass(frozen=True, order=True)
@@ -204,6 +211,33 @@ def is_catch_all(pattern: Pattern) -> bool:
     return not pattern.prefix.strip() and normalised_match(pattern) in CATCH_ALL
 
 
+def captures(other: Route, target: Route) -> bool:
+    """Whether a route placed ahead of `target` would take the calls `target` should.
+
+    Two shapes count. A catch-all takes everything. So does a route whose
+    pattern *shapes* are a superset of the target's: an operator can add a
+    second route with the same dial patterns pointed at a different trunk (the
+    live box has three such routes), and the first one then answers every call
+    while the named route never runs. Prefix and match are compared, not the
+    prepend — the shapes decide which dialled numbers the route is consulted
+    for, and a differing prepend means it also sends them out wrong.
+    """
+    if not target.patterns:
+        return False
+    if any(is_catch_all(p) for p in other.patterns):
+        return True
+    other_shapes = {(p.prefix, normalised_match(p)) for p in other.patterns}
+    target_shapes = {(p.prefix, normalised_match(p)) for p in target.patterns}
+    return target_shapes <= other_shapes
+
+
+def shadowers(routes: tuple[Route, ...], target: Route) -> list[Route]:
+    """The routes ahead of `target` that would take its calls instead."""
+    return [r for r in routes
+            if r.route_id != target.route_id and r.seq < target.seq
+            and captures(r, target)]
+
+
 def desired_patterns() -> tuple[Pattern, ...]:
     return tuple(Pattern(prefix=p, match=m, prepend=v) for p, m, v in LEGACY_PATTERNS)
 
@@ -213,18 +247,17 @@ def _order(routes: tuple[Route, ...], target: Route | None,
     """The route sequence an apply writes.
 
     A newly created route goes to the front; so does one that is currently
-    behind a catch-all, but only far enough to clear it — everything else keeps
-    its relative order, because reordering a live dial plan is the whole reason
-    this decision sat open, and the smallest move that makes the route reachable
-    is the only one this tool is entitled to make.
+    behind a route that would take its calls, but only far enough to clear the
+    first such route — everything else keeps its relative order, because
+    reordering a live dial plan is the whole reason this decision sat open, and
+    the smallest move that makes the route reachable is the only one this tool
+    is entitled to make.
     """
     ids = [r.route_id for r in routes]
     if created or target is None:
         return tuple([target.route_id] if target else []) + tuple(
             i for i in ids if target is None or i != target.route_id)
-    shadowing = [r for r in routes
-                 if r.route_id != target.route_id and r.seq < target.seq
-                 and any(is_catch_all(p) for p in r.patterns)]
+    shadowing = shadowers(routes, target)
     if not shadowing:
         return tuple(ids)
     first = min(shadowing, key=lambda r: r.seq)
@@ -235,6 +268,12 @@ def _order(routes: tuple[Route, ...], target: Route | None,
 
 def judge(state: State, name: str) -> tuple[list[Finding], Plan | None]:
     """(findings, plan). An empty finding list means the route is in sync.
+
+    This tool judges tables, not dialplan files, so the `_Z.`-in-`from-zeus-portal`
+    shape is reported by `pbx/tests/test_parity_checklist.py` against the shipped
+    fragment and by `scripts/smoke-test.sh` against the live dialplan — a route
+    tool cannot see it. What this tool does see, and fixes, is a duplicate route
+    ahead of the named one.
 
     The plan is produced even when there are no findings, so an apply has one
     shape and `--check` and `--apply` cannot disagree about what the target is.
@@ -289,20 +328,20 @@ def judge(state: State, name: str) -> tuple[list[Finding], Plan | None]:
                 repair=f"apply: move {state.trunk_name} to the front of the trunk list",
             ))
 
-    # Priority: a catch-all ahead of the route swallows the call before the
-    # normalisation is reached. This is the measured failure on this estate.
+    # Priority: a route ahead that would take the same calls swallows them
+    # before the normalisation is reached — a catch-all, or a second route with
+    # the same dial patterns pointed at another trunk. This is the measured
+    # failure on this estate.
     if target is not None:
-        shadowing = [r for r in state.routes
-                     if r.route_id != target.route_id and r.seq < target.seq
-                     and any(is_catch_all(p) for p in r.patterns)]
+        shadowing = shadowers(state.routes, target)
         if shadowing:
             names = ", ".join(f"{r.route_id} ({r.name})" for r in shadowing)
             findings.append(Finding(
                 state="shadowed",
-                detail=f"route(s) {names} match every number and sit ahead of "
-                       f"{target.name}, so a dialled number never reaches its "
-                       "normalisation",
-                repair=f"apply: move {target.name} above the catch-all",
+                detail=f"route(s) {names} sit ahead of {target.name} and would "
+                       "take the same dialled numbers, so the call never "
+                       f"reaches {target.name}",
+                repair=f"apply: move {target.name} above {names}",
             ))
 
     if state.trunk_id is not None:
@@ -332,9 +371,12 @@ PATTERNS_QUERY = (
     "SELECT route_id, match_pattern_prefix, match_pattern_pass, prepend_digits "
     "FROM outbound_route_patterns ORDER BY route_id, match_pattern_prefix, match_pattern_pass"
 )
+# `outbound_route_trunks.trunk_id` is the child column; the trunk table's own
+# key is `trunkid` (FreePBX's schema, and this estate's live box — a `t.trunk_id`
+# join is a hard SQL error there, so it is named once here and nowhere else).
 TRUNKS_QUERY = (
     "SELECT a.route_id, a.trunk_id, a.seq, t.name FROM outbound_route_trunks a "
-    "LEFT JOIN trunks t ON t.trunk_id = a.trunk_id ORDER BY a.route_id, a.seq"
+    "LEFT JOIN trunks t ON t.trunkid = a.trunk_id ORDER BY a.route_id, a.seq"
 )
 
 
@@ -371,7 +413,8 @@ def load_state(*, local: bool, container: str, trunk_name: str) -> State:
     patterns = parse_patterns(mysql(PATTERNS_QUERY, local=local, container=container))
     trunks = parse_trunks(mysql(TRUNKS_QUERY, local=local, container=container))
     trunk_text = mysql(
-        f"SELECT trunk_id FROM trunks WHERE name = {quote(trunk_name)} LIMIT 1",
+        f"SELECT trunkid FROM trunks WHERE name = {quote(trunk_name)} "
+        "ORDER BY trunkid LIMIT 1",
         local=local, container=container,
     )
     trunk_id = None
