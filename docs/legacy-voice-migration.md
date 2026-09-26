@@ -151,14 +151,29 @@ The source's two trunks (`voipms_pjsip`, `voipms_iax`) are both sub-accounts of
 the same VoIP.ms master account Zeus already uses through its own trunk, so
 nothing new was needed there.
 
+### Resolved: the route is converged now, and the catch-all was the bug
+
+The decision this section left open was answered by a call. A ten-digit number
+dialled on an extension — `4134210134` — did not complete: the normalisation the
+legacy `PSTN` route carried, and which the carrier needs (ten digits -> `1` +
+number), was never reached, because the route that answered first led with `X.`
+and prepends nothing. `pbx/outbound_route.py` writes the route instead of only
+reporting it: the legacy `PSTN` patterns, the VoIP.ms trunk first, and the route
+lifted above any bare catch-all. It is idempotent, so `scripts/setup.sh` and
+`docker-entrypoint-full.sh` apply it on boot and the `zeus-pbx-sync` timer
+re-checks it every tick — see [pbx/README.md → The outbound route](../pbx/README.md#the-outbound-route-a-dialled-number-reaches-the-carrier).
+The fax route and its caller ID are still an operator's decision and are not
+written.
+
 ## Still open
 
 * **Mailboxes** — the six accounts that had voicemail on the source have none on
   the target (see above). `pbx/voicemail_mailbox.py` creates them; render the
   intent from `accounts.json` so each box keeps the source PIN.
 * **The four fax ATAs** must be reprovisioned from IAX2 to SIP (item 2 above).
-* **Outbound routes** — whether to adopt the legacy normalisation and fax route,
-  and at what priority.
+* **The fax route** — the legacy `FAX` route (its own digit normalisation and the
+  fax caller ID) is still the source's; only the `PSTN` normalisation is
+  converged. Adopting it is a caller-ID decision, not a migration step.
 * **Portal email addresses** — replace the placeholder addresses with the
   customers' real ones, which is also what makes SSO bind to the right account.
 * **`7745057135` moved to Denovo Credit Corporation**, off the demo account,

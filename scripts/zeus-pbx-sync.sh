@@ -82,6 +82,36 @@ if [ -n "$MEDIA_ADDRESS" ] \
   fi
 fi
 
+# ── Outbound route: judged, and converged on drift ──────────────
+# The boot entrypoint and `scripts/setup.sh` converge the route that gives a
+# dialled number the digits the trunk needs (ten-digit -> `1`). A box whose
+# image predates that, or whose route was hand-edited in the GUI, goes back to
+# a bare `X.` catch-all — which matches every number and normalises nothing, so
+# outbound calls stop completing while the trunk stays registered and every
+# other check stays green. Unlike a DID route this is derivable and the tool is
+# idempotent, so the timer checks it and applies on drift.
+route_run() {
+  docker exec "$PBX_CONTAINER" python3 /opt/zeus/pbx/outbound_route.py \
+    --check --local 2>&1
+}
+route_say() { printf '%s\n' "$1" | sed 's/^outbound-route: /  outbound-route: /' >&2; }
+
+if docker exec "$PBX_CONTAINER" test -f /opt/zeus/pbx/outbound_route.py >/dev/null 2>&1; then
+  route_rc=0
+  route_out="$(route_run)" || route_rc=$?
+  [ -n "$route_out" ] && route_say "$route_out"
+  if [ "$route_rc" = 1 ]; then
+    route_rc=0
+    route_out="$(docker exec "$PBX_CONTAINER" python3 /opt/zeus/pbx/outbound_route.py \
+      --apply --local 2>&1)" || route_rc=$?
+    [ -n "$route_out" ] && route_say "$route_out"
+    [ "$route_rc" = 0 ] && echo "zeus-pbx-sync: outbound route re-converged (pbx/outbound_route.py)" >&2
+  fi
+  if [ "$route_rc" != 0 ]; then
+    echo "zeus-pbx-sync: outbound route could not be judged (outbound-route exit $route_rc) — check the voipms trunk and the PBX" >&2
+  fi
+fi
+
 if "$BOOTSTRAP" --check >/dev/null 2>&1; then
   echo "zeus-pbx-sync: in sync"
   exit 0
