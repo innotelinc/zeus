@@ -440,6 +440,32 @@ elif [ -z "$MEDIA_ADDRESS" ]; then
   echo ">>> WARNING: no LAN media address (set LAN_IP or PJSIP_MEDIA_ADDRESS); LAN phones may be handed the container's own address" >&2
 fi
 
+# ── The outbound route that normalises what a phone dials ───────────────────
+# A phone dials ten digits (`4134210134`); VoIP.ms terminates a North American
+# call on eleven, `1` + area code + number. The route is where that `1` is
+# added, and the failure is quiet: a route whose first pattern is a bare `X.`
+# matches every number and prepends nothing, so the call leaves with exactly the
+# digits the caller dialled and does not complete — while the trunk stays
+# registered and every other check stays green. `pbx/outbound_route.py`
+# converges the route (`PSTN` by default, `PBX_OUTBOUND_ROUTE` to rename) to the
+# legacy `PSTN` normalisation — seven-digit -> `1413`, ten-digit -> `1`,
+# eleven-digit and `011.` as-is — attaches the VoIP.ms trunk first, and lifts it
+# above any catch-all, because FreePBX evaluates routes in sequence order. It is
+# idempotent, so a rebuild re-derives the route instead of needing a hand edit;
+# see pbx/README.md. Run only once a carrier is configured — with no trunk row
+# the tool has nothing to attach and says so (exit 2) rather than inventing one.
+if [ -f /opt/zeus/pbx/outbound_route.py ] && [ -n "${VOIPMS_SIP_USER:-}" ]; then
+  set +e
+  python3 /opt/zeus/pbx/outbound_route.py --apply --local
+  route_rc=$?
+  set -e
+  if [ "$route_rc" = 0 ]; then
+    echo ">>> outbound route converged (legacy PSTN normalisation, ${VOIPMS_TRUNK_NAME:-voipms_pjsip} first)"
+  else
+    echo ">>> WARNING: outbound route not converged (rc=${route_rc}); a dialled number may reach the carrier unnormalised (pbx/outbound_route.py)" >&2
+  fi
+fi
+
 # ── Dograh external-media WebSocket ─────────────────────────────────────────
 # The add-on's entrypoint owns this file normally, but it lives on the shared
 # asterisk-config volume and its default URI is `host.docker.internal`, which

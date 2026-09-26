@@ -99,6 +99,18 @@ class WrapperGatesBeforeItApplies(unittest.TestCase):
         self.assertIn("--devices-tsv -", self.text)
         self.assertIn("--asterisk-dir /etc/asterisk", self.text)
 
+    def test_it_reconciles_the_outbound_route_every_tick(self):
+        """The route that normalises a dialled number, checked and re-applied.
+
+        A rebuilt box, or a GUI edit, puts a bare `X.` catch-all back in front of
+        the normalisation: outbound calls stop completing while the trunk stays
+        registered. This is derivable and idempotent, so like the media address
+        the timer both judges it and applies on drift.
+        """
+        self.assertIn("outbound_route.py", self.text)
+        self.assertIn("--check --local", self.text)
+        self.assertIn("--apply --local", self.text)
+
     def test_an_unreachable_pbx_is_not_a_failed_run(self):
         """A slow PBX boot after a reboot must not fail the timer's unit."""
         tail = [line for line in self.text.splitlines() if line.strip()]

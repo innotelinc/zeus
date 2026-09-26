@@ -1349,6 +1349,24 @@ if [ -f "${REPO_ROOT}/pbx/media_address.py" ] && [ -n "$MEDIA_ADDRESS" ]; then
   fi
 fi
 
+# ─── Outbound route that normalises a dialled number ──────────
+# A phone dials ten digits; VoIP.ms terminates a North American call on
+# eleven, `1` + area code + number. The route adds that `1`, and the failure
+# when it does not is quiet: a route leading with a bare `X.` catch-all
+# matches every number and prepends nothing, so the call leaves unnormalised
+# and does not complete while the trunk stays registered. `pbx/outbound_route.py`
+# converges the route to the legacy PSTN normalisation (seven-digit -> `1413`,
+# ten-digit -> `1`, eleven-digit and `011.` as-is), attaches the VoIP.ms trunk
+# first, and lifts it above any catch-all — FreePBX evaluates routes in
+# sequence order. Idempotent, so a rebuild re-derives it; see pbx/README.md.
+if [ -f "${REPO_ROOT}/pbx/outbound_route.py" ] && [ -n "${VOIPMS_SIP_USER:-}" ]; then
+  if python3 "${REPO_ROOT}/pbx/outbound_route.py" --apply --local; then
+    log "Outbound route ${PBX_OUTBOUND_ROUTE:-PSTN} normalises dialled numbers over ${VOIPMS_TRUNK_NAME}"
+  else
+    warn "outbound route not converged — a dialled number may reach the carrier unnormalised (pbx/outbound_route.py)"
+  fi
+fi
+
 # ═══════════════════════════════════════════════════════════════
 # PHASE 11 — FAX STACK (Tesseract + IAXModem + HylaFAX + AvantFAX)
 # ═══════════════════════════════════════════════════════════════
