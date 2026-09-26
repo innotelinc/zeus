@@ -84,6 +84,22 @@ export const FRAMEWORK_FILES = [
 export const POST_FILE = "pjsip.endpoint_custom_post.conf";
 
 /**
+ * The file that carries the address a LAN phone is handed, and the one line that
+ * makes it load.
+ *
+ * A media address is per endpoint and is a fact about the host, so it lives in
+ * its own operator-owned file (`pbx/media_address.py` owns it and re-derives it
+ * on every boot). It is reached by one `#include` in `POST_FILE` — a non-section
+ * line the portal's own block surgery neither reads nor cuts — and the sections
+ * live here rather than beside the WebRTC ones for one reason: the portal treats
+ * **any** `[<ext>](+)` in `POST_FILE` as its own and rewrites every one of them,
+ * so a media line written there is deleted the first time a softphone is
+ * provisioned. Old boxes did exactly that by hand; this file is the migration.
+ */
+export const MEDIA_FILE = "pjsip_media_custom.conf";
+export const MEDIA_INCLUDE = `#include ${MEDIA_FILE}`;
+
+/**
  * Operator-owned files, in the order this estate already uses them.
  *
  * Only `POST_FILE` is written. The rest are named so a report can say where an
@@ -143,6 +159,39 @@ export const WEBRTC_MEDIA_SETTINGS = [
   ["use_avpf", "yes"],
   ["direct_media", "no"],
 ] as const;
+
+/**
+ * Whether an address is one a LAN phone can actually send its media to.
+ *
+ * `media_address` is what the phone obeys in the answer SDP, so a loopback or a
+ * docker-bridge address is the exact defect `pbx/media_address.py` exists to
+ * remove: the phone sends its RTP into a subnet it cannot route to, and the call
+ * is silent in the one direction nobody notices (the prompts still play). Kept
+ * in step with that tool's `bad_address` — `scripts/pjsip-endpoint.test.mjs`
+ * pins the two to the same answer.
+ */
+export function isReachableMediaAddress(address: string): boolean {
+  const match = /^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/.exec(address.trim());
+  if (!match) return false;
+  const [a, b] = match.slice(1).map(Number);
+  if (match.slice(1).some((part) => Number(part) > 255)) return false;
+  if (a === 0 || a === 127) return false;
+  if (a === 169 && b === 254) return false; // link-local
+  if (a === 172 && b >= 16 && b <= 31) return false; // docker's bridge range
+  return true;
+}
+
+/**
+ * The LAN address to advertise from the environment, or `""` to leave it alone.
+ *
+ * Empty is the safe answer: the boot owner (`pbx/media_address.py`, run by the
+ * entrypoint) converges every endpoint from `LAN_IP`/`PJSIP_MEDIA_ADDRESS`, so a
+ * missing or unusable value here just means the portal does not claim to know it.
+ */
+export function mediaAddressFromEnv(env: NodeJS.ProcessEnv = process.env): string {
+  const address = (env.PJSIP_MEDIA_ADDRESS ?? env.LAN_IP ?? "").trim();
+  return isReachableMediaAddress(address) ? address : "";
+}
 
 /** The section's text, header included, ending in a newline. */
 export function renderSection(extensionId: string): string {
@@ -331,6 +380,138 @@ export function provisionWebrtc(extensionId: string, dir = confDir()): Softphone
 /** The state without writing anything — for a read-back or a diagnostic. */
 export function readWebrtcState(extensionId: string, dir = confDir()): SoftphoneState {
   return stateFor(extensionId, dir);
+}
+
+/**
+ * The `[<ext>](+) media_address=<addr>` append this estate gives an endpoint.
+ *
+ * Byte-for-byte the section `pbx/media_address.py` renders, so a file the portal
+ * has touched is a fixed point of the tool's next boot rewrite —
+ * `scripts/pjsip-endpoint.test.mjs` pins the two together. It is an append, so
+ * it extends the endpoint FreePBX owns; it defines nothing.
+ */
+export function renderMediaSection(extensionId: string, address: string): string {
+  return `[${extensionId}](+)\nmedia_address=${address}\n`;
+}
+
+/**
+ * `text` with one `#include` for the media file, prepended when absent.
+ *
+ * Prepended, never appended: the shared file is the portal's, and the portal's
+ * last `[<name>]` block extends to end-of-file — so a line appended after it
+ * would be cut away with the block on the next softphone provision. A prelude
+ * line before the first section is never inside a block. Mirrors
+ * `pbx/media_address.py`'s `with_include`.
+ */
+export function withMediaInclude(text: string): string {
+  if (text.split("\n").some((line) => line.trim() === MEDIA_INCLUDE)) return text;
+  return `${MEDIA_INCLUDE}\n${text}`;
+}
+
+/** What a media-address write did, for the API response. */
+export interface MediaAddressState {
+  /** An append was written this call. */
+  written: boolean;
+  /** The file the append lives in. */
+  file: string;
+  /** The address written, or "" when none was configured. */
+  address: string;
+  /** One sentence for the operator. */
+  reason: string;
+}
+
+/**
+ * Give this extension's endpoint a reachable media address, now.
+ *
+ * The boot owner converges every endpoint, but a phone created *between* boots
+ * would be deaf in one direction until the next restart, so the portal writes it
+ * at create time too — into the same file, in the same bytes, so the two writers
+ * are one shape. Only this extension's own `[<ext>](+)` append is replaced; the
+ * tool's header comment and every other endpoint's section are carried over
+ * untouched, which is what keeps a later boot rewrite byte-identical.
+ *
+ * A missing or unreachable configured address is *not* an error: the response
+ * says so and the boot owner supplies it. Writing a docker or loopback address
+ * would be the bug this whole path exists to remove.
+ */
+export function provisionMediaAddress(
+  extensionId: string,
+  dir = confDir(),
+  address = mediaAddressFromEnv(),
+): MediaAddressState {
+  if (!address) {
+    return {
+      written: false,
+      file: MEDIA_FILE,
+      address: "",
+      reason:
+        `No reachable LAN media address is configured (LAN_IP/PJSIP_MEDIA_ADDRESS), so this ` +
+        `extension was left to the boot owner (pbx/media_address.py). A phone added now is ` +
+        `handed the PBX's own address until the next restart.`,
+    };
+  }
+
+  const mediaPath = join(dir, MEDIA_FILE);
+  let existing = "";
+  try {
+    existing = readFileSync(mediaPath, "utf8");
+  } catch {
+    // No file yet (a box the boot owner has not converged): this write creates it.
+  }
+  let next = existing;
+  for (const block of blocksOf(existing)
+    .filter((block) => isOurs(block, extensionId))
+    .sort((a, b) => b.start - a.start)) {
+    next = cutBlock(next, block);
+  }
+  if (next.length > 0 && !next.endsWith("\n")) next += "\n";
+  writeFileSync(mediaPath, `${next}${renderMediaSection(extensionId, address)}`, "utf8");
+
+  const hostPath = join(dir, POST_FILE);
+  let host = "";
+  try {
+    host = readFileSync(hostPath, "utf8");
+  } catch {
+    // The include creates the file when the WebRTC half has not.
+  }
+  writeFileSync(hostPath, withMediaInclude(host), "utf8");
+
+  return {
+    written: true,
+    file: MEDIA_FILE,
+    address,
+    reason:
+      `[${extensionId}](+) media_address=${address} written to ${MEDIA_FILE}. The phone ` +
+      `now sends its media to an address it can reach.`,
+  };
+}
+
+/**
+ * The address this extension's endpoint is configured to advertise, or `""`.
+ *
+ * A read of the media file the owner writes (`pbx/media_address.py` on boot, the
+ * create path for a phone newer than that). `""` is a real answer — it is what a
+ * box looks like before the boot owner has converged it, and what a phone that
+ * will be handed the container's own address looks like — so the readiness view
+ * shows it rather than staying silent about it.
+ */
+export function readMediaAddress(extensionId: string, dir = confDir()): string {
+  let text = "";
+  try {
+    text = readFileSync(join(dir, MEDIA_FILE), "utf8");
+  } catch {
+    // Not written yet: the boot owner (or the create path) still owes it.
+    return "";
+  }
+  const lines = text.split("\n");
+  for (const block of blocksOf(text)) {
+    if (!isOurs(block, extensionId)) continue;
+    for (const line of lines.slice(block.start, block.end + 1)) {
+      const match = /^\s*media_address\s*=\s*(\S+)/.exec(line);
+      if (match) return match[1];
+    }
+  }
+  return "";
 }
 
 /**

@@ -9,6 +9,7 @@ import {
   type DograhVoiceStack,
 } from "@/lib/dograh";
 import { preflightReadiness, preflightReadinessError } from "@/lib/extension-preflight-live";
+import { softphoneMediaReadiness } from "@/lib/softphone-media-live";
 
 export const dynamic = "force-dynamic";
 
@@ -134,6 +135,31 @@ async function probeExtensionPreflight(): Promise<ProbeResult> {
   return { status: "degraded", latency_ms, error: preflightReadinessError(readiness) };
 }
 
+/**
+ * Would a softphone created *now* be handed a media address a LAN phone can
+ * reach, before any restart?
+ *
+ * The boot owner converges the whole estate, but a phone created *between*
+ * boots is covered only by the create path itself — and that path writes
+ * nothing when no reachable `PJSIP_MEDIA_ADDRESS`/`LAN_IP` is configured: it
+ * reports `written: false` and defers to the next boot, which is the quiet
+ * failure this probe names. Measured on `.30`: the portal service was never
+ * passed the address, so every softphone a customer added was deaf in the one
+ * direction nobody notices until the box restarted.
+ *
+ * `degraded`, never `down`: a softphone that will lose its audio is not a box
+ * that cannot answer a call. Env-only and synchronous — the same
+ * `mediaAddressFromEnv` the create path uses, so a green row is the create
+ * path's own precondition.
+ */
+function probeSoftphoneMedia(): ProbeResult {
+  const readiness = softphoneMediaReadiness();
+  if (readiness.ok) {
+    return { status: "ok", latency_ms: 0, detail: readiness.detail };
+  }
+  return { status: "degraded", latency_ms: 0, error: readiness.error };
+}
+
 
 
 interface ProbeResult {
@@ -163,6 +189,7 @@ interface HealthResponse {
     dograh_engine: ProbeResult;
     dograh_agents: ProbeResult;
     extension_preflight: ProbeResult;
+    softphone_media: ProbeResult;
     dograh_voice: ProbeResult;
   };
 }
@@ -326,6 +353,11 @@ export async function GET() {
   const voipmsConfigured = Boolean(
     process.env.VOIPMS_API_USERNAME && process.env.VOIPMS_API_PASSWORD,
   );
+  // ── The media address a newly created softphone is handed ──
+  // Config check, not a network probe (like VoIP.ms above): the create path
+  // writes this address, and it writes nothing when none is configured.
+  const softphoneMediaResult: ProbeResult = probeSoftphoneMedia();
+
   const voipmsResult: ProbeResult = voipmsConfigured
     ? { status: "ok", latency_ms: 0 }
     : {
@@ -347,6 +379,7 @@ export async function GET() {
     dograh_engine: engineResult,
     dograh_agents: adminResult,
     extension_preflight: preflightResult,
+    softphone_media: softphoneMediaResult,
     dograh_voice: voiceSettingsResult,
   };
 

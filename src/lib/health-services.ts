@@ -31,6 +31,7 @@ export const SERVICE_KEYS = [
   "dograh_engine",
   "dograh_agents",
   "extension_preflight",
+  "softphone_media",
   "dograh_voice",
 ] as const;
 
@@ -105,6 +106,12 @@ export const SERVICE_META: Record<ServiceKey, ServiceMeta> = {
     label: "Extension provisioning",
     desc: "FreePBX API, AMI and the Asterisk config mount the create gate reads",
     icon: "🧾",
+    product: "freepbx",
+  },
+  softphone_media: {
+    label: "Softphone media address",
+    desc: "The address a softphone created now is handed, before the next boot",
+    icon: "🔊",
     product: "freepbx",
   },
   dograh_voice: {

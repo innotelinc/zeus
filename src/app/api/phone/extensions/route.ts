@@ -4,11 +4,13 @@ import db from "@/lib/db";
 import * as freepbx from "@/lib/freepbx";
 import {
   POST_FILE,
+  provisionMediaAddress,
   provisionWebrtc,
   readWebrtcState,
   removeLegacyFragment,
   removeWebrtc,
   sectionHeader,
+  type MediaAddressState,
   type SoftphoneState,
 } from "@/lib/pjsip-endpoint";
 import { pbxSecretFor } from "@/lib/pjsip-secret";
@@ -145,7 +147,28 @@ export async function POST(req: Request) {
           `no DTLS/ICE media until ${POST_FILE} carries ${sectionHeader(extensionId)}.`,
       };
     }
-    await reloadPjsipIfLive(softphone);
+    // ── The media address the phone is handed ───────────────
+    // A phone created between boots would otherwise be handed the PBX's own
+    // (container) address until the next restart, and lose its voice and every
+    // DTMF digit in the direction nobody notices. The boot owner converges the
+    // whole estate; this write covers the one created now. A missing address is
+    // reported, not fabricated.
+    let media: MediaAddressState;
+    try {
+      media = provisionMediaAddress(extensionId);
+    } catch (e) {
+      media = {
+        written: false,
+        file: "pjsip_media_custom.conf",
+        address: "",
+        reason:
+          `the extension was created, but its media address could not be written: ` +
+          `${e instanceof Error ? e.message : "unknown error"}. The boot owner ` +
+          `(pbx/media_address.py) will converge it at the next restart.`,
+      };
+    }
+    // A media write is a change to a loaded file too, so reload for either half.
+    await reloadPjsipIfLive(media.written ? { ...softphone, provisioned: true } : softphone);
 
     const extId = randomUUID();
     db.prepare(
@@ -160,6 +183,7 @@ export async function POST(req: Request) {
         secret,
         message: result.addExtension.message,
         softphone,
+        media,
       },
       { status: 201 },
     );

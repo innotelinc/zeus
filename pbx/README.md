@@ -16,10 +16,13 @@ operational shape.
 | `setup-cloudonix-trunk.sh` | Peer a Cloudonix domain with this PBX (`pjsip_custom_cloudonix.conf` + `extensions_custom_cloudonix.conf`), **script-owned** — `bootstrap-zeus-pbx.sh` skips both files, and `docker-entrypoint-full.sh` calls this on boot. `--check` drift mode |
 | `bootstrap-zeus-pbx.sh` | Render + apply the fragments idempotently; `--check` drift mode |
 | `asterisk_converge.py` | Per-section merge for the **shared** `extensions_custom.conf` / `ari.conf` (ownership markers) |
-| `dograh_routes.py` | Judge whether every DID the portal sells reaches a `dograh-inbound,<workflow>,1` row in FreePBX's own `incoming` table — see [One ingress](#one-ingress-every-platform-did-names-a-workflow). **Read-only, deliberately:** which workflow a DID should reach is a portal decision and the row is FreePBX's, so the tool names the disagreement instead of inventing a route. A DID the portal marks `fax_enabled` is excused the fax service's own destination, and `--incoming-tsv` judges a route table dumped by `p0-snapshot.sh` with no PBX reachable. Exit 1 = a DID is off the workflow or unrouted, 2 = cannot tell || `pjsip_owner_check.py` | Who owns the PJSIP endpoint for an extension — the load tree, the duplicate ids, and who carries the `#include`. Read-only, `--json` for the raw measurement, exit 1 on a two-owner state — see [Who owns a PJSIP endpoint](#who-owns-a-pjsip-endpoint) |
+| `dograh_routes.py` | Judge whether every DID the portal sells reaches a `dograh-inbound,<workflow>,1` row in FreePBX's own `incoming` table — see [One ingress](#one-ingress-every-platform-did-names-a-workflow). **Read-only, deliberately:** which workflow a DID should reach is a portal decision and the row is FreePBX's, so the tool names the disagreement instead of inventing a route. A DID the portal marks `fax_enabled` is excused the fax service's own destination, and `--incoming-tsv` judges a route table dumped by `p0-snapshot.sh` with no PBX reachable. Exit 1 = a DID is off the workflow or unrouted, 2 = cannot tell |
+| `extension_mirror.py` | Judge whether every FreePBX user is an extension the portal's `freepbx_extensions` mirror names — **one direction only** (the mirror also carries rows the PBX does not own as users: the fax service lines, a demo softphone), read-only, `--users-tsv` judges a user table dumped by `p0-snapshot.sh` with no PBX reachable. Exit 1 = a phone nothing in the portal can manage, 2 = cannot tell — see [The portal's extension mirror](#the-portals-extension-mirror) |
+| `media_address.py` | Keep the address Asterisk advertises to a LAN phone (`media_address` on each sip/pjsip endpoint) — **entrypoint-owned**, re-derived every boot by `docker-entrypoint-full.sh` / `scripts/setup.sh` and reconciled by the `zeus-pbx-sync` timer (`scripts/zeus-pbx-sync.sh`) so an image rebuild cannot lose it. Writes its own file `pjsip_media_custom.conf` and one `#include` in the portal-shared `pjsip.endpoint_custom_post.conf`; refuses a docker/loopback address. `--check` / `--apply`, `--devices-tsv` judges off-host. Exit 1 = an apply converges it, 2 = cannot tell — see [The media address Asterisk advertises](#the-media-address-asterisk-advertises-container--lan-phones) |
+| `pjsip_owner_check.py` | Who owns the PJSIP endpoint for an extension — the load tree, the duplicate ids, and who carries the `#include`. Read-only, `--json` for the raw measurement, exit 1 on a two-owner state — see [Who owns a PJSIP endpoint](#who-owns-a-pjsip-endpoint) |
 | `provision_extension.py` | **The one owner of extension/device creation** (D6): check-then-create through FreePBX's own `addDevice`/`addUser`, with a preflight that refuses on an orphaned `sip`/`pjsip` row, leftover `AMPUSER` state, a half-created extension or a two-owner endpoint. `--check` / `--apply`, `--observed-json` to judge off-host, exit 1 = an apply converges it, 3 = only a person can — see [One provisioning path](#one-provisioning-path-for-extensions) |
 | `d7_assert.py` | The three D7 claims about the live stack (call recorded, Dograh's ARI app registered, one gateway serving the model pins this repo still holds — the summary path's `VOICEMAIL_SUMMARY_MODEL`, since the call path's belongs to Dograh). `--call` places a self-contained probe call. Exit 2 = nothing could be evaluated |
-| `p0-snapshot.sh` | Records the live pre-state (containers, PBX files with hashes, routes, units, CDR watermark) before a change, in the `/root/revert-to-1510/` shape |
+| `p0-snapshot.sh` | Records the live pre-state (containers, PBX files with hashes, routes, the users table, units, CDR watermark) before a change, in the `/root/revert-to-1510/` shape |
 | `patch-freepbx-trunk-next-id.py` | The `Core::addTrunk` next-id fix, with a `--container` mode the host can use without an image rebuild — see [docs/freepbx-trunk-repair.md](../docs/freepbx-trunk-repair.md) |
 | `MSTeams-DR-Wizard.sh` | MS Teams Direct Routing wizard (vendored from [Vince-0/MSTeams-FreePBX](https://github.com/Vince-0/MSTeams-FreePBX), MIT) — configures the native `external_signaling_hostname` PJSIP transport (Asterisk 20.21+/22.11+/23.5+/24+), endpoint/AOR/identify for the Microsoft SIP proxies, RSA cert wiring, `--check` audit |
 | `cerulean-msteams.sh` | Cerulean trust-plane adapter: provisions the SBC DNS record + RSA-2048 DNS-01 certificate, then chains into the wizard |
@@ -243,6 +246,156 @@ docker exec zeus-freepbx mysql -u root asterisk -N -B \
 
 `scripts/smoke-test.sh pbx` asserts the published block is exactly the effective
 range and that no stale range (e.g. `10000-10100`, `10121-20000`) is exposed.
+
+## The media address Asterisk advertises (container → LAN phones)
+
+`external_media_address` in `pjsip.transports.conf` is the address handed to peers
+**outside** `local_net` — the VoIP.ms and Cloudonix trunks — and for them it is
+right. It does not cover the other half of the estate. For a peer **inside**
+`local_net`, which is every desk phone on this LAN, Asterisk has to advertise its
+own *local* address, and inside the container that address is the docker bridge.
+Asterisk then answers an INVITE from `192.168.1.17` with
+
+```
+c=IN IP4 172.19.0.4
+m=audio 10110 RTP/AVP 0 8 9 101
+```
+
+and the phone — which has no route into a docker subnet — sends its audio there.
+The failure is one-way in the direction nobody notices: Asterisk keeps sending
+toward the phone's real address, so the caller **hears** the voicemail prompts,
+while their own voice and every DTMF digit are dropped, and `rtp_timeout=30`
+hangs the call up at exactly thirty seconds. It arrives as *"my voicemail
+touchtone does not work and it hangs up on me"*, and nothing else in this repo
+can see it — the dialplan, the mailbox, the DSN and the trunks are all healthy,
+because the trunks are the half that works.
+
+Measured on `.30` (2026-09-25) with `rtp set debug on`: 1119 RTP packets sent to
+the phone, **0 received**, `Got RTP packet from …` never once in the log, and
+every `*97` call dead at 30 seconds. The TRUNK legs on the same box were
+receiving RTP normally the whole time (`Strict RTP … Locking on source address
+208.100.60.66:19892`), which is why it looked like a voicemail problem.
+
+### The fix, and why it belongs per endpoint
+
+`media_address` on the endpoint is the address Asterisk advertises for that
+endpoint's media. It cannot go in `pjsip_custom.conf`: a `(+)` append must come
+after its base section, and that file is included *before* the endpoints. It
+goes in an operator-owned file FreePBX `#include`s *after* the generated
+endpoints, so `(+)` appends to the endpoint FreePBX owns.
+
+The obvious home — `pjsip.endpoint_custom_post.conf`, where the portal appends
+its `[<ext>](+)` WebRTC settings — is the one place it must not go. The portal
+treats **any** `[<ext>](+)` in that file as its own and cuts every one of them
+when it re-provisions a softphone, so a media line written there is deleted the
+first time somebody opens the Phone screen. It gets its own owner file instead,
+`pjsip_media_custom.conf`, reached by one `#include` line in the portal-shared
+file — a non-section line the portal's block-surgery neither reads nor cuts:
+
+```
+# pjsip.endpoint_custom_post.conf keeps the portal's blocks, plus:
+#include pjsip_media_custom.conf
+```
+
+```
+# pjsip_media_custom.conf — owned outright by pbx/media_address.py
+[4135612020](+)
+media_address=192.168.1.30
+```
+
+The RTP ports stay published on the host (`10101-10120/udp`, above), so a phone
+sending to `192.168.1.30:<port>` is DNAT'd to the container's socket; and
+`bind_rtp_to_media_address` must stay `false`, because the socket has to remain on
+the container's interface. A phone that sends to *the address in the SDP* is
+bypassing nothing — it is obeying the PBX.
+
+**The trunks deliberately get no such line**, and that is the whole reason this
+is per endpoint rather than one transport setting: they need the WAN address, so
+no single `external_media_address` can serve both halves. This is also why the
+estate's other addressing rules (`PJSIP_LOCAL_NETS`, `stunaddr`, the published
+RTP block) do not cover it — each of them is about a peer Asterisk talks *to*,
+and this is about the address Asterisk hands *out*.
+
+```bash
+# apply, then confirm the advert rather than the file
+# (this Asterisk has no `pjsip reload` — it is `module reload res_pjsip.so`)
+docker exec zeus-freepbx asterisk -rx 'module reload res_pjsip.so'
+docker exec zeus-freepbx asterisk -rx 'pjsip show endpoint 4135612020' | grep '^ media_address'
+```
+
+**Its owner is `pbx/media_address.py`, and it runs on every boot.** The lines are
+a fact about the running host — the LAN address and the set of endpoints FreePBX
+has — so like `rtp_custom.conf` and the `local_net` lines they are re-derived
+rather than copied from git: `docker-entrypoint-full.sh` (Docker) and
+`scripts/setup.sh` (bare metal) both converge them, from `LAN_IP` (or
+`PJSIP_MEDIA_ADDRESS`). The endpoint list is FreePBX's own `devices` table, and
+an address in a docker, loopback or link-local range is refused by name rather
+than written — an empty or wrong value is the bug, not a fix. Nothing writes the
+file wholesale.
+
+The `zeus-pbx-sync` timer converges it too (`scripts/zeus-pbx-sync.sh`: judged
+every tick, applied on drift), because unlike a DID route this value is
+auto-derivable and the tool is idempotent. That is the half that re-derives it on
+a box whose image predates the entrypoint change: the timer's `OnBootSec` window
+covers the boot, so such a box heals with no 45–90 minute image rebuild. The
+judgement is never a failed unit — it reports, and applies.
+
+**A phone the portal creates gets the line immediately, from the portal.** The
+create and repair paths (`src/app/api/phone/extensions/route.ts`) write the same
+`[<ext>](+) media_address=` section into the same `pjsip_media_custom.conf`, at
+create time, so a phone added *between* boots is not deaf until the next restart
+(`provisionMediaAddress` in `src/lib/pjsip-endpoint.ts`). The two writers render
+byte-identical sections (`scripts/pjsip-endpoint.test.mjs` pins them), so the
+portal's output is a fixed point of the tool's next boot rewrite — and the tool
+still writes **every** endpoint with a `devices` row, including the one the
+portal just added, because that file is the durable copy. The address line must
+never live in the portal-shared `pjsip.endpoint_custom_post.conf`: the portal
+cuts every `[<ext>](+)` in it, so a line written there is deleted the first time
+a softphone is provisioned — which is exactly how the box came to have its media
+addresses in the wrong file, re-added by hand.
+
+```bash
+# judge (0 in sync, 1 an apply converges it, 2 cannot tell), and converge by hand
+python3 pbx/media_address.py --address 192.168.1.30 --check
+python3 pbx/media_address.py --address 192.168.1.30 --apply
+```
+
+The Phone screen shows it as well: the readiness row carries `mediaAddress`
+(`src/lib/extension-readiness.ts`, read by `readMediaAddress`) and names it when
+it is missing, so an operator sees the address a phone is handed instead of
+inferring it from a one-way call. Absent is a real, displayed answer — it is the
+one-way-audio state.
+
+The create path writes nothing when no reachable address reaches the *portal*
+container, and that was its state on `.30` until this check: the compose file
+passed `PJSIP_MEDIA_ADDRESS` to the PBX and not to the portal, so the
+create-time write had never once run. `/api/health` now answers whether a
+softphone created *now* would be handed a reachable address
+(`services.softphone_media`, `src/lib/softphone-media-live.ts` — the same
+`mediaAddressFromEnv` the create path uses), and `./scripts/smoke-test.sh`
+fails when it is not, so the portal's half is judged on the running box rather
+than assumed from the compose file.
+
+`./scripts/smoke-test.sh pbx` asserts it: every extension with a `devices` row
+must advertise a `media_address`, and it must not be a docker or loopback
+address. That is the check that would have named this before a caller did — the
+dialplan, mailbox and DSN checks all passed while every LAN phone was deaf in one
+direction.
+
+> Applied 2026-09-25 on `.30` to the eight extensions with a `devices` row
+> (`12000`, `15000`, `4132643964`, `4132912045`, `4132951200`, `4135612020`,
+> `7745057135`, `8579901777`; `101` has no device row and no registered phone).
+> The media lines were first put in the portal-shared `pjsip.endpoint_custom_post.conf`
+> — the wrong file, since the portal rewrites every `[<ext>](+)` there — then converged
+> into `pjsip_media_custom.conf` by `pbx/media_address.py` and removed from the
+> shared file, leaving it with the one `#include`. Verified live: `pjsip show
+> endpoint` reports `media_address = 192.168.1.30` for all eight,
+> `pjsip_owner_check.py` passes with `pjsip_media_custom.conf is loaded`, and
+> `./scripts/smoke-test.sh pbx` passes *every extension is advertised a reachable
+> media address*. The file lives in the `pbx-asterisk-config` volume, so the boot
+> entrypoint (this repo, once deployed) is what keeps it across an image rebuild —
+> and `pjsip_owner_check.py` names the include if it ever goes missing, the same
+> way it names an orphaned `pjsip_ext_*.conf`.
 
 ## TURN / WebRTC media (one relay for both products)
 
@@ -675,6 +828,59 @@ What the tool will not do, deliberately:
   plan that names no active DID exits `2` rather than reporting a clean ingress —
   an empty plan is the one answer worse than "cannot tell".
 
+## The portal's extension mirror
+
+`freepbx_extensions` is a **mirror** of FreePBX's own `users` table, and the row
+is the only reason the portal knows a phone exists at all: it carries the
+softphone settings, the voicemail flag and PIN, and the account whose screens
+manage it. Two writers keep it — the portal's create path
+(`src/app/api/phone/extensions/route.ts`) and `scripts/legacy_portal_merge.py`,
+which writes one row per extension that predates the portal — so “every FreePBX
+user is a portal extension” is the estate's own convention, not a rule invented
+here.
+
+Nothing checked it, and the failure has no witness: a user created straight in
+FreePBX (the GUI, or a direct `INSERT`) rings, answers, and appears on no portal
+screen, while every screen that does exist is correct. Measured on this estate,
+`4132912045` (“Wendel”) is a real `users`/`devices` pair and the only one of the
+box's eight extensions with no mirror row — and it was found because a person
+read the two tables side by side.
+
+`pbx/extension_mirror.py` is that read, as a verdict:
+
+```bash
+python3 pbx/extension_mirror.py --db /var/lib/docker/volumes/zeus-portal-data/_data/pbx.db --check
+python3 pbx/extension_mirror.py --db … --users-tsv routes/users.tsv --check   # off-host (p0-snapshot.sh)
+```
+
+Its status is carried through whole, because the three mean three different
+things:
+
+| status | meaning | what the caller does |
+| --- | --- | --- |
+| `0` | every FreePBX user is named by the mirror | nothing |
+| `1` | an extension on the PBX is in no mirror row | add it in the portal, or remove it from the PBX with `delUser`/`delDevice` — only a person can |
+| `2` | no portal database, no PBX, an unread table, an empty mirror, or a PBX that names no user | nothing — a host running part of the group is not a drifted host |
+
+Three things about it are deliberate:
+
+- **One direction only.** A mirror row with no FreePBX user is *not* drift. The
+  mirror also carries things the PBX does not own as users — the AvantFax service
+  lines (`3291`–`3294`) and a demo softphone (`1001`) — and reporting those would
+  make the check permanently red, which is how a report stops being read.
+- **Any row counts, whatever its `status`.** A `released` extension is still one
+  the portal has a record of; only a line it has no record of at all is the state
+  this catches.
+- **It never writes.** The mirror row belongs to the portal (its create path
+  writes both sides) and removing the PBX user is FreePBX's. A row invented here
+  would be a guess at an account id, and a mirror row pointing at the wrong
+  account is worse than a named gap.
+
+`./scripts/smoke-test.sh pbx` fails on it. Deliberately **not** wired into
+`zeus-pbx-sync.sh`: that wrapper's rule is that the timer never goes red over work
+only a person can do (the DID ingress is reported there and never fails the unit),
+and a mirror row is the same kind of work.
+
 ## Voice plane gates and D7 assertions
 
 One thing about the voice plane fails *silently*: a check that reports success
@@ -796,8 +1002,9 @@ PBX_CONTAINER=zeus-freepbx pbx/p0-snapshot.sh   # when autodetection is ambiguou
 ```
 
 It captures containers, the PBX fragment files **with hashes**, inbound routes,
-units, runtime state and a CDR watermark, and it is read-only: it copies files
-out and runs `show` commands, never a write. Exit 0 means a snapshot was taken
+the FreePBX users table (`routes/users.tsv`, which `--users-tsv` judges
+off-host), units, runtime state and a CDR watermark, and it is read-only: it
+copies files out and runs `show` commands, never a write. Exit 0 means a snapshot was taken
 even if a probe failed — a partial record beats none, and every gap is named in
 `MANIFEST` — while exit 2 means there is no PBX to record at all.
 

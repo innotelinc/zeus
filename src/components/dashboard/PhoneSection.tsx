@@ -6,7 +6,7 @@ import type { PhoneNumber, FreePBXExtension } from "@/lib/types";
 import { useToast } from "@/components/ToastProvider";
 import { PlusIcon, RefreshIcon, CheckCircleIcon, SearchIcon, PhoneIcon, XIcon, TrashIcon, AlertCircleIcon } from "@/components/icons";
 import { EmptyState, PageHeader } from "@/components/ui";
-import { readinessLabel } from "@/lib/extension-readiness";
+import { mediaAddressLabel, readinessLabel } from "@/lib/extension-readiness";
 
 interface Props {
   numbers: PhoneNumber[];
@@ -395,6 +395,19 @@ export default function PhoneSection({ numbers: initialNumbers, extensions: init
                             <AlertCircleIcon size={12} />
                           )}
                           {readinessLabel(ext.softphone)}
+                        </div>
+                      )}
+                      {/* The address the phone is told to send its media to.
+                          Silent when there is none: a phone with no media
+                          address is handed the PBX's own (unreachable)
+                          address and loses its audio one way, which is the
+                          fault the readiness summary above names. */}
+                      {ext.softphone && mediaAddressLabel(ext.softphone) && (
+                        <div
+                          className="mt-0.5 text-xs text-[var(--text-secondary)]"
+                          title="The address this phone is told to send its media to. If it is not one the phone can reach, its voice and DTMF are lost one way."
+                        >
+                          {mediaAddressLabel(ext.softphone)}
                         </div>
                       )}
                     </div>

@@ -6,6 +6,11 @@
 #
 #   Portal    • GET /api/health (any HTTP response counts as healthy —
 #               the container healthcheck contract)
+#             • Softphone media: the running portal is configured to hand a
+#               softphone created *now* a reachable media address, before any
+#               restart (services.softphone_media; the create path writes
+#               nothing without one, so a phone added between boots is deaf in
+#               one direction until the next boot converges it)
 #   Edge      • scripts/npm-proxy-hosts.py --check (proxy hosts + wildcard
 #               cert in sync with NPM)
 #   PBX       • FreePBX reachable (FREEPBX_URL)
@@ -23,6 +28,16 @@
 #               context — and every DID the portal sells actually names one
 #               (pbx/dograh_routes.py; a route off the workflow still answers a
 #               call, just as the wrong thing)
+#             • Extension mirror: every FreePBX user is an extension the portal
+#               has a row for (pbx/extension_mirror.py; a user the mirror does
+#               not name is a phone no portal screen can manage, and nothing
+#               says so — the line just rings)
+#             • Media address: every extension's phone is told an address it can
+#               actually reach, not the PBX container's own (a phone that sends
+#               its RTP into the docker bridge loses its audio and every DTMF
+#               digit, and rtp_timeout=30 then hangs the call up — with the
+#               prompts still playing, which is why it reads as "voicemail is
+#               broken" rather than "media is broken")
 #   Fax       • AvantFax reachable (AVANTFAX_URL) and its MariaDB has strict
 #               mode off (AvantFAX writes '' into DATE/TIMESTAMP columns, which
 #               strict mode rejects with error 1292 → HTTP 500 after login)
@@ -76,8 +91,18 @@ fi
 
 # ─── Portal ──────────────────────────────────────────────────────
 if [ "$SCOPE" = all ] || [ "$SCOPE" = portal ]; then
-  PORTAL_URL="${PORTAL_URL:-http://127.0.0.1:3000}"
-  code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 10 "$PORTAL_URL/api/health" 2>/dev/null || echo 000)
+  # :3001, not :3000 — the full stack runs the portal on 3001 (`PORT: "3001"`
+  # in docker-compose.full.yml, deliberately off the shared :3000, and the port
+  # its own healthcheck probes), and docker-compose.yml maps host 3001 to the
+  # dev container too. Bare metal (`scripts/setup-portal.sh`) is the one shape
+  # that serves :3000, and it sets PORTAL_URL.
+  PORTAL_URL="${PORTAL_URL:-http://127.0.0.1:3001}"
+  # The fallback has to *assign*. curl writes `%{http_code}` ("000") to stdout
+  # *and* exits non-zero when the connection is refused, so `|| echo 000`
+  # appended instead of replacing: the capture read "000000", `!= 000` was
+  # true, and this check could not fail — it reported a portal that was not
+  # listening. Measured on `.30`, where the whole estate read as healthy.
+  code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 10 "$PORTAL_URL/api/health" 2>/dev/null) || code=000
   if [ "$code" != 000 ]; then
     pass "portal /api/health responded (HTTP $code)"
   else
@@ -91,6 +116,41 @@ if [ "$SCOPE" = all ] || [ "$SCOPE" = portal ]; then
       fail "AUTHENTIK_CLIENT_ID missing from .env"
     fi
   fi
+
+  # ── The media address a newly created softphone is handed ───────
+  # A phone created *between* boots is converged by the portal's own create
+  # path, not the boot entrypoint — and that path writes nothing when no
+  # reachable LAN address reaches the portal (`mediaAddressFromEnv` reads
+  # PJSIP_MEDIA_ADDRESS, then LAN_IP). Nothing fails when it is missing: the
+  # extension is created, the portal reports success, and the phone's voice and
+  # every DTMF digit are lost until the next restart. Measured on `.30`: the
+  # portal service was never passed the address, so every softphone a customer
+  # added was deaf in the one direction nobody notices. `/api/health` answers
+  # this with the same call the create path makes (`services.softphone_media`),
+  # so this asks the running portal rather than trusting the compose file.
+  media_msg="$(curl -s --max-time 10 "$PORTAL_URL/api/health" 2>/dev/null | python3 -c '
+import json, sys
+try:
+    data = json.load(sys.stdin)
+except Exception:
+    sys.exit(3)
+svc = (data.get("services") or {}).get("softphone_media")
+if svc is None:
+    sys.exit(4)
+if svc.get("status") == "ok":
+    print(svc.get("detail") or "a reachable address is configured")
+    sys.exit(0)
+print(svc.get("error") or "no reachable media address configured")
+sys.exit(1)
+' 2>/dev/null)"
+  media_rc=$?
+  case "$media_rc" in
+    0) pass "a softphone created now is handed a reachable media address — $media_msg" ;;
+    1) fail "a softphone created now would be handed the PBX's own address and lose its voice — $media_msg" ;;
+    3) fail "portal /api/health did not return JSON — cannot tell what media address a softphone created now would be handed" ;;
+    4) fail "the portal does not report the media address it hands a new softphone (services.softphone_media absent) — the running image predates the check; rebuild and redeploy it" ;;
+    *) fail "could not read the portal's softphone media address from /api/health" ;;
+  esac
 fi
 
 # ─── Edge / NPM ──────────────────────────────────────────────────
@@ -109,7 +169,7 @@ fi
 # ─── PBX ─────────────────────────────────────────────────────────
 if [ "$SCOPE" = all ] || [ "$SCOPE" = pbx ]; then
   if [ -n "${FREEPBX_URL:-}" ]; then
-    code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 10 -k "$FREEPBX_URL" 2>/dev/null || echo 000)
+    code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 10 -k "$FREEPBX_URL" 2>/dev/null) || code=000
     if [ "$code" != 000 ]; then
       pass "FreePBX reachable (HTTP $code)"
     else
@@ -265,6 +325,37 @@ if [ "$SCOPE" = all ] || [ "$SCOPE" = pbx ]; then
       esac
     fi
 
+    # ── The portal's extension mirror ────────────────────────────
+    # A FreePBX user with no `freepbx_extensions` row is the same class of
+    # invisible line as the unwired DID above, from the other side: the phone
+    # rings, its number answers, and the portal cannot say anything about it —
+    # no softphone settings, no voicemail, no account screen — because it has
+    # never heard of the extension. Nothing errors, because nothing is wrong
+    # from any one screen's point of view. Measured on this estate: `4132912045`
+    # ("Wendel") is a real device and the only one of eight with no mirror row.
+    # One direction only — the mirror also carries rows the PBX does not own as
+    # users (the fax service lines, a demo softphone), and reporting those would
+    # make this permanently red.
+    if [ ! -f pbx/extension_mirror.py ]; then
+      skip "extension mirror (pbx/extension_mirror.py not present)"
+    elif [ ! -f "$DID_DB" ]; then
+      skip "extension mirror (portal database not found at $DID_DB)"
+    else
+      # D7_PBX is an operator's explicit answer to "which PBX", and it is a
+      # container *name*; `$FBX` above is usually an id, and the tool resolves
+      # by name. So only the override is passed through.
+      mirror_args=(--db "$DID_DB" --check)
+      [ -n "${D7_PBX:-}" ] && mirror_args+=(--container "$D7_PBX")
+      mirror_out="$(python3 pbx/extension_mirror.py "${mirror_args[@]}" 2>&1)"
+      mirror_rc=$?
+      printf '%s\n' "$mirror_out" | sed 's/^/       /'
+      case "$mirror_rc" in
+        0) pass "every FreePBX extension is in the portal's mirror" ;;
+        2) fail "the extension mirror could not be judged — the PBX or the portal database was unreadable (see above); this is not a pass" ;;
+        *) fail "a FreePBX extension is not in the portal's mirror (see above) — a phone the portal cannot manage; add it in the portal, or remove it from the PBX" ;;
+      esac
+    fi
+
     # ── Voicemail — the `*97` feature code ──────────────────────
     # `*97` is FreePBX's My Voicemail, and no file in this repo defines it: the
     # feature code comes from the module-generated dialplan and the mailbox from
@@ -347,6 +438,42 @@ if [ "$SCOPE" = all ] || [ "$SCOPE" = pbx ]; then
         fail "res_odbc names a DSN /etc/odbc.ini does not define:$vm_undefined — voicemail fails with 'Data source name not found' (the boot entrypoint adds it; see docker-entrypoint-full.sh)"
       fi
     fi
+
+    # ── The media address Asterisk advertises ────────────────────
+    # Every extension's phone has to be told an address it can reach. The PBX
+    # container's own address is not one: FreePBX writes external_media_address
+    # (the WAN IP) for peers outside `local_net` — the trunks — and for a peer
+    # *inside* it Asterisk falls back to its local address, which inside the
+    # container is the docker bridge. Measured on `.30`: the answer SDP said
+    # `c=IN IP4 172.19.0.4`, the phone sent its audio into the bridge, Asterisk
+    # received 0 RTP packets against 1119 sent, and `rtp_timeout=30` cut every
+    # call — the caller hears the prompts (Asterisk sends toward the phone's
+    # real address) while their own voice and every DTMF digit are dropped.
+    # Nothing else in this file can see it: the dialplan, the mailbox, the DSN
+    # and the trunks are all healthy, because the trunks are the half that
+    # works. `media_address` on the endpoint is the fix (see pbx/README.md).
+    med_devs="$(docker exec "$FBX" mysql -N -B -u root asterisk -e \
+      "SELECT id FROM devices WHERE tech IN ('sip','pjsip')" 2>/dev/null || true)"
+    if [ -z "$med_devs" ]; then
+      skip "advertised media address (no sip/pjsip device in $FBX)"
+    else
+      med_bad=""
+      while IFS= read -r med_ext; do
+        [ -n "$med_ext" ] || continue
+        med_addr="$(docker exec "$FBX" asterisk -rx "pjsip show endpoint $med_ext" 2>/dev/null \
+          | awk -F' *: *' '/^ media_address/ {print $2; exit}')"
+        if [ -z "$med_addr" ]; then
+          med_bad="$med_bad $med_ext (no media_address — Asterisk would advertise its own container address)"
+        elif printf '%s' "$med_addr" | grep -qE '^172\.(1[6-9]|2[0-9]|3[01])\.' || [ "$med_addr" = "127.0.0.1" ]; then
+          med_bad="$med_bad $med_ext ($med_addr is not reachable from a phone)"
+        fi
+      done <<<"$med_devs"
+      if [ -z "$med_bad" ]; then
+        pass "every extension is advertised a reachable media address"
+      else
+        fail "a phone is being told a media address it cannot reach:$med_bad — its voice and DTMF never arrive and rtp_timeout hangs the call up; set media_address on the endpoint (pjsip.endpoint_custom_post.conf) and 'module reload res_pjsip.so'"
+      fi
+    fi
   else
     skip "PBX RTP plane (container $FBX not running)"
   fi
@@ -385,7 +512,7 @@ fi
 # ─── Fax ─────────────────────────────────────────────────────────
 if [ "$SCOPE" = all ] || [ "$SCOPE" = fax ]; then
   if [ -n "${AVANTFAX_URL:-}" ]; then
-    code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 10 -k "$AVANTFAX_URL" 2>/dev/null || echo 000)
+    code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 10 -k "$AVANTFAX_URL" 2>/dev/null) || code=000
     if [ "$code" != 000 ]; then
       pass "AvantFax reachable (HTTP $code)"
     else
@@ -495,7 +622,7 @@ if [ "$SCOPE" = all ] || [ "$SCOPE" = sms ]; then
   # 200 by contract. The failure this catches is the old deployed image that
   # 404s every /api/* route: inbound SMS then stops with nothing erroring.
   if [ -n "${PORTAL_URL:-}" ]; then
-    code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 10 "${PORTAL_URL}/api/webhooks/voipms" 2>/dev/null || echo 000)
+    code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 10 "${PORTAL_URL}/api/webhooks/voipms" 2>/dev/null) || code=000
     if [ "$code" = 200 ]; then
       pass "the VoIP.ms inbound webhook answers its liveness GET (HTTP 200)"
     else

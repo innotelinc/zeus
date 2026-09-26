@@ -1324,6 +1324,30 @@ fwconsole reload 2>/dev/null || true
 
 log "SMS over PJSIP configured — DIDs: ${SMS_DIDS}"
 
+# ─── Media address for LAN endpoints ──────────────────────────
+# A phone on the LAN is handed the address to send media to in the answer SDP.
+# Left unset, Asterisk advertises its own local address, which inside a
+# container is a docker bridge (172.x) a LAN phone cannot reach: its voice and
+# every DTMF digit are lost, and rtp_timeout hangs the call up — while the
+# caller still hears the prompts, so it reads as a voicemail fault. The trunks
+# need the WAN address (external_media_address) and must NOT get this, which is
+# why it is per endpoint. `pbx/media_address.py` converges `media_address` onto
+# each sip/pjsip endpoint in pjsip_media_custom.conf (operator-owned; FreePBX
+# #includes it after the endpoints) and is idempotent, so a rebuild re-derives
+# it instead of needing the lines hand-added — see pbx/README.md.
+MEDIA_ADDRESS="${PJSIP_MEDIA_ADDRESS:-${LAN_IP:-$DOGRAH_LAN_IP}}"
+if [ -f "${REPO_ROOT}/pbx/media_address.py" ] && [ -n "$MEDIA_ADDRESS" ]; then
+  if mysql -u root asterisk -N -B 2>/dev/null \
+       -e "SELECT id FROM devices WHERE tech IN ('sip','pjsip')" \
+     | python3 "${REPO_ROOT}/pbx/media_address.py" --devices-tsv - \
+         --address "$MEDIA_ADDRESS" --asterisk-dir /etc/asterisk --apply; then
+    asterisk -rx 'module reload res_pjsip.so' 2>/dev/null || true
+    log "LAN endpoints advertise media_address=${MEDIA_ADDRESS}"
+  else
+    warn "media_address not converged — a LAN phone may be handed the PBX's own address (pbx/media_address.py)"
+  fi
+fi
+
 # ═══════════════════════════════════════════════════════════════
 # PHASE 11 — FAX STACK (Tesseract + IAXModem + HylaFAX + AvantFAX)
 # ═══════════════════════════════════════════════════════════════
