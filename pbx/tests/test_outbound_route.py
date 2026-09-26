@@ -253,6 +253,24 @@ class RenderSqlTest(unittest.TestCase):
         self.assertEqual(or_.quote("O'Brien"), "'O''Brien'")
 
 
+class DropRouteTest(unittest.TestCase):
+    """Consolidating duplicates: an operator names them, nothing is automatic."""
+
+    def test_nothing_named_renders_no_sql(self):
+        self.assertEqual(or_.render_drop_sql(()), "")
+
+    def test_a_named_route_and_its_children_are_deleted(self):
+        sql = or_.render_drop_sql((1,))
+        self.assertIn("DELETE FROM outbound_route_patterns WHERE route_id IN (1)", sql)
+        self.assertIn("DELETE FROM outbound_route_trunks WHERE route_id IN (1)", sql)
+        self.assertIn("DELETE FROM outbound_route_sequence WHERE route_id IN (1)", sql)
+        self.assertIn("DELETE FROM outbound_routes WHERE route_id IN (1)", sql)
+
+    def test_the_ids_are_sorted_and_deduplicated(self):
+        sql = or_.render_drop_sql((3, 1, 3))
+        self.assertIn("route_id IN (1, 3)", sql)
+
+
 class MainTest(unittest.TestCase):
     """Exit codes and the write path, with the PBX faked out."""
 
@@ -311,3 +329,54 @@ class MainTest(unittest.TestCase):
                 rc = or_.main(["--check"])
         self.assertEqual(rc, 2)
         self.assertIn("no FreePBX container", err.getvalue())
+
+    def _live_duplicate_state(self):
+        # The live box after the route was fixed: PSTN first, a duplicate
+        # `voipms` behind it. It is in sync for the route, but the duplicate
+        # still exists and an operator may name it.
+        pstn = _route(2, "PSTN", 0, patterns=or_.desired_patterns(),
+                      trunks=[(TRUNK_ID, TRUNK)])
+        voipms = _route(1, "voipms", 1, patterns=or_.desired_patterns(),
+                        trunks=[(0, "voipms")])
+        return _state([pstn, voipms])
+
+    def test_a_duplicate_named_for_removal_is_a_finding_and_a_check_writes_nothing(self):
+        def boom(*_a, **_k):
+            raise AssertionError("a check must not write")
+        rc, _, err = self._run(["--local", "--check", "--drop-route", "voipms"],
+                               [self._live_duplicate_state()], mysql=boom)
+        self.assertEqual(rc, 1)
+        self.assertIn("duplicate-route", err)
+        self.assertIn("voipms", err)
+
+    def test_an_unnamed_duplicate_is_left_alone(self):
+        # The default: a convergence never deletes somebody else's route.
+        def boom(*_a, **_k):
+            raise AssertionError("an in-sync route must not be written")
+        rc, out, _ = self._run(["--local", "--check"], [self._live_duplicate_state()],
+                               mysql=boom)
+        self.assertEqual(rc, 0)
+        self.assertIn("normalises", out)
+
+    def test_apply_drops_the_named_duplicate_then_converges(self):
+        pstn = _route(2, "PSTN", 0, patterns=or_.desired_patterns(),
+                      trunks=[(TRUNK_ID, TRUNK)])
+        seen = []
+        rc, out, err = self._run(
+            ["--local", "--apply", "--drop-route", "voipms"],
+            [self._live_duplicate_state(), _state([pstn]), _state([pstn])],
+            mysql=lambda sql, **_k: seen.append(sql) or "",
+        )
+        self.assertEqual(rc, 0, err)
+        self.assertTrue(any("DELETE FROM outbound_routes WHERE route_id IN (1)" in s
+                            for s in seen), seen)
+        self.assertIn("removed duplicate route(s) voipms", out)
+
+    def test_a_named_duplicate_that_survives_is_a_failure(self):
+        rc, _, err = self._run(
+            ["--local", "--apply", "--drop-route", "voipms"],
+            [self._live_duplicate_state(), self._live_duplicate_state(),
+             self._live_duplicate_state()],
+        )
+        self.assertEqual(rc, 1)
+        self.assertIn("did not converge", err)

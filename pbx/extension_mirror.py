@@ -25,11 +25,13 @@ those would be a permanent false positive, which is how an operator learns to
 ignore a report. The judgement is about a phone the portal cannot manage, never
 about a row the PBX does not have.
 
-**Read-only.** Adding the mirror row belongs to the portal (its create path writes
-both sides), and removing the PBX user is FreePBX's `delUser`/`delDevice`. This
-tool names which extension needs one of those and never which: a row invented here
-would be a guess at an account id, and a mirror row pointing at somebody else's
-account is worse than a named gap.
+**Read-only.** Adding the mirror row belongs to the portal — its create path for
+an extension that does not exist yet, or `scripts/legacy_portal_merge.py adopt`
+for one FreePBX already owns (the create path refuses those) — and removing the
+PBX user is FreePBX's `delUser`/`delDevice`. This tool names which extension
+needs one of those and never which: a row invented here would be a guess at an
+account id, and a mirror row pointing at somebody else's account is worse than a
+named gap.
 
     # the live PBX, read-only. Exit 0 in sync, 1 drift, 2 cannot tell.
     python3 pbx/extension_mirror.py --db /var/lib/docker/volumes/zeus-portal-data/_data/pbx.db --check
