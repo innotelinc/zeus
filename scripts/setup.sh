@@ -596,13 +596,14 @@ Socket=/run/mysqld/mysqld.sock
 option=3
 Charset=utf8
 
-# The voicemail DSN, the other half of the pair. `res_odbc_custom.conf` below# registers [asteriskvoicemail] against MySQL-asteriskvoicemail — that is the
+# The voicemail DSN, the other half of the pair. \`res_odbc_custom.conf\` below
+# registers [asteriskvoicemail] against MySQL-asteriskvoicemail — that is the
 # class app_voicemail stores messages through, and *97 (FreePBX's My Voicemail)
 # is the feature that reads them. A res_odbc class whose DSN this file does not
 # define is not an unused class: it fails to connect on every retrieve with
 # "Data source name not found and no default driver specified", which a caller
 # hears as *97 doing nothing at all. The database is created
-# and granted to `asterisk` above, so only the connection was ever missing.
+# and granted to \`asterisk\` above, so only the connection was ever missing.
 [MySQL-asteriskvoicemail]
 Description=MySQL connection to 'asteriskvoicemail' database
 driver=MariaDB
