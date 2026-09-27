@@ -173,6 +173,23 @@ class CheckIsReadOnly(Rehearsal):
         proc = self.run_bootstrap("--check")
         self.assertIn("ari.conf", proc.stdout + proc.stderr)
 
+    def test_a_clobbered_ari_general_block_is_reported_as_drift(self):
+        """The regression this pins: ARI went 404 with every user section present.
+
+        FreePBX's arimanager maintenance rewrote ari.conf and dropped the
+        `[general]` include block while `[pbxportal]` survived, so the file
+        still looked owned but `ari_additional_custom.conf` (Capstone's
+        [dograh]) was never read. The converge check alone cannot see that, so
+        the guard must.
+        """
+        self.run_bootstrap()  # ari.conf lands with the ARI user section only
+        (self.asterisk / "ari_additional_custom.conf").write_text(
+            "[dograh]\ntype = user\n", encoding="utf-8"
+        )
+        proc = self.run_bootstrap("--check")
+        self.assertEqual(proc.returncode, 1, proc.stdout + proc.stderr)
+        self.assertIn("[general]", proc.stdout + proc.stderr)
+
 
 if __name__ == "__main__":
     unittest.main()
