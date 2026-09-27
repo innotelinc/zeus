@@ -143,6 +143,7 @@ pbx_asterisk_dir() {
 }
 
 CONVERGE_PY="${SCRIPT_DIR}/asterisk_converge.py"
+ARI_GUARD="${SCRIPT_DIR}/ari_conf_guard.py"
 # Files converge OWNS: never copied wholesale, merged per-section instead.
 #   extensions_custom.conf — the shared dialplan (capstone's [dograh-inbound]
 #       must survive), zeus contexts replace, [from-internal-custom] append-shared.
@@ -270,6 +271,29 @@ check_core_patch() {
   return 0
 }
 
+# ── ARI [general] integrity guard ──────────────────────────────────────
+# ari.conf's converge check only proves zeus's [<user>] section is current. It
+# cannot see the failure that actually took ARI down: FreePBX's own arimanager
+# maintenance rewrote ari.conf and dropped the `[general]` include block while
+# keeping every user section. The file still looked owned, but
+# ari_additional_custom.conf — where Capstone's [dograh] lives — was no longer
+# included, so /ari/asterisk/info returned 404 and calls stopped being answered
+# with nothing else red. pbx/ari_conf_guard.py asserts the include plumbing is
+# intact; this reports it as drift so --check fails and the timer keeps saying
+# so until a human restores it.
+ari_conf_guard() {
+  if [ "$PBX_TARGET" = "container" ]; then
+    # The image bind-mounts the repo's pbx/ dir, so the guard is already inside.
+    # A pre-guard image has no such file; skipping keeps it from false drift.
+    docker compose -f "$REPO_ROOT/docker-compose.full.yml" exec -T freepbx \
+      test -f /opt/zeus/pbx/ari_conf_guard.py >/dev/null 2>&1 || return 0
+    docker compose -f "$REPO_ROOT/docker-compose.full.yml" exec -T freepbx \
+      python3 /opt/zeus/pbx/ari_conf_guard.py --quiet --ari-conf /etc/asterisk/ari.conf
+  else
+    python3 "$ARI_GUARD" --quiet --ari-conf "$(pbx_asterisk_dir)/ari.conf"
+  fi
+}
+
 render_fragments
 
 # extensions_custom.conf / ari.conf are SHARED files: once another product
@@ -333,6 +357,14 @@ for name in $CONVERGE_OWNED; do
   fi
 done
 
+# The ARI [general] guard runs on both paths: --check must fail on it, and the
+# apply path re-asserts it (and warns) because no fragment this repo owns can
+# put a clobbered [general] block back.
+if ! ari_conf_guard; then
+  echo "drift: ari.conf ([general] include block missing — ARI users in the included fragments will not load)" >&2
+  drift=1
+fi
+
 if [ "$CHECK" = 1 ]; then
   check_core_patch || drift=1
   if [ "$drift" = 1 ]; then
@@ -365,6 +397,9 @@ if [ "$drift" = 1 ] || [ "$RELOAD" = 1 ]; then
     fi
   done
   reload_pbx
+  if ! ari_conf_guard; then
+    echo "zeus-pbx: WARNING: ari.conf [general] include block is still missing — ARI users will not load until it is restored" >&2
+  fi
   echo "zeus-pbx: applied (${PBX_TARGET})"
 else
   echo "zeus-pbx: already in sync"
