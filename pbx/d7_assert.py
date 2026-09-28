@@ -81,7 +81,7 @@ CDR_DSN = "asteriskcdrdb"
 CALL_TARGET = "12@default"
 GATEWAY_BASE_KEY = "OMNIROUTE_BASE_URL"
 # The estate's canonical gateway door, used when the env names no override.
-GATEWAY_BASE_DEFAULT = "http://192.168.1.46:20128/v1"
+GATEWAY_BASE_DEFAULT = "http://192.168.1.71:20128/v1"
 GATEWAY_TOKEN_KEY = "OMNIROUTE_API_KEY"
 # The voicemail summary path pins its model in the portal's env (see
 # src/app/api/voicemail/summary/route.ts). It is the only model pin this repo
