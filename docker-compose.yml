@@ -166,7 +166,7 @@ services:
   # All subsystems (Capstone, Rizzaura, Atlas, AthenIQ) point here.
   #
   # Profile-gated: the CANONICAL gateway for the estate runs on 192.168.1.46
-  # (published through the oauth2-proxy door on :20129), and every consumer
+  # (published through the oauth2-proxy door on :20128), and every consumer
   # here — the portal, AVA, Capstone — points at that one. Starting this
   # service would create a second, empty gateway on :20128 that answers
   # anonymously and holds none of the provider connections, which is exactly
