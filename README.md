@@ -18,6 +18,7 @@ unified messaging, AvantFax digital faxing, AI voicemail summaries, Magnate
 [![Docker publish](https://github.com/innotelinc/zeus/actions/workflows/docker-publish.yml/badge.svg)](https://github.com/innotelinc/zeus/actions/workflows/docker-publish.yml)
 [![Release](https://github.com/innotelinc/zeus/actions/workflows/release.yml/badge.svg)](https://github.com/innotelinc/zeus/actions/workflows/release.yml)
 [![Latest release](https://img.shields.io/github/v/release/innotelinc/zeus?color=6366f1)](https://innotelinc.github.io/zeus/releases)
+[![Theme: Unity](https://img.shields.io/badge/theme-Unity-6366f1)](https://github.com/innotelinc/innotel-platform-stack/blob/main/standards/unity/README.md)
 
 </div>
 
