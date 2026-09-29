@@ -41,8 +41,10 @@ silently — the only symptom is that ICE/TURN never works and the log fills up.
    Verified live: a cookie-carrying probe to coturn was answered, a cookie-less
    one was ignored; `stun.l.google.com` answers *both* and returns
    MAPPED-ADDRESS (0x0001), which is the attribute the legacy client parses.
-   coturn has no legacy/back-compat switch (`turnserver --help`), so the STUN
-   row has to point somewhere else — coturn stays the TURN server.
+   coturn 4.18 does carry a deprecated `--rfc3489-compatibility`, but this
+   estate runs it with `--no-stun` (an unauthenticated STUN endpoint on the WAN
+   is a public reflector), so the STUN row has to point somewhere else — coturn
+   stays the TURN server.
 
 Contract
 --------

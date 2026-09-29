@@ -202,9 +202,12 @@ it from `.env` on every boot, so `bootstrap-zeus-pbx.sh` deliberately skips it �
 a static copy would fight a non-default range and always report drift. The repo
 file is the shape reference.
 
-It also carries the STUN/TURN address (`stunaddr`), set from
-`PJSIP_STUN_TURN_ADDR`; the `coturn` compose service name is only a last-resort
-fallback and the entrypoint warns when it is used.
+It also carries the STUN discovery address (`stunaddr`), set from
+`PJSIP_STUN_ADDR` (`stun.l.google.com:19302` by default) — **not** the TURN
+address, because coturn cannot answer this Asterisk's STUN (see
+[TURN / WebRTC media](#turn--webrtc-media-one-relay-for-both-products)). The TURN
+address comes from `PJSIP_STUN_TURN_ADDR`; the `coturn` compose service name is
+only a last-resort fallback and the entrypoint warns when it is used.
 
 > **Addressing rule — LAN IPs only.** Docker addresses do not work for this
 > project: `host.docker.internal` does not resolve inside the containers here
@@ -509,7 +512,7 @@ Three layers have to agree, and they are all written from `.env`:
 |---|---|
 | coturn's auth pair + realm | `--user` / `--realm` in the `coturn` service |
 | Asterisk's own ICE/STUN | `stunaddr` in `/etc/asterisk/rtp_custom.conf` → and the `kvstore_Sipsettings` row, which is what regenerates `rtp_additional.conf` |
-| browsers' relay | the `webrtcstunaddr` / `webrtcturn*` rows in `kvstore_Sipsettings` |
+| browsers' relay | the `webrtcstunaddr` / `webrtcturn*` rows in `kvstore_Sipsettings` — STUN from `PJSIP_WEBRTC_STUN_ADDR` (tracks `PJSIP_STUN_ADDR`), TURN from `TURN_PUBLIC_ADDR` |
 
 `docker-entrypoint-full.sh` writes the DB rows on every boot. That is not
 cosmetic: an Apply Config rebuilds `rtp_additional.conf` from that table, so a
@@ -517,12 +520,27 @@ file-only change is reverted the first time anyone opens the GUI — and the
 credentials recorded there are what browsers are handed. Pointing them at a
 stop'd relay is how WebRTC calls end up connecting with no audio.
 
+### coturn serves TURN, not STUN
+
+The `coturn` service runs with `--no-stun`. TURN is authenticated
+(`--lt-cred-mech`), but a bare STUN Binding request is unauthenticated *by
+design* — so publishing 3478 on the WAN makes the box a public STUN reflector,
+and this host was scanned and then driven as one (`67.65.227.32`). Nothing here
+needs coturn's STUN: Asterisk's client is RFC 3489 and coturn is RFC 5389, so
+Asterisk could never use it, and the browsers are handed
+`PJSIP_WEBRTC_STUN_ADDR` (an RFC 5389 server that answers them) for their
+server-reflexive candidates. Only the STUN row moves — `webrtcturnaddr` stays on
+coturn, which is what actually relays the media. `turnserver --help` has no rate
+limit for the binding case, so `--no-stun` is the switch; to re-open STUN
+deliberately, drop the flag from **both** compose files.
+
 ```bash
 docker port pbx-coturn | sort                       # 3478 tcp+udp AND 49152-49251/udp
 docker logs pbx-coturn | grep -i realm              # which realm it advertises
 docker exec pbx-freepbx asterisk -rx 'rtp show settings' | grep -A2 'STUN:'
 docker exec pbx-freepbx mysql -u root asterisk -B \
-  -e "SELECT \`key\`,val FROM kvstore_Sipsettings WHERE \`key\` LIKE '%turn%' OR \`key\`='stunaddr'"
+  -e "SELECT \`key\`,val FROM kvstore_Sipsettings WHERE \`key\` LIKE '%turn%' OR \`key\` LIKE '%stun%'"
+docker exec pbx-coturn turnserver --help | grep -q no-stun && echo 'flag exists'
 ```
 
 Two failure modes are worth knowing, because both are silent:
@@ -558,8 +576,11 @@ silently — neither side of the wire says the relay is gone.
 `pbx/rtp_settings_guard.py` re-asserts both rows from the values the boot owner
 already knows, and `docker-entrypoint-full.sh` runs it after the post-reload RTP
 write. STUN discovery and TURN are separate addresses on purpose: coturn speaks
-RFC 5766 with MESSAGE-INTEGRITY and is the relay, but `turnserver --help` has no
-legacy/back-compat switch, so it cannot also be the discovery server.
+RFC 5766 with MESSAGE-INTEGRITY and is the relay, but it runs with `--no-stun`,
+so it cannot also be the discovery server. coturn 4.18 *does* ship a deprecated
+`--rfc3489-compatibility` that would serve the legacy client — but enabling it
+means answering unauthenticated STUN on the WAN again, which is exactly the
+reflector exposure `--no-stun` closes.
 
 Verify against a live box — `--check` is read-only, and the counter must not
 move across a call:
