@@ -609,10 +609,22 @@ FreePBX creates the row in `Core::addUser` (`Core.class.php`), defaulting to the
 `CONCURRENCYLIMITDEFAULT` setting. An extension the legacy migration inserted
 straight into the database never went through that path, so the row is simply
 absent. `docker-entrypoint-full.sh` seeds it the way FreePBX would, per
-extension, every boot:
+extension, every boot.
+
+**Where the seeding runs is load-bearing, and getting it wrong is silent.** The
+AstDB those rows live in sits in the container's writable layer — only
+`/var/lib/asterisk/sounds` is on a volume — so `docker compose up
+--force-recreate` starts it empty, and the boot-time extension mirror
+repopulates `AMPUSER` while Asterisk is still coming up. An earlier copy of the
+block ran before `asterisk -f`: it found no extensions and seeded nothing, so a
+recreate left every row missing again (observed on the live box). It now sits
+after the post-reload RTP write — the first point where both the rows it reads
+and the CLI that writes them exist.
 
     docker exec zeus-freepbx asterisk -rx 'database get AMPUSER 7745057135/concurrency_limit'
     # 3
+    docker exec zeus-freepbx asterisk -rx 'database show AMPUSER' | grep -c concurrency_limit
+    # one per extension (8 here)
 
 Set an extension to `0` ("No Limit") with `database put AMPUSER <ext>/concurrency_limit 0`
 if the 3-call cap is not wanted.
