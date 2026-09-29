@@ -183,6 +183,23 @@ class GuardTest(unittest.TestCase):
         # PJSIP_STUN_ADDR unset -> the built-in legacy-compatible default.
         self.assertIn("stunaddr=%s" % guard.DEFAULT_STUN_ADDR, self.read())
 
+    def test_turn_password_env_is_a_fallback_for_capstone(self):
+        # This file is mirrored into the Capstone repo, whose compose/.env name
+        # the credential TURN_PASSWORD (Zeus calls it TURN_CREDENTIAL). With no
+        # flags, either name must supply it — and TURN_CREDENTIAL wins.
+        self.write(sample(password=PASSWORD.lower()))
+        saved = dict(os.environ)
+        self.addCleanup(lambda: (os.environ.clear(), os.environ.update(saved)))
+        os.environ.pop("TURN_CREDENTIAL", None)
+        os.environ["TURN_USERNAME"] = USER
+        os.environ["TURN_PASSWORD"] = PASSWORD
+        err = io.StringIO()
+        with redirect_stderr(err):
+            rc = guard.main(["--rtp-conf", self.path, "--apply"])
+        self.assertEqual(0, rc)
+        self.assertIn("turnpassword=%s" % PASSWORD, self.read())
+        self.assertIn("turnusername=%s" % USER, self.read())
+
     def test_pjsip_stun_addr_overrides_the_default(self):
         self.write(sample(stunaddr="coturn:3478"))
         saved = dict(os.environ)

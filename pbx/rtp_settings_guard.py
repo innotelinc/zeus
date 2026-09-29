@@ -54,7 +54,11 @@ it reports drift (`--check`, exit 1) and rewrites the rows (`--apply`).
 
     --stun-addr      PJSIP_STUN_ADDR / STUN_ADDR, default stun.l.google.com:19302
     --turn-username  TURN_USERNAME
-    --turn-password  TURN_CREDENTIAL
+    --turn-password  TURN_CREDENTIAL, else TURN_PASSWORD
+
+The credential is read from `TURN_CREDENTIAL` first and `TURN_PASSWORD` second:
+Zeus names it the former, the Capstone repo's compose/.env the latter, and this
+one file is mirrored into both so a shared box cannot drift.
 
 A key whose expected value is empty is left alone: an estate that wants no STUN
 discovery (or no TURN) is a legitimate configuration, and this tool must not
@@ -198,7 +202,9 @@ def resolve_expected(args) -> dict[str, str]:
     return {
         "stunaddr": stun,
         "turnusername": args.turn_username or os.environ.get("TURN_USERNAME", ""),
-        "turnpassword": args.turn_password or os.environ.get("TURN_CREDENTIAL", ""),
+        "turnpassword": (args.turn_password
+                         or os.environ.get("TURN_CREDENTIAL")
+                         or os.environ.get("TURN_PASSWORD", "")),
     }
 
 
@@ -214,7 +220,9 @@ def main(argv=None) -> int:
                         help="STUN discovery server, host[:port] "
                              "(default: $PJSIP_STUN_ADDR, else %s)" % DEFAULT_STUN_ADDR)
     parser.add_argument("--turn-username", help="TURN username (default: $TURN_USERNAME)")
-    parser.add_argument("--turn-password", help="TURN password (default: $TURN_CREDENTIAL)")
+    parser.add_argument("--turn-password",
+                        help="TURN password (default: $TURN_CREDENTIAL, "
+                             "else $TURN_PASSWORD)")
     mode = parser.add_mutually_exclusive_group()
     mode.add_argument("--check", action="store_true",
                       help="report drift and exit 1 (default)")
