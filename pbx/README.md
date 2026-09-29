@@ -11,7 +11,7 @@ operational shape.
 | `asterisk/manager_custom.conf` | AMI user for the portal, with a deny-by-default permit list. **Entrypoint-owned** — `bootstrap-zeus-pbx.sh` skips it: `docker-entrypoint-full.sh` rewrites the secrets, re-adds UCP's `[ucp_events]` user and normalises the permits on every boot, while FreePBX's `ucp` module and the estate's own `[pbxportal]` user live in the same file. A wholesale copy from bootstrap deleted both and then flapped against the next container boot. Bare metal's owner is `scripts/setup.sh` |
 | `asterisk/ari.conf` | `[pbxportal]` ARI user section — **converged into the real `/etc/asterisk/ari.conf`** (see below) |
 | `asterisk/http_custom.conf` | Asterisk HTTP server + WebSocket transport for the WebRTC softphone (genuinely included). Deliberately does **not** set `enablestatic`: FreePBX's http module already owns `[general]` in `http_additional.conf` (included before this file) and ships `enablestatic=no` |
-| `asterisk/rtp_custom.conf` | RTP media plane: canonical `stunaddr`/`icesupport` + `rtpstart`/`rtpend` cap. **Entrypoint-owned** — `bootstrap-zeus-pbx.sh` skips it; `docker-entrypoint-full.sh`/`scripts/setup.sh` derive it from `FREEPBX_RTP_PORT_*` + `PJSIP_STUN_TURN_ADDR` on every boot. Mirrored by the Capstone repo so both products cap one range |
+| `asterisk/rtp_custom.conf` | RTP media plane: canonical `stunaddr`/`icesupport` + `rtpstart`/`rtpend` cap. **Entrypoint-owned** — `bootstrap-zeus-pbx.sh` skips it; `docker-entrypoint-full.sh`/`scripts/setup.sh` derive it from `FREEPBX_RTP_PORT_*` + `PJSIP_STUN_ADDR` (STUN discovery) + `PJSIP_STUN_TURN_ADDR` (TURN) on every boot. Mirrored by the Capstone repo so both products cap one range |
 | `asterisk/extensions_custom.conf` | Portal dialplan context (`[from-zeus-portal]`) — converge-owned |
 | `setup-cloudonix-trunk.sh` | Peer a Cloudonix domain with this PBX (`pjsip_custom_cloudonix.conf` + `extensions_custom_cloudonix.conf`), **script-owned** — `bootstrap-zeus-pbx.sh` skips both files, and `docker-entrypoint-full.sh` calls this on boot. `--check` drift mode |
 | `bootstrap-zeus-pbx.sh` | Render + apply the fragments idempotently; `--check` drift mode |
@@ -20,6 +20,7 @@ operational shape.
 | `extension_mirror.py` | Judge whether every FreePBX user is an extension the portal's `freepbx_extensions` mirror names — **one direction only** (the mirror also carries rows the PBX does not own as users: the fax service lines, a demo softphone), read-only, `--users-tsv` judges a user table dumped by `p0-snapshot.sh` with no PBX reachable. Exit 1 = a phone nothing in the portal can manage, 2 = cannot tell — see [The portal's extension mirror](#the-portals-extension-mirror) |
 | `media_address.py` | Keep the address Asterisk advertises to a LAN phone (`media_address` on each sip/pjsip endpoint) — **entrypoint-owned**, re-derived every boot by `docker-entrypoint-full.sh` / `scripts/setup.sh` and reconciled by the `zeus-pbx-sync` timer (`scripts/zeus-pbx-sync.sh`) so an image rebuild cannot lose it. Writes its own file `pjsip_media_custom.conf` and one `#include` in the portal-shared `pjsip.endpoint_custom_post.conf`; refuses a docker/loopback address. `--check` / `--apply`, `--devices-tsv` judges off-host. Exit 1 = an apply converges it, 2 = cannot tell — see [The media address Asterisk advertises](#the-media-address-asterisk-advertises-container--lan-phones) |
 | `outbound_route.py` | Keep the route that normalises a dialled number — the one that gives a ten-digit call the `1` VoIP.ms terminates on. **Entrypoint-owned**, converged on boot by `docker-entrypoint-full.sh` / `scripts/setup.sh` and reconciled every tick by `scripts/zeus-pbx-sync.sh`. Creates the route (`PSTN` by default, `PBX_OUTBOUND_ROUTE` to rename) if missing, requires the two normalisation rules (ten-digit -> `1`, seven-digit -> `1413`) — preserving any extra patterns an existing route already has — attaches the VoIP.ms trunk first, and lifts the route above anything ahead of it that would take the same calls — a catch-all like `X.`, or a duplicate route pointed at another trunk. FreePBX evaluates routes in sequence order, so a route ahead swallows the call before the named route and its normalisation are reached. Refuses (exit 2) when there is no trunk row to attach. `--check` / `--apply`, `--local` for the in-container / bare-metal MySQL, and `--drop-route NAME` to remove a duplicate route an operator names (never automatic). Exit 1 = an apply converges it — see [The outbound route](#the-outbound-route-a-dialled-number-reaches-the-carrier) |
+| `rtp_settings_guard.py` | Keep the two `rtp_additional.conf` rows FreePBX rewrites wrong: `stunaddr` and the TURN credential. **Entrypoint-owned** — `docker-entrypoint-full.sh` runs it after the post-reload RTP write, because `fwconsole reload` regenerates the file from `kvstore_Sipsettings` every time. Two silent failures, both verified live on zeus (FreePBX 17.0.33 / Asterisk 22.11): `Sipsettings::genConfig()` runs every RTP value through `strtolower()` — a TURN password is case-sensitive, so coturn answered `credentials are incorrect (check_stun_auth)` once per call and the WebRTC relay candidates were dead — and `stunaddr` pointed at that same coturn, which is RFC 5389 and silently drops the cookie-less RFC 3489 request Asterisk's `main/stun.c` sends, costing 3x3s of retries on *every* call. STUN and TURN are therefore different servers here. `--rtp-conf`, `--stun-addr` (default `$PJSIP_STUN_ADDR`, else `stun.l.google.com:19302`; `''` disables discovery), `--turn-username`/`--turn-password` (default `$TURN_USERNAME`/`$TURN_CREDENTIAL`), `--check` / `--apply`. Exit 1 = an apply converges it, 2 = cannot tell — see [The RTP rows FreePBX rewrites](#the-rtp-rows-freepbx-rewrites) |
 | `pjsip_owner_check.py` | Who owns the PJSIP endpoint for an extension — the load tree, the duplicate ids, and who carries the `#include`. Read-only, `--json` for the raw measurement, exit 1 on a two-owner state — see [Who owns a PJSIP endpoint](#who-owns-a-pjsip-endpoint) |
 | `provision_extension.py` | **The one owner of extension/device creation** (D6): check-then-create through FreePBX's own `addDevice`/`addUser`, with a preflight that refuses on an orphaned `sip`/`pjsip` row, leftover `AMPUSER` state, a half-created extension or a two-owner endpoint. `--check` / `--apply`, `--observed-json` to judge off-host, exit 1 = an apply converges it, 3 = only a person can — see [One provisioning path](#one-provisioning-path-for-extensions) |
 | `d7_assert.py` | The three D7 claims about the live stack (call recorded, Dograh's ARI app registered, one gateway serving the model pins this repo still holds — the summary path's `VOICEMAIL_SUMMARY_MODEL`, since the call path's belongs to Dograh). `--call` places a self-contained probe call. Exit 2 = nothing could be evaluated |
@@ -28,6 +29,7 @@ operational shape.
 | `MSTeams-DR-Wizard.sh` | MS Teams Direct Routing wizard (vendored from [Vince-0/MSTeams-FreePBX](https://github.com/Vince-0/MSTeams-FreePBX), MIT) — configures the native `external_signaling_hostname` PJSIP transport (Asterisk 20.21+/22.11+/23.5+/24+), endpoint/AOR/identify for the Microsoft SIP proxies, RSA cert wiring, `--check` audit |
 | `cerulean-msteams.sh` | Cerulean trust-plane adapter: provisions the SBC DNS record + RSA-2048 DNS-01 certificate, then chains into the wizard |
 | `tests/test_asterisk_converge.py` | Unit tests for the converge tool (`python3 -m unittest discover -s pbx/tests`) |
+| `tests/test_rtp_settings_guard.py` | Unit tests for the RTP settings converger: the lower-cased credential, the coturn `stunaddr`, insertion under `[general]`, a shadowed duplicate row, a trailing `; comment`, and the `--stun-addr ''` opt-out |
 
 ## Shared voice plane (`asterisk_converge.py`)
 
@@ -541,6 +543,58 @@ Two failure modes are worth knowing, because both are silent:
 (`32768-60999`) to match the Capstone service, so the router forward and both
 compose files stay interchangeable. Moving it is a coordinated change across
 both products *and* the router.
+
+### The RTP rows FreePBX rewrites
+
+`fwconsole reload` rebuilds `/etc/asterisk/rtp_additional.conf` from
+`kvstore_Sipsettings`, and two of the rows do not survive the trip. Both fail
+silently — neither side of the wire says the relay is gone.
+
+| Row | What FreePBX does | What it costs |
+| --- | --- | --- |
+| `turnpassword` / `turnusername` | `Sipsettings::genConfig()` runs every RTP value through `strtolower()` | A TURN password is case-sensitive. coturn logged `ERROR user turnuser-… credentials are incorrect (check_stun_auth)` once per call and Asterisk's relay candidates were dead |
+| `stunaddr` | written as given — but the estate had it pointed at coturn | coturn is RFC 5389 and silently drops the cookie-less RFC 3489 request `main/stun.c` sends, so every call logged `stun.c: Attempt 3 to send STUN request … timed out` (3 × 3s) and discovered nothing |
+
+`pbx/rtp_settings_guard.py` re-asserts both rows from the values the boot owner
+already knows, and `docker-entrypoint-full.sh` runs it after the post-reload RTP
+write. STUN discovery and TURN are separate addresses on purpose: coturn speaks
+RFC 5766 with MESSAGE-INTEGRITY and is the relay, but `turnserver --help` has no
+legacy/back-compat switch, so it cannot also be the discovery server.
+
+Verify against a live box — `--check` is read-only, and the counter must not
+move across a call:
+
+    docker exec zeus-freepbx python3 /opt/zeus/pbx/rtp_settings_guard.py --check
+    docker exec zeus-freepbx python3 /opt/zeus/pbx/rtp_settings_guard.py --apply
+    docker exec zeus-freepbx asterisk -rx 'module reload res_rtp_asterisk.so'
+    docker exec zeus-freepbx sh -c 'grep -c "stun.c: Attempt" /var/log/asterisk/full'
+
+### The concurrency-limit row FreePBX only writes for its own children
+
+`[macro-user-callerid]` asks whether an extension is over its outbound
+concurrency limit:
+
+    $[... & ${DB_EXISTS(AMPUSER/${AMPUSER}/concurrency_limit)} &
+          ${DB(AMPUSER/${AMPUSER}/concurrency_limit)}>0 &
+          ${GROUP_COUNT(${AMPUSER}@concurrency_limit)}>=${DB(AMPUSER/${AMPUSER}/concurrency_limit)}]
+
+If `AMPUSER/<ext>/concurrency_limit` does not exist, both `${DB(...)}` lookups
+expand to nothing and the expression reads `... & 0 & >0 & 0>=]`. Asterisk logs
+`ast_expr2.fl: ast_yyerror(): syntax error: ... unexpected '>'` on **every call**
+and evaluates it false, so the limit — FreePBX's defence against a compromised
+extension — has never been enforced; the warning is the whole symptom.
+
+FreePBX creates the row in `Core::addUser` (`Core.class.php`), defaulting to the
+`CONCURRENCYLIMITDEFAULT` setting. An extension the legacy migration inserted
+straight into the database never went through that path, so the row is simply
+absent. `docker-entrypoint-full.sh` seeds it the way FreePBX would, per
+extension, every boot:
+
+    docker exec zeus-freepbx asterisk -rx 'database get AMPUSER 7745057135/concurrency_limit'
+    # 3
+
+Set an extension to `0` ("No Limit") with `database put AMPUSER <ext>/concurrency_limit 0`
+if the 3-call cap is not wanted.
 
 ## Who owns a PJSIP endpoint
 
