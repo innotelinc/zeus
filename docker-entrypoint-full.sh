@@ -489,42 +489,6 @@ if [ -f /opt/zeus/pbx/outbound_route.py ] && [ -n "${VOIPMS_SIP_USER:-}" ]; then
   fi
 fi
 
-# ── The concurrency-limit row FreePBX only writes for its own children ───────
-# [macro-user-callerid] decides whether to block an outbound call with
-#
-#   $[... & ${DB_EXISTS(AMPUSER/${AMPUSER}/concurrency_limit)} &
-#         ${DB(AMPUSER/${AMPUSER}/concurrency_limit)}>0 &
-#         ${GROUP_COUNT(${AMPUSER}@concurrency_limit)}>=${DB(AMPUSER/${AMPUSER}/concurrency_limit)}]
-#
-# When that row is missing, both ${DB(...)} lookups expand to nothing and the
-# expression reads `... & 0 & >0 & 0>=]` — a syntax error, so Asterisk logs
-# `ast_expr2.fl: ast_yyerror(): syntax error: ... unexpected '>'` on *every*
-# call and evaluates the whole thing false. The outbound concurrency limit (a
-# defence against a compromised extension) has therefore never been enforced on
-# this box, and the warning is the whole symptom.
-#
-# FreePBX writes the row itself in Core::addUser (Core.class.php), defaulting to
-# the CONCURRENCYLIMITDEFAULT setting — but only on that path. An extension the
-# legacy migration inserted straight into the database never went through it, so
-# the row was never created. Seed it exactly the way FreePBX would; the row is
-# per extension and idempotent, so this is safe to re-run every boot.
-if command -v asterisk >/dev/null 2>&1; then
-  conc_default="$(mysql -u root asterisk -N -B 2>/dev/null \
-    -e "SELECT value FROM freepbx_settings WHERE keyword='CONCURRENCYLIMITDEFAULT'" 2>/dev/null | head -1)"
-  [ -n "$conc_default" ] || conc_default="0"
-  conc_seeded=0
-  for _ext in $(asterisk -rx "database show AMPUSER" 2>/dev/null \
-                  | sed -n 's#^/AMPUSER/\([^/]*\)/.*#\1#p' | sort -u); do
-    if ! asterisk -rx "database show AMPUSER/${_ext}/concurrency_limit" 2>/dev/null | grep -q concurrency_limit; then
-      asterisk -rx "database put AMPUSER ${_ext}/concurrency_limit ${conc_default}" >/dev/null 2>&1 \
-        && conc_seeded=$((conc_seeded + 1))
-    fi
-  done
-  if [ "$conc_seeded" != 0 ]; then
-    echo ">>> concurrency_limit=${conc_default} seeded onto ${conc_seeded} extension(s) — [macro-user-callerid] had none to read"
-  fi
-fi
-
 # ── Dograh external-media WebSocket ─────────────────────────────────────────
 # The add-on's entrypoint owns this file normally, but it lives on the shared
 # asterisk-config volume and its default URI is `host.docker.internal`, which
@@ -1420,6 +1384,51 @@ WSSEOF
     fi
     # res_rtp_asterisk caches the rows; a fresh file is not live until it reloads.
     asterisk -rx "module reload res_rtp_asterisk.so" >/dev/null 2>&1 || true
+  fi
+
+  # ── The concurrency-limit row FreePBX only writes for its own children ─────
+  # [macro-user-callerid] decides whether to block an outbound call with
+  #
+  #   $[... & ${DB_EXISTS(AMPUSER/${AMPUSER}/concurrency_limit)} &
+  #         ${DB(AMPUSER/${AMPUSER}/concurrency_limit)}>0 &
+  #         ${GROUP_COUNT(${AMPUSER}@concurrency_limit)}>=${DB(AMPUSER/${AMPUSER}/concurrency_limit)}]
+  #
+  # When that row is missing, both ${DB(...)} lookups expand to nothing and the
+  # expression reads `... & 0 & >0 & 0>=]` — a syntax error, so Asterisk logs
+  # `ast_expr2.fl: ast_yyerror(): syntax error: ... unexpected '>'` on *every*
+  # call and evaluates the whole thing false. The outbound concurrency limit (a
+  # defence against a compromised extension) is therefore not enforced, and the
+  # warning is the whole symptom.
+  #
+  # FreePBX writes the row itself in Core::addUser (Core.class.php), defaulting
+  # to the CONCURRENCYLIMITDEFAULT setting — but only on that path. An extension
+  # the legacy migration inserted straight into the database never went through
+  # it, so the row was never created. Seed it exactly the way FreePBX would; the
+  # row is per extension and idempotent, so this is safe to re-run every boot.
+  #
+  # WHERE THIS RUNS IS THE WHOLE POINT, and getting it wrong is silent. The AstDB
+  # these rows live in sits in the container's writable layer (only
+  # /var/lib/asterisk/sounds is a volume), so a `--force-recreate` starts it
+  # empty and the boot-time extension mirror repopulates AMPUSER *as* Asterisk
+  # comes up. An earlier copy of this block lived before `asterisk -f`, found no
+  # extensions at all and seeded nothing — verified against a real recreate,
+  # which left every row missing again. After the reload is the first point where
+  # the rows it reads and the CLI that writes them both exist.
+  if command -v asterisk >/dev/null 2>&1; then
+    conc_default="$(mysql -u root asterisk -N -B 2>/dev/null \
+      -e "SELECT value FROM freepbx_settings WHERE keyword='CONCURRENCYLIMITDEFAULT'" 2>/dev/null | head -1)"
+    [ -n "$conc_default" ] || conc_default="0"
+    conc_seeded=0
+    for _ext in $(asterisk -rx "database show AMPUSER" 2>/dev/null \
+                    | sed -n 's#^/AMPUSER/\([^/]*\)/.*#\1#p' | sort -u); do
+      if ! asterisk -rx "database show AMPUSER/${_ext}/concurrency_limit" 2>/dev/null | grep -q concurrency_limit; then
+        asterisk -rx "database put AMPUSER ${_ext}/concurrency_limit ${conc_default}" >/dev/null 2>&1 \
+          && conc_seeded=$((conc_seeded + 1))
+      fi
+    done
+    if [ "$conc_seeded" != 0 ]; then
+      echo ">>> concurrency_limit=${conc_default} seeded onto ${conc_seeded} extension(s) — [macro-user-callerid] had none to read"
+    fi
   fi
 
   # Start Apache in background (web UI is now safe to trigger reloads)
