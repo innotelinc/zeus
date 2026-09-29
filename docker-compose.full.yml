@@ -150,6 +150,12 @@ services:
       # parses. Set empty to disable discovery entirely; see
       # pbx/rtp_settings_guard.py.
       PJSIP_STUN_ADDR: ${PJSIP_STUN_ADDR:-}
+      # STUN server handed to the *browsers* (the webrtcstunaddr row). coturn
+      # runs with --no-stun, so this must not be coturn; it defaults to
+      # PJSIP_STUN_ADDR, which answers a modern RFC 5389 binding request. Only
+      # the STUN row moves — webrtcturnaddr stays on coturn, which is what
+      # actually relays the media.
+      PJSIP_WEBRTC_STUN_ADDR: ${PJSIP_WEBRTC_STUN_ADDR:-}
       # The address Asterisk advertises to a LAN phone for its media (answer
       # SDP), converged per endpoint by pbx/media_address.py from the entrypoint
       # on every boot. PROJECT RULE: a real LAN address, never a docker range —
@@ -452,6 +458,15 @@ services:
       - turnserver
       - --fingerprint
       - --lt-cred-mech
+      # STUN is OFF on purpose. TURN is authenticated (--lt-cred-mech), but a
+      # bare STUN Binding request is unauthenticated *by design*, so an open
+      # 3478 on the WAN is a public STUN reflector — this box was scanned and
+      # then used as exactly that (67.65.227.32). Nothing here needs coturn's
+      # STUN: Asterisk's client is RFC 3489 and coturn is RFC 5389 (see
+      # pbx/rtp_settings_guard.py), and the browsers get their server-reflexive
+      # candidates from PJSIP_WEBRTC_STUN_ADDR instead. TURN relay is untouched
+      # — `turnserver --help` has no rate limit for the binding case.
+      - --no-stun
       - --user=${TURN_USERNAME:-turnuser}:${TURN_CREDENTIAL:?set TURN_CREDENTIAL in .env}
       - --realm=${TURN_REALM:-zeus.innotel.us}
       - --listening-port=3478

@@ -314,8 +314,17 @@ STUN_TURN_ADDR="${PJSIP_STUN_TURN_ADDR:-coturn}:${TURN_LISTENING_PORT:-3478}"
 # attribute the legacy client parses. coturn stays the TURN server, which speaks
 # RFC 5766 with MESSAGE-INTEGRITY and works — see `pbx/rtp_settings_guard.py`.
 # Set PJSIP_STUN_ADDR to override; an empty value disables discovery. Do not
-# point it at coturn: `turnserver --help` has no legacy/back-compat switch.
+# point it at coturn: it runs with `--no-stun` (see the coturn service), and its
+# deprecated `--rfc3489-compatibility` would mean serving open STUN again.
 STUN_ADDR="${PJSIP_STUN_ADDR:-stun.l.google.com:19302}"
+# The WebRTC rows below are read by *browsers*, and a browser's ICE wants a
+# server that answers a modern (RFC 5389) Binding request. coturn does — but it
+# runs with `--no-stun` (an unauthenticated STUN endpoint on the WAN is a public
+# reflector, which is how this box got used as one), so the browsers are handed
+# the same public STUN Asterisk uses. Only the STUN row moves: webrtcturnaddr
+# stays on coturn, which is what actually relays the media. Override with
+# PJSIP_WEBRTC_STUN_ADDR; it tracks PJSIP_STUN_ADDR by default.
+WEBRTC_STUN_ADDR="${PJSIP_WEBRTC_STUN_ADDR:-${STUN_ADDR}}"
 # Two TURN addresses, on purpose (see the STUN/TURN block below): Asterisk's
 # own ICE reaches the TURN server from inside the compose network (no NAT
 # hairpin), so the RTP rows use a docker-resolvable name, while the WebRTC rows
@@ -570,13 +579,13 @@ if [ -n "${TURN_USERNAME:-}" ]; then
   # `pbx/rtp_settings_guard.py`; the kvstore below is the source of truth, the
   # generated file is not.
   mysql -u root asterisk -N -B 2>/dev/null <<SQL \
-    && echo ">>> TURN plane wired: STUN via ${STUN_ADDR}, TURN via ${STUN_TURN_ADDR}, WebRTC via ${TURN_PUBLIC_URI} (user ${TURN_USERNAME})"
+    && echo ">>> TURN plane wired: STUN via ${STUN_ADDR}, TURN via ${STUN_TURN_ADDR}, WebRTC STUN via ${WEBRTC_STUN_ADDR}, WebRTC TURN via ${TURN_PUBLIC_URI} (user ${TURN_USERNAME})"
 INSERT INTO kvstore_Sipsettings (\`key\`, val, type, id) VALUES
  ('stunaddr','${STUN_ADDR}',NULL,'noid'),
  ('turnaddr','${STUN_TURN_ADDR}',NULL,'noid'),
  ('turnusername',UNHEX('${_turn_user_hex}'),NULL,'noid'),
  ('turnpassword',UNHEX('${_turn_pass_hex}'),NULL,'noid'),
- ('webrtcstunaddr','${TURN_PUBLIC_URI}',NULL,'noid'),
+ ('webrtcstunaddr','${WEBRTC_STUN_ADDR}',NULL,'noid'),
  ('webrtcturnaddr','${TURN_PUBLIC_URI}',NULL,'noid'),
  ('webrtcturnusername',UNHEX('${_turn_user_hex}'),NULL,'noid'),
  ('webrtcturnpassword',UNHEX('${_turn_pass_hex}'),NULL,'noid'),

@@ -119,6 +119,15 @@ services:
       - --no-tls
       - --fingerprint
       - --lt-cred-mech
+      # STUN is OFF on purpose. TURN is authenticated (--lt-cred-mech), but a
+      # bare STUN Binding request is unauthenticated *by design*, so an open
+      # 3478 on the WAN is a public STUN reflector — this box was scanned and
+      # then used as exactly that (67.65.227.32). Asterisk's own client is RFC
+      # 3489 and cannot use this coturn for STUN anyway (see
+      # pbx/rtp_settings_guard.py), and the browsers get their server-reflexive
+      # candidates from PJSIP_WEBRTC_STUN_ADDR. TURN relay is untouched —
+      # docker-compose.full.yml carries the same flag; keep the two in step.
+      - --no-stun
       - --user=${TURN_USERNAME:-turnuser}:${TURN_CREDENTIAL:?set TURN_CREDENTIAL in .env}
       - --realm=${TURN_REALM:-zeus.innotel.us}
       - --listening-port=3478
