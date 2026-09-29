@@ -283,7 +283,9 @@ chown asterisk:asterisk "${LOGGER_CUSTOM}" 2>/dev/null || true
 #
 # The Capstone repo's pbx/ layer mirrors this exact shape (same env names, same
 # file, same DB write) so a shared box runs one RTP plane for both products.
-# Override the STUN/TURN address with PJSIP_STUN_TURN_ADDR.
+# Override the TURN address with PJSIP_STUN_TURN_ADDR and the STUN discovery
+# server with PJSIP_STUN_ADDR (see the block above: coturn cannot serve STUN to
+# this Asterisk).
 #
 # PROJECT RULE: use the host's LAN IP for every service address. Docker
 # addresses are not usable here — `host.docker.internal` does not resolve
@@ -302,6 +304,18 @@ if [ -z "${PJSIP_STUN_TURN_ADDR:-}" ]; then
   echo ">>>          Set it to this host's LAN IP (PJSIP_STUN_TURN_ADDR=192.168.x.x): docker addresses do not resolve for this project." >&2
 fi
 STUN_TURN_ADDR="${PJSIP_STUN_TURN_ADDR:-coturn}:${TURN_LISTENING_PORT:-3478}"
+# STUN discovery and TURN are *different* servers, on purpose. Asterisk's STUN
+# client (`main/stun.c`) is RFC 3489 — its request carries a 16-byte transaction
+# id and no RFC 5389 magic cookie — and coturn, being RFC 5389, drops a datagram
+# that is not a STUN message. Silently: no reply, nothing in coturn's log. So a
+# `stunaddr` pointed at coturn gathered nothing and cost 3x3s of retries on every
+# call ("stun.c: Attempt 3 to send STUN request ... timed out"). The default
+# below answers both generations and returns MAPPED-ADDRESS (0x0001), the one
+# attribute the legacy client parses. coturn stays the TURN server, which speaks
+# RFC 5766 with MESSAGE-INTEGRITY and works — see `pbx/rtp_settings_guard.py`.
+# Set PJSIP_STUN_ADDR to override; an empty value disables discovery. Do not
+# point it at coturn: `turnserver --help` has no legacy/back-compat switch.
+STUN_ADDR="${PJSIP_STUN_ADDR:-stun.l.google.com:19302}"
 # Two TURN addresses, on purpose (see the STUN/TURN block below): Asterisk's
 # own ICE reaches the TURN server from inside the compose network (no NAT
 # hairpin), so the RTP rows use a docker-resolvable name, while the WebRTC rows
@@ -323,7 +337,7 @@ fi
 write_rtp_plane() {
   cat > "${ASTERISK_ETC}/rtp_custom.conf" <<EOF
 [general]
-stunaddr = ${STUN_TURN_ADDR}
+stunaddr = ${STUN_ADDR}
 icesupport = yes
 rtpstart=${RTP_START}
 rtpend=${RTP_END}
@@ -350,7 +364,7 @@ PYEOF
   fi
 }
 write_rtp_plane
-echo ">>> rtp_custom.conf canonical (${RTP_START}-${RTP_END}, STUN/TURN ${STUN_TURN_ADDR})"
+echo ">>> rtp_custom.conf canonical (${RTP_START}-${RTP_END}, STUN ${STUN_ADDR}, TURN ${STUN_TURN_ADDR})"
 
 # Durable settings-DB write so FreePBX regenerates rtp_additional.conf with the
 # published range on every Apply Config (survives `fwconsole reload`). Guarded
@@ -466,6 +480,42 @@ if [ -f /opt/zeus/pbx/outbound_route.py ] && [ -n "${VOIPMS_SIP_USER:-}" ]; then
   fi
 fi
 
+# ── The concurrency-limit row FreePBX only writes for its own children ───────
+# [macro-user-callerid] decides whether to block an outbound call with
+#
+#   $[... & ${DB_EXISTS(AMPUSER/${AMPUSER}/concurrency_limit)} &
+#         ${DB(AMPUSER/${AMPUSER}/concurrency_limit)}>0 &
+#         ${GROUP_COUNT(${AMPUSER}@concurrency_limit)}>=${DB(AMPUSER/${AMPUSER}/concurrency_limit)}]
+#
+# When that row is missing, both ${DB(...)} lookups expand to nothing and the
+# expression reads `... & 0 & >0 & 0>=]` — a syntax error, so Asterisk logs
+# `ast_expr2.fl: ast_yyerror(): syntax error: ... unexpected '>'` on *every*
+# call and evaluates the whole thing false. The outbound concurrency limit (a
+# defence against a compromised extension) has therefore never been enforced on
+# this box, and the warning is the whole symptom.
+#
+# FreePBX writes the row itself in Core::addUser (Core.class.php), defaulting to
+# the CONCURRENCYLIMITDEFAULT setting — but only on that path. An extension the
+# legacy migration inserted straight into the database never went through it, so
+# the row was never created. Seed it exactly the way FreePBX would; the row is
+# per extension and idempotent, so this is safe to re-run every boot.
+if command -v asterisk >/dev/null 2>&1; then
+  conc_default="$(mysql -u root asterisk -N -B 2>/dev/null \
+    -e "SELECT value FROM freepbx_settings WHERE keyword='CONCURRENCYLIMITDEFAULT'" 2>/dev/null | head -1)"
+  [ -n "$conc_default" ] || conc_default="0"
+  conc_seeded=0
+  for _ext in $(asterisk -rx "database show AMPUSER" 2>/dev/null \
+                  | sed -n 's#^/AMPUSER/\([^/]*\)/.*#\1#p' | sort -u); do
+    if ! asterisk -rx "database show AMPUSER/${_ext}/concurrency_limit" 2>/dev/null | grep -q concurrency_limit; then
+      asterisk -rx "database put AMPUSER ${_ext}/concurrency_limit ${conc_default}" >/dev/null 2>&1 \
+        && conc_seeded=$((conc_seeded + 1))
+    fi
+  done
+  if [ "$conc_seeded" != 0 ]; then
+    echo ">>> concurrency_limit=${conc_default} seeded onto ${conc_seeded} extension(s) — [macro-user-callerid] had none to read"
+  fi
+fi
+
 # ── Dograh external-media WebSocket ─────────────────────────────────────────
 # The add-on's entrypoint owns this file normally, but it lives on the shared
 # asterisk-config volume and its default URI is `host.docker.internal`, which
@@ -513,10 +563,16 @@ if [ -n "${TURN_USERNAME:-}" ]; then
   # stores them this way too and unhexes on read).
   _turn_user_hex="$(printf '%s' "${TURN_USERNAME:-}" | od -An -tx1 | tr -d ' \n')"
   _turn_pass_hex="$(printf '%s' "${TURN_CREDENTIAL:-}" | od -An -tx1 | tr -d ' \n')"
+  # NOTE: FreePBX does not write these rows back verbatim. Its
+  # Sipsettings::genConfig() runs the RTP values through strtolower() — TURN
+  # password included — so `fwconsole reload` produces a credential that coturn
+  # rejects. That is why the reload has to be followed by
+  # `pbx/rtp_settings_guard.py`; the kvstore below is the source of truth, the
+  # generated file is not.
   mysql -u root asterisk -N -B 2>/dev/null <<SQL \
-    && echo ">>> TURN plane wired: RTP/ICE via ${STUN_TURN_ADDR}, WebRTC via ${TURN_PUBLIC_URI} (user ${TURN_USERNAME})"
+    && echo ">>> TURN plane wired: STUN via ${STUN_ADDR}, TURN via ${STUN_TURN_ADDR}, WebRTC via ${TURN_PUBLIC_URI} (user ${TURN_USERNAME})"
 INSERT INTO kvstore_Sipsettings (\`key\`, val, type, id) VALUES
- ('stunaddr','${STUN_TURN_ADDR}',NULL,'noid'),
+ ('stunaddr','${STUN_ADDR}',NULL,'noid'),
  ('turnaddr','${STUN_TURN_ADDR}',NULL,'noid'),
  ('turnusername',UNHEX('${_turn_user_hex}'),NULL,'noid'),
  ('turnpassword',UNHEX('${_turn_pass_hex}'),NULL,'noid'),
@@ -1332,6 +1388,30 @@ WSSEOF
   # file, but Asterisk still holds the previous rtpstart/rtpend).
   write_rtp_plane
   fwconsole reload >/tmp/fwconsole-rtp-reload.log 2>&1 || true
+
+  # Re-assert the two rows of rtp_additional.conf that FreePBX just mangled.
+  # `genConfig()` strtolower()s turnusername/turnpassword (a TURN password is
+  # case-sensitive, so coturn answered "credentials are incorrect" once per call
+  # and the WebRTC relay candidates were dead), and the stunaddr row has to name
+  # a server that speaks RFC 3489. Both are silent failures — nothing on either
+  # side of the wire says the relay is gone — see pbx/rtp_settings_guard.py.
+  if [ -f /opt/zeus/pbx/rtp_settings_guard.py ]; then
+    set +e
+    python3 /opt/zeus/pbx/rtp_settings_guard.py \
+      --rtp-conf "${ASTERISK_ETC}/rtp_additional.conf" \
+      --stun-addr "${STUN_ADDR}" \
+      --turn-username "${TURN_USERNAME:-}" \
+      --turn-password "${TURN_CREDENTIAL:-}" --apply
+    rtp_guard_rc=$?
+    set -e
+    if [ "${rtp_guard_rc}" = 0 ]; then
+      echo ">>> rtp_additional.conf converged (STUN ${STUN_ADDR}, TURN credential case restored)"
+    else
+      echo ">>> WARNING: rtp_additional.conf not converged (rc=${rtp_guard_rc}); coturn will reject every call (pbx/rtp_settings_guard.py)" >&2
+    fi
+    # res_rtp_asterisk caches the rows; a fresh file is not live until it reloads.
+    asterisk -rx "module reload res_rtp_asterisk.so" >/dev/null 2>&1 || true
+  fi
 
   # Start Apache in background (web UI is now safe to trigger reloads)
   apache2ctl -D FOREGROUND &

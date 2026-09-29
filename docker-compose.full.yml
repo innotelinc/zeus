@@ -142,6 +142,14 @@ services:
       # host.docker.internal, ast_sockaddr_resolve fails on it and silently
       # disables STUN.
       PJSIP_STUN_TURN_ADDR: ${PJSIP_STUN_TURN_ADDR:-}
+      # STUN discovery server for the RTP engine. Deliberately NOT the TURN
+      # address: Asterisk's STUN client is RFC 3489 (no magic cookie) and coturn
+      # is RFC 5389, so coturn silently drops the request and every call logs
+      # three "stun.c: Attempt N ... timed out" retries. The default answers both
+      # generations and returns MAPPED-ADDRESS, the attribute the legacy client
+      # parses. Set empty to disable discovery entirely; see
+      # pbx/rtp_settings_guard.py.
+      PJSIP_STUN_ADDR: ${PJSIP_STUN_ADDR:-}
       # The address Asterisk advertises to a LAN phone for its media (answer
       # SDP), converged per endpoint by pbx/media_address.py from the entrypoint
       # on every boot. PROJECT RULE: a real LAN address, never a docker range —
