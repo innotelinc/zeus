@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
-import { requireUser, badRequest } from "@/lib/api-helpers";
+import { requireUserOrService, badRequest } from "@/lib/api-helpers";
+import { SCOPE } from "@/lib/service-auth";
 import db from "@/lib/db";
 import * as voipms from "@/lib/voipms";
 import { randomUUID } from "node:crypto";
@@ -8,7 +9,9 @@ import type { PhoneNumber } from "@/lib/types";
 export const dynamic = "force-dynamic";
 
 export async function DELETE(req: Request) {
-  const { user, error } = await requireUser();
+  // Releasing a number is a write, so it asks for the ordering scope: a token
+  // that may only read numbers cannot hand one back.
+  const { user, error } = await requireUserOrService(req, SCOPE.numbersOrder);
   if (error) return error;
 
   const { searchParams } = new URL(req.url);
@@ -40,10 +43,18 @@ export async function DELETE(req: Request) {
 }
 
 export async function POST(req: Request) {
-  const { user, error } = await requireUser();
-  if (error) return error;
-
   const body = await req.json().catch(() => ({}));
+
+  // The action decides the scope, so the body is read first: searching is a
+  // read (`numbers:read`), ordering spends money on a DID (`numbers:order`), and
+  // an unrecognised action is treated as the write it might be rather than the
+  // read it claims. A token scoped only to read cannot order a number by
+  // changing the action string.
+  const { user, error } = await requireUserOrService(
+    req,
+    body.action === "search" ? SCOPE.numbersRead : SCOPE.numbersOrder,
+  );
+  if (error) return error;
 
   // Search for available DIDs
   if (body.action === "search") {

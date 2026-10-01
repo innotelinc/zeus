@@ -20,16 +20,41 @@ Every endpoint is scoped to the authenticated account and returns
 
 | Method | How the account is carried |
 | --- | --- |
-| **Session cookie (default)** | `Cookie: pbx_session=<token>` — the portal's HMAC-signed session (7-day TTL, `SESSION_SECRET`). Works for browsers *and* machine clients that forward the cookie header. |
-| **Bearer token (agent resolver)** | `Authorization: Bearer <token>` — same signed session token as the cookie value. Today only `POST /api/agent/transfer-resolve` reads it; the messages/fax/voicemail handlers authenticate on the cookie. |
+| **Session cookie (default)** | `Cookie: pbx_session=<token>` — the portal's HMAC-signed session (7-day TTL, `SESSION_SECRET`). A browser, or a machine client forwarding a session it was given. |
+| **Service token (machine clients)** | `Authorization: Bearer <token>` — a scoped token from `SERVICE_TOKENS`. Accepted by the routes a machine needs — `POST`/`GET /api/fax…` and `/api/phone/numbers` — each requiring a scope. See below. |
+| **Context secret (agent resolver)** | `Authorization: Bearer $VOICE_CONTEXT_SECRET` — `GET /api/voice/context/[token]` only. |
 
-Machine-to-machine note for Capstone: to call the endpoints below from
-dograh, send the account's session token as the cookie value directly —
-`Cookie: pbx_session=<token>` — since those handlers do not (yet) inspect
-`Authorization`. `POST /api/agent/transfer-resolve` accepts either.
+### Service tokens
 
-Sessions are issued after Cerulean Authentik OIDC login; there is no
-API-key scheme and no separate service account today.
+A session belongs to a browser and a person: it expires and it carries no scope.
+A machine client (Genesis filing an EIN, and polling for the transmission result)
+should not hold one. It presents a bearer token instead, configured in
+`SERVICE_TOKENS` as a JSON array:
+
+```json
+[{"name":"genesis",
+  "token":"<openssl rand -hex 32>",
+  "email":"businessops@innotel.us",
+  "scopes":["fax:send","fax:read","numbers:read","numbers:order"]}]
+```
+
+| Scope | Allows |
+| --- | --- |
+| `fax:send` | `POST /api/fax/send` |
+| `fax:read` | `GET /api/fax/[id]` |
+| `numbers:read` | `POST /api/phone/numbers` with `action:"search"` |
+| `numbers:order` | `POST /api/phone/numbers` with `action:"order"`, and `DELETE /api/phone/numbers` |
+
+`email` must name an existing portal account: the token acts *as* that account,
+so every row filter still applies and a foreign account's ids still 404. An
+unknown token is `401`; a token missing the route's scope, or naming an account
+that does not exist, is `403`. Scopes are additive-only per route — a token with
+`numbers:read` cannot order a number by changing `action`, and cannot release one
+with `DELETE`.
+
+Sessions are still issued after Cerulean Authentik OIDC login, and a route that
+accepts a service token still accepts a session: nothing about the browser path
+changed.
 
 ## 2. Conventions
 
@@ -147,6 +172,35 @@ Paginated list of the account's faxes (`direction`, `status`, `to_number`,
 
 Ownership-checked; returns the raw PDF (`Content-Type: application/pdf`,
 inline). `404` when the record or file is missing.
+
+### `GET /api/fax/[id]` — the delivery answer
+
+`sent: true` from the send route means the **spool accepted** the job, not that
+the fax arrived — HylaFAX reports the transmission later, and a job can still come
+back `failed` (busy, no answer, wrong number). A filing that stops at `sent` can be
+recorded as done while the transmission failed, which for a document on its way to
+the IRS is the one outcome that must not happen. This route asks the spool (by the
+job id stored on the row) and answers with both the row and the delivery state:
+
+```json
+200
+{ "fax": { "id": "…", "status": "delivered", "job_id": "42", "to_number": "+1…", … },
+  "delivery": { "state": "delivered", "status": "completed", "pages": 3,
+                "result": "…dialstring…" } }
+```
+
+`delivery.state` is the three-way answer a caller acts on:
+
+| `state` | Meaning |
+| --- | --- |
+| `sending` | The spool still has it (queued or retrying). Poll again. |
+| `delivered` | Every page went through. |
+| `failed` | The spool gave up; `delivery.result` says why. |
+| `unknown` | No job id on the row (never handed over), or the spool did not answer. |
+
+A terminal answer also converges the stored row (`status` becomes `delivered` or
+`failed`), so the portal's own list agrees with the spool. `404` for a fax that is
+not the account's.
 
 ---
 
