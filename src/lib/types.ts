@@ -123,6 +123,12 @@ export interface Fax {
   created_at: string;
   completed_at: string | null;
   scheduled_at: string | null;
+  /**
+   * The AvantFax/HylaFAX job the send produced. Set when the spool accepts the
+   * fax; `GET /api/fax/[id]` reconciles it against the spool for a delivery
+   * answer. Null for a fax that was never handed over (or predates the column).
+   */
+  job_id?: string | null;
 }
 
 export interface Voicemail {

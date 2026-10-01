@@ -112,7 +112,10 @@ CREATE TABLE IF NOT EXISTS faxes (
   notes TEXT,
   created_at TEXT NOT NULL DEFAULT (datetime('now')),
   completed_at TEXT,
-  scheduled_at TEXT
+  scheduled_at TEXT,
+  -- The AvantFax/HylaFAX job id (migration 012). `GET /api/fax/[id]` reconciles
+  -- it against the spool for a delivery answer; null means never handed over.
+  job_id TEXT
 );
 
 CREATE TABLE IF NOT EXISTS voicemails (

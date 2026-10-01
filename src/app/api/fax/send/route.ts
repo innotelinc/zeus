@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
-import { requireUser, badRequest } from "@/lib/api-helpers";
+import { requireUserOrService, badRequest } from "@/lib/api-helpers";
+import { SCOPE } from "@/lib/service-auth";
 import { sendFax } from "@/lib/avantfax";
 import db from "@/lib/db";
 import { randomUUID } from "node:crypto";
@@ -14,7 +15,9 @@ export const dynamic = "force-dynamic";
 const MAX_FILE_SIZE = 10 * 1024 * 1024;
 
 export async function POST(req: Request) {
-  const { user, error } = await requireUser();
+  // A browser sends its session; a machine client (Genesis filing an EIN) sends
+  // a service token scoped to `fax:send`.
+  const { user, error } = await requireUserOrService(req, SCOPE.faxSend);
   if (error) return error;
 
   const contentType = req.headers.get("content-type") ?? "";
@@ -120,9 +123,13 @@ export async function POST(req: Request) {
       });
 
       if (result.success) {
+        // The AvantFax/HylaFAX job id is what a later status read reconciles
+        // against the spool. Without it the row can only ever say "handed off",
+        // so a filing could never be confirmed delivered — store it.
         db.prepare(
-          "UPDATE faxes SET status = 'sent', completed_at = datetime('now') WHERE id = ?",
-        ).run(faxId);
+          "UPDATE faxes SET status = 'sent', completed_at = datetime('now'), " +
+            "job_id = ? WHERE id = ?",
+        ).run(result.jobId ?? null, faxId);
         sent = true;
       }
     } catch {
@@ -136,7 +143,10 @@ export async function POST(req: Request) {
 }
 
 export async function GET(req: Request) {
-  const { user, error } = await requireUser();
+  // The fax history is a read, so a service token needs `fax:read` and not
+  // `fax:send` — a token that files on the account's behalf is not automatically
+  // a token that may page through every fax the account has ever sent.
+  const { user, error } = await requireUserOrService(req, SCOPE.faxRead);
   if (error) return error;
 
   const { searchParams } = new URL(req.url);
