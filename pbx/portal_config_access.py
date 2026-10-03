@@ -186,24 +186,20 @@ def portal_groups(explicit: str | None) -> set[int]:
     return gids
 
 
-def judge(path: str, portal_uid: int, groups: Collection[int], want_gid: int) -> tuple[bool, str]:
-    """Whether the portal can write `path`, and why not when it cannot.
+def judge_stat(info: os.stat_result, portal_uid: int, groups: Collection[int]) -> tuple[bool, str]:
+    """Whether a process running as `portal_uid` in `groups` may write this file.
 
     The test is the one the kernel makes: a process may write a file when it
     owns it and the owner write bit is set, **or** it is in the file's group and
     the group write bit is set, **or** the other write bit is set. Anything else
     is `EACCES`, and saying *which* clause is missing is the whole value of this
     tool — "repair does nothing" is the symptom, not the fault.
-    """
-    try:
-        info = os.stat(path)
-    except FileNotFoundError:
-        # Not written yet is a real state: the portal creates it on first write
-        # and the directory is group-writable, so this is not drift.
-        return True, "not written yet (the directory is group-writable)"
-    except OSError as exc:
-        return False, f"cannot stat {path}: {exc}"
 
+    Pure, and separated from `judge()`'s `stat`, so the ownership/mode matrix
+    can be pinned for every combination — including the ones a test process
+    cannot create for itself, because changing a file's uid/gid needs root and
+    CI does not run as root.
+    """
     mode = stat.S_IMODE(info.st_mode)
     if info.st_uid == portal_uid and mode & stat.S_IWUSR:
         return True, f"owned by the portal (uid {portal_uid})"
@@ -220,6 +216,30 @@ def judge(path: str, portal_uid: int, groups: Collection[int], want_gid: int) ->
         f"{oct(mode)} {owner}:{info.st_gid} — the portal (uid {portal_uid}, "
         f"groups {sorted(groups)}) holds no write bit",
     )
+
+
+def judge(path: str, portal_uid: int, groups: Collection[int]) -> tuple[bool, str]:
+    """`judge_stat` for `path`, with the two states a stat cannot report."""
+    try:
+        info = os.stat(path)
+    except FileNotFoundError:
+        # Not written yet is a real state: the portal creates it on first write
+        # and the directory is group-writable, so this is not drift.
+        return True, "not written yet (the directory is group-writable)"
+    except OSError as exc:
+        return False, f"cannot stat {path}: {exc}"
+    return judge_stat(info, portal_uid, groups)
+
+
+def plan(info: os.stat_result, want_gid: int) -> tuple[int, bool]:
+    """The mode `info` needs to be portal-writable, and whether its group moves.
+
+    Pure, for the same reason as `judge_stat`: what the fix *should* do is a
+    decision about (mode, gid), and a decision that can only be tested as root
+    is a decision nobody has tested.
+    """
+    want = stat.S_IMODE(info.st_mode) | stat.S_IWGRP
+    return want, want_gid != -1 and info.st_gid != want_gid
 
 
 def converge(path: str, want_gid: int) -> tuple[bool, str]:
@@ -239,21 +259,23 @@ def converge(path: str, want_gid: int) -> tuple[bool, str]:
     except OSError as exc:
         return False, f"cannot stat: {exc}"
 
-    mode = stat.S_IMODE(info.st_mode)
-    want = mode | stat.S_IWGRP
+    want, move_group = plan(info, want_gid)
     changed = False
-    if want != mode:
+    if want != stat.S_IMODE(info.st_mode):
         try:
             os.chmod(path, want)
             changed = True
         except OSError as exc:
             return False, f"chmod failed: {exc}"
-    if want_gid != -1 and info.st_gid != want_gid:
+    if move_group:
         try:
             os.chown(path, -1, want_gid)
-            changed = True
         except OSError as exc:
-            return False, f"chgrp failed: {exc}"
+            # The mode already landed, so this is still a change — reporting
+            # `False` would send an operator looking for a tool that did
+            # nothing, which is the bug this file exists to end.
+            return True, f"{oct(want)} but chgrp to gid {want_gid} failed: {exc}"
+        changed = True
     if not changed:
         return False, "already group-writable"
     return True, f"{oct(want)} gid {want_gid}"
@@ -307,7 +329,7 @@ def main(argv: list[str] | None = None) -> int:
     out_of_sync: list[str] = []
     for name in PORTAL_FILES:
         path = os.path.join(args.asterisk_dir, name)
-        writable, detail = judge(path, portal_uid, groups, want_gid)
+        writable, detail = judge(path, portal_uid, groups)
         if writable:
             print(f"portal-access: {name} — the portal can write it ({detail})")
         else:
