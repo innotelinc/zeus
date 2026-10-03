@@ -31,6 +31,7 @@ import unittest
 from unittest import mock
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
+import asterisk_converge as ac  # noqa: E402
 import outbound_route as or_  # noqa: E402
 
 TRUNK_ID = 7
@@ -235,6 +236,125 @@ class JudgeTest(unittest.TestCase):
         self.assertEqual(plan.order, (10, 12, 11, 13))
 
 
+class InternalNumbersTest(unittest.TestCase):
+    """A number the estate already answers inwards is answered locally, first.
+
+    A route is a pattern (it cannot be told to *not* match a number), so an
+    internal number can only be kept off the trunk, and off the inter-digit
+    hold, by an exact destination written ahead of every route.
+    """
+
+    def test_a_pattern_row_is_not_a_number(self):
+        # `_X.`/`_2XX` is not something a person dials — writing it as an exact
+        # destination would put a wildcard in front of the routes.
+        routes = or_.parse_incoming_numbers("_X.\tdograh-inbound,8003,1\n_2XX\text-group,329,1\n")
+        self.assertEqual(routes, {})
+
+    def test_a_country_code_is_stripped_to_the_dialled_form(self):
+        routes = or_.parse_incoming_numbers("14132951200\tdograh-inbound,8003,1\n")
+        self.assertEqual(routes, {"4132951200": "dograh-inbound,8003,1"})
+
+    def test_a_blank_destination_is_dropped(self):
+        self.assertEqual(or_.parse_incoming_numbers("4132951200\t\n"), {})
+
+    def test_a_destination_that_could_inject_a_dialplan_line_is_dropped(self):
+        self.assertEqual(
+            or_.parse_incoming_numbers("4132951200\tdograh-inbound,8003,1;Hangup()\n"),
+            {})
+
+    def test_an_extension_backed_number_dials_ext_local(self):
+        internal = or_.build_internal({"4132951200": "dograh-inbound,8003,1"},
+                                      {"4132951200"})
+        self.assertEqual(internal, (or_.InternalNumber("4132951200", "ext-local,4132951200,1"),))
+
+    def test_a_number_without_an_extension_goes_to_its_inbound_destination(self):
+        internal = or_.build_internal({"4132951200": "dograh-inbound,8003,1"}, set())
+        self.assertEqual(internal, (or_.InternalNumber("4132951200", "dograh-inbound,8003,1"),))
+
+    def test_the_rendered_lines_are_exact_and_never_a_wildcard(self):
+        source = or_.render_internal_source(
+            (or_.InternalNumber("4132951200", "dograh-inbound,8003,1"),))
+        self.assertIn("[from-internal-custom]", source)
+        self.assertIn("exten => 4132951200,1,NoOp", source)
+        self.assertIn(" same => n,Goto(dograh-inbound,8003,1)", source)
+        self.assertNotIn("exten => _", source)
+
+    def test_no_internal_numbers_means_no_finding(self):
+        self.assertEqual(or_.judge_internal(_state([])), [])
+
+    def test_an_unreadable_conf_is_a_finding_not_a_pass(self):
+        state = or_.State(routes=(), trunk_id=TRUNK_ID, trunk_name=TRUNK,
+                          internal=(or_.InternalNumber("4132951200", "dograh-inbound,8003,1"),),
+                          extensions_conf=None)
+        findings = or_.judge_internal(state)
+        self.assertEqual([f.state for f in findings], ["internal-numbers"])
+
+    def test_the_segment_is_in_sync_once_written(self):
+        internal = (or_.InternalNumber("4132951200", "dograh-inbound,8003,1"),)
+        want = or_.merge_internal("[from-zeus-portal]\n", internal)
+        state = or_.State(routes=(), trunk_id=TRUNK_ID, trunk_name=TRUNK,
+                          internal=internal, extensions_conf=want)
+        self.assertEqual(or_.judge_internal(state), [])
+
+    def test_another_owners_segment_is_never_disturbed(self):
+        # The one shared extensions_custom.conf: Zeus and Capstone write their
+        # own marked segments, and this tool may only touch its own.
+        target = ac.merge_into(
+            "", "[from-internal-custom]\ninclude => from-zeus-portal\n",
+            owner="zeus", append_shared={"from-internal-custom"})
+        internal = (or_.InternalNumber("4132951200", "dograh-inbound,8003,1"),)
+        merged = or_.merge_internal(target, internal)
+        self.assertIn("; >>> begin zeus\ninclude => from-zeus-portal\n; >>> end zeus", merged)
+        self.assertIn("; >>> begin internal", merged)
+        # Byte-idempotent: a re-run changes nothing.
+        self.assertEqual(or_.merge_internal(merged, internal), merged)
+
+    def test_a_number_another_segment_already_answers_is_not_duplicated(self):
+        # The measured case: 8000-8008 are rows in the same `incoming` table, but
+        # Capstone's segment already dials them. A second `exten => 8000` is
+        # silently half-dead (Asterisk keeps the first), so it must not be written.
+        target = ac.merge_into(
+            "", "[from-internal-custom]\ninclude => from-zeus-portal\n",
+            owner="zeus", append_shared={"from-internal-custom"})
+        target = ac.merge_into(
+            target,
+            "[from-internal-custom]\nexten => 8000,1,NoOp(Capstone agent)\n"
+            " same => n,Goto(dograh-inbound,8000,1)\n",
+            owner="capstone", append_shared={"from-internal-custom"})
+        internal = (or_.InternalNumber("8000", "dograh-inbound,8000,1"),
+                    or_.InternalNumber("4132951200", "ext-local,4132951200,1"))
+        merged = or_.merge_internal(target, internal)
+        self.assertEqual(merged.count("exten => 8000,1"), 1)
+        self.assertIn("exten => 4132951200,1", merged)
+        # Idempotent: our own segment is not counted as already-answering.
+        self.assertEqual(or_.merge_internal(merged, internal), merged)
+
+    def test_a_number_an_included_file_answers_is_not_duplicated(self):
+        # `extensions_custom_dograh.conf` (an `#include`) dials 8008 in
+        # [from-internal-custom]; our segment must not add a second definition.
+        internal = (or_.InternalNumber("8008", "dograh-inbound,8008,1"),
+                    or_.InternalNumber("4132951200", "ext-local,4132951200,1"))
+        included = (
+            "[dograh-inbound]\nexten => 8008,1,Stasis(app)\n\n"
+            "[from-internal-custom]\nexten => 8008,1,NoOp()\n"
+            " same => n,Goto(dograh-inbound,8008,1)\n")
+        merged = or_.merge_internal("[from-internal-custom]\n", internal, included)
+        self.assertNotIn("exten => 8008", merged)
+        self.assertIn("exten => 4132951200", merged)
+
+    def test_read_includes_regex_only_matches_include_lines(self):
+        self.assertTrue(or_.INCLUDE_RE.match("#include extensions_custom_dograh.conf"))
+        self.assertTrue(or_.INCLUDE_RE.match("  #include pjsip_x.conf  "))
+        self.assertIsNone(or_.INCLUDE_RE.match("; #include commented-out.conf"))
+        self.assertIsNone(or_.INCLUDE_RE.match("include => from-zeus-portal"))
+
+    def test_our_own_segment_is_not_counted_as_reserved(self):
+        written = or_.merge_internal(
+            "[from-internal-custom]\n",
+            (or_.InternalNumber("4132951200", "ext-local,4132951200,1"),))
+        self.assertEqual(or_.reserved_numbers(written), set())
+
+
 class RenderSqlTest(unittest.TestCase):
     def test_the_apply_replaces_patterns_trunks_and_the_whole_sequence(self):
         plan = or_.Plan(route_id=1, name="PSTN", patterns=or_.desired_patterns(),
@@ -371,6 +491,44 @@ class MainTest(unittest.TestCase):
         self.assertTrue(any("DELETE FROM outbound_routes WHERE route_id IN (1)" in s
                             for s in seen), seen)
         self.assertIn("removed duplicate route(s) voipms", out)
+
+    def _internal_state(self, conf):
+        internal = (or_.InternalNumber("4132951200", "dograh-inbound,8003,1"),)
+        pstn = _route(1, "PSTN", 0, patterns=or_.desired_patterns(),
+                      trunks=[(TRUNK_ID, TRUNK)])
+        return or_.State(routes=(pstn,), trunk_id=TRUNK_ID, trunk_name=TRUNK,
+                         internal=internal, extensions_conf=conf)
+
+    def test_internal_number_drift_is_a_finding_and_a_check_writes_nothing(self):
+        def boom(*_a, **_k):
+            raise AssertionError("a check must not write")
+        rc, _, err = self._run(
+            ["--local", "--check"],
+            [self._internal_state("[from-zeus-portal]\n")], mysql=boom)
+        self.assertEqual(rc, 1)
+        self.assertIn("internal-numbers", err)
+
+    def test_apply_writes_the_internal_segment_ahead_of_the_routes(self):
+        internal = (or_.InternalNumber("4132951200", "dograh-inbound,8003,1"),)
+        before = self._internal_state("[from-zeus-portal]\n")
+        after = or_.State(routes=before.routes, trunk_id=TRUNK_ID, trunk_name=TRUNK,
+                          internal=internal,
+                          extensions_conf=or_.merge_internal(before.extensions_conf, internal))
+        written = []
+        with mock.patch.object(
+                or_, "write_pbx_file",
+                side_effect=lambda path, text, **k: written.append((path, text))):
+            rc, out, err = self._run(["--local", "--apply"], [before, after])
+        self.assertEqual(rc, 0, err)
+        self.assertEqual(written[0][0], or_.EXTENSIONS_CONF_PATH)
+        self.assertIn("exten => 4132951200,1,NoOp", written[0][1])
+        self.assertIn("answered ahead", out)
+
+    def test_an_unwritable_conf_refuses_rather_than_claiming_convergence(self):
+        before = self._internal_state(None)
+        rc, _, err = self._run(["--local", "--apply"], [before])
+        self.assertEqual(rc, 2)
+        self.assertIn("extensions_custom.conf could not be read", err)
 
     def test_a_named_duplicate_that_survives_is_a_failure(self):
         rc, _, err = self._run(

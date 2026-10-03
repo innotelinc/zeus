@@ -66,6 +66,10 @@
 # Env: D7_CALL=1 places the CDR test call (a Local channel at 12@default — no
 #      trunk, no phone, no agent). D7_PBX names the FreePBX container, and
 #      PORTAL_DB the portal's database the DID list is read from.
+#      OUTBOUND_SAMPLE names the number the outbound check dials. INTERNAL_SAMPLE
+#      (an extension-backed number) and INTERNAL_DEST_SAMPLE (one that is not) name
+#      the internal-number check's two legs; all default to numbers read off the
+#      live PBX.
 #
 # Exit code: 0 = all checks passed, 1 = one or more failures.
 # ═══════════════════════════════════════════════════════════════════
@@ -506,6 +510,74 @@ if [ "$SCOPE" = all ] || [ "$SCOPE" = pbx ]; then
       else
         fail "dialling $outbound_sample reaches ${outbound_first} but not with the country code prepended — the carrier will not terminate ten digits (pbx/outbound_route.py restores the legacy PSTN patterns)"
       fi
+    fi
+
+    # ── Internal numbers are answered ahead of the routes ────────
+    # The other half of the same decision. A number this estate already answers
+    # inwards (`4132951200`) is a ten-digit number too, so it ALSO matches a
+    # route's `NXXNXXXXXX` pattern. FreePBX's generated [from-internal] includes
+    # [from-internal-custom] ahead of the module-generated contexts, so an exact
+    # `exten =>` there answers the call at once; without it the call is held for
+    # the inter-digit timeout and — if the route wins — leaves by the trunk (and,
+    # for a DID, may come straight back in). `pbx/outbound_route.py` writes those
+    # exact destinations from FreePBX's own `incoming` table. The numbers are read
+    # from that table rather than hard-coded here, because hard-coded ones would
+    # drift the moment the route table changed.
+    internal_nums="$(docker exec "$FBX" mysql -N -B -u root asterisk -e \
+      "SELECT extension FROM incoming WHERE LENGTH(extension) BETWEEN 10 AND 11 AND extension NOT REGEXP '[^0-9]' ORDER BY extension" 2>/dev/null || true)"
+    internal_devs="$(docker exec "$FBX" mysql -N -B -u root asterisk -e \
+      "SELECT id FROM devices WHERE tech IN ('sip','pjsip')" 2>/dev/null || true)"
+
+    # The first context Asterisk would answer a number in; nonzero when the live
+    # dialplan could not be read at all.
+    internal_first_context() {
+      local num="$1" dp
+      dp="$(docker exec "$FBX" asterisk -rx "dialplan show ${num}@from-internal" 2>/dev/null || true)"
+      [ -n "$dp" ] || return 1
+      sed -nE "s/^\[ Included context '([^']+)'.*/\1/p; s/^\[ Context '([^']+)'.*/\1/p" <<<"$dp" | head -1
+    }
+
+    # $1 = label, $2 = the number (empty skips)
+    internal_check() {
+      local label="$1" num="$2" first
+      if [ -z "$num" ]; then
+        skip "internal number dialling ($label: none on $FBX)"
+        return
+      fi
+      if ! first="$(internal_first_context "$num")" || [ -z "$first" ]; then
+        fail "the live dialplan for internal number $num could not be read on $FBX — cannot tell whether it is answered locally"
+      elif [ "$first" = "from-internal-custom" ]; then
+        pass "internal number $num ($label) is answered in [from-internal-custom] ahead of the outbound routes"
+      else
+        fail "dialling internal number $num ($label) is answered by '${first:-nothing}', not [from-internal-custom] — it matches an outbound route's pattern, so the call is held for the inter-digit timeout (or leaves by the trunk); run pbx/outbound_route.py --apply"
+      fi
+    }
+
+    # Two shapes, because the segment handles them on two legs: a number that is
+    # also a user/device goes to [ext-local] (the extension rings); one that is
+    # not goes to the destination its inbound route already names (the
+    # Goto(<destination>) leg). Checking only the first numeric route would leave
+    # the other leg unexercised.
+    internal_ext_sample="${INTERNAL_SAMPLE:-}"
+    if [ -z "$internal_ext_sample" ]; then
+      while IFS= read -r cand; do
+        [ -n "$cand" ] || continue
+        grep -qxF "$cand" <<<"$internal_devs" && { internal_ext_sample="$cand"; break; }
+      done <<<"$internal_nums"
+    fi
+    internal_dest_sample="${INTERNAL_DEST_SAMPLE:-}"
+    if [ -z "$internal_dest_sample" ]; then
+      while IFS= read -r cand; do
+        [ -n "$cand" ] || continue
+        grep -qxF "$cand" <<<"$internal_devs" || { internal_dest_sample="$cand"; break; }
+      done <<<"$internal_nums"
+    fi
+
+    if [ -z "$internal_nums" ]; then
+      skip "internal number dialling (no numeric inbound route on $FBX)"
+    else
+      internal_check "extension-backed -> ext-local" "$internal_ext_sample"
+      internal_check "destination -> Goto" "$internal_dest_sample"
     fi
   else
     skip "PBX RTP plane (container $FBX not running)"
