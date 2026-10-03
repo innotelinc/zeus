@@ -1,5 +1,10 @@
 #!/usr/bin/env python3
-"""pbx/outbound_route.py — the route that normalises what a phone actually dials.
+"""pbx/outbound_route.py — what a dialled number does: out by the trunk, or in.
+
+The route half normalises what a phone actually dials. The internal-number half
+keeps a number this estate already answers inwards off that route, so an
+internal call is answered at once instead of being held for the inter-digit
+timeout and, if the route wins, leaving by the carrier.
 
 A phone on this estate dials a number the way a person does: ten digits,
 `4134210134`. The trunk does not want ten digits. VoIP.ms terminates a North
@@ -33,6 +38,27 @@ change, made explicit and idempotent rather than left to a GUI edit:
     which hung up every dialled number, and a duplicate `voipms` route ahead of
     `PSTN` that took the calls PSTN was meant to handle.
 
+## The internal numbers, on the same principle
+
+A number this estate already answers inwards — `4132951200` — is *also* matched
+by the outbound route's ten-digit pattern. FreePBX's generated `[from-internal]`
+includes `[from-internal-custom]` first and the routes after it, so a number that
+is only a route pattern is held for the inter-digit timeout before the route is
+reached; and when the route does win, the call leaves by the carrier and (for a
+DID) may come straight back in. Which of the two a caller gets should not depend
+on a timeout. A route cannot be told to *not* match a number, so the fix is not a
+pattern: it is an exact `exten =>` in `[from-internal-custom]`, which Asterisk
+matches immediately, ahead of every route.
+
+The numbers are not invented here. They are the rows in FreePBX's own `incoming`
+table — a number that already has an inbound route is one this estate owns. A
+number that is also a user/device goes to FreePBX's own `[ext-local]`, so dialling
+it rings the extension the operator provisioned; every other number goes to the
+destination its inbound route already names. The entries are written as an
+append-shared segment of the one shared `extensions_custom.conf` through
+`pbx/asterisk_converge.py` under owner `internal`, so Zeus's and Capstone's
+segments in that file are never disturbed, and a re-run is byte-identical.
+
 ## Reading and writing
 
     # judge, write nothing (0 in sync, 1 an apply converges it, 2 cannot tell)
@@ -59,21 +85,65 @@ route with its own caller ID (see `docs/legacy-voice-migration.md`) is an
 operator's decision this file has no business making. `--drop-route NAME` is
 that decision made explicit: it removes only the route named, only when asked,
 never on a timer tick, and reports it like any other finding.
+
+And it does not invent an internal number: only a row already in `incoming`
+becomes an internal destination. A number with no inbound route is somebody
+else's to add, and a pattern (`_X.`, `_2XX`) is never written as an exact
+destination — putting a wildcard ahead of the routes is the failure this tool
+exists to prevent, not repeat.
 """
 from __future__ import annotations
 
 import argparse
 import os
+import re
 import subprocess
 import sys
 from dataclasses import dataclass
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import asterisk_converge as ac  # noqa: E402
 import pbx_db  # noqa: E402
 
 # The route this tool owns, and the trunk an outbound call must leave by.
 DEFAULT_ROUTE = "PSTN"
 DEFAULT_TRUNK = "voipms_pjsip"
+
+# ── internal numbers (a number the estate already answers inwards) ──────────
+# FreePBX answers a dialled number by walking [from-internal]'s includes in
+# order. [from-internal-custom] comes first; the outbound routes come after.
+# A number that has an *exact* `exten =>` in the custom context is therefore
+# matched immediately, while a number that only matches a route's pattern is
+# held for the inter-digit timeout first — which is the delay a caller hears
+# before an internal line answers, and, when the route ends up winning, the
+# reason an internal call leaves by the trunk at all.
+#
+# So an internal number is not a route problem to solve with patterns (a route
+# cannot be told to *not* match a number): it is an exact destination written
+# ahead of every route. Which numbers are internal is not invented here — it is
+# FreePBX's own `incoming` table, because a number that already has an inbound
+# route is one this estate owns. A number that is also a user/device goes to
+# FreePBX's own [ext-local] (the extension dials, exactly as it does today);
+# everything else goes to the destination its inbound route already names.
+#
+# The entries are written as an append-shared segment of [from-internal-custom]
+# through `pbx/asterisk_converge.py` (owner `internal`), so the Zeus and Capstone
+# segments in the one shared extensions_custom.conf are never disturbed.
+INTERNAL_OWNER = "internal"
+EXTENSIONS_CONF_PATH = "/etc/asterisk/extensions_custom.conf"
+INCOMING_QUERY = "SELECT extension, destination FROM incoming"
+#: The device rows FreePBX generates for a user/device — what makes a number a
+#: local extension rather than only an inbound route. Same shape `scripts/
+#: smoke-test.sh` reads for its media-address assertion.
+DEVICES_QUERY = "SELECT id FROM devices WHERE tech IN ('sip','pjsip')"
+#: `N` is 2-9, `X` is 0-9, `.`/`!` are wildcards — a `incoming.extension` that
+#: is not a run of digits is a pattern (or FreePBX's catch-all) and is not a
+#: number a person dials, so it is never written as an internal destination.
+INCOMING_NUMBER_RE = re.compile(r"\+?\d{2,15}")
+#: A FreePBX destination is `<context>,<exten>,<priority>` (or a two-field
+#: special). Held to plain dialplan characters so a stray newline, quote or
+#: parenthesis in a row could never inject a second dialplan line.
+INCOMING_DEST_RE = re.compile(r"[A-Za-z0-9_.\-,]+")
 
 # FreePBX `N` is 2-9, `X` is 0-9, `.` is one-or-more of the preceding set —
 # the DSL the legacy PSTN route was written in, restored verbatim: a seven-digit
@@ -124,13 +194,32 @@ class Route:
     trunks: tuple[tuple[int, str], ...] = ()  # (trunk_id, trunk name) in seq order
 
 
+@dataclass(frozen=True, order=True)
+class InternalNumber:
+    """A number the estate answers inwards, and the destination it already has."""
+
+    number: str
+    destination: str
+
+
 @dataclass(frozen=True)
 class State:
-    """What the PBX currently says: its routes and the trunk we need by name."""
+    """What the PBX currently says: routes, the trunk we need, and the numbers
+    it already answers inwards.
+
+    `extensions_conf` is the live `extensions_custom.conf` (None when it could
+    not be read): the internal destinations are an append-shared segment of
+    that file, so judging them means knowing its current bytes.
+    """
 
     routes: tuple[Route, ...]
     trunk_id: int | None
     trunk_name: str
+    internal: tuple[InternalNumber, ...] = ()
+    extensions_conf: str | None = None
+    #: The concatenated contents of `extensions_conf`'s `#include`d files — a
+    #: number the included file already answers must not be written again.
+    included_conf: str = ""
 
 
 @dataclass(frozen=True)
@@ -267,6 +356,207 @@ def desired_patterns() -> tuple[Pattern, ...]:
 def required_patterns() -> tuple[Pattern, ...]:
     """The normalisation rules an existing route must carry (superset, not equal)."""
     return tuple(Pattern(prefix=p, match=m, prepend=v) for p, m, v in REQUIRED_PATTERNS)
+
+
+# ── the internal numbers (pure) ─────────────────────────────────────────────
+def internal_number(raw: str) -> str:
+    """The dialled form of a FreePBX `incoming.extension`: digits, no country code.
+
+    The portal stores some DIDs with the leading `1` (`13025551002`) and FreePBX
+    stores the ones it accepted without (`3025551002`) — the same normalisation
+    `pbx/dograh_routes.py` makes, so an internal number and the route that names
+    it agree on which line is meant.
+    """
+    digits = re.sub(r"\D", "", raw)
+    return digits[1:] if len(digits) == 11 and digits.startswith("1") else digits
+
+
+def parse_incoming_numbers(text: str) -> dict[str, str]:
+    """`incoming` as {dialled number: destination}, patterns dropped.
+
+    A row whose `extension` is a pattern (`_X.`, `_2XX`, FreePBX's catch-all) is
+    not a number a person dials, so it cannot become an exact destination and is
+    left out entirely — writing it would put a wildcard in front of the routes,
+    which is the failure this tool exists to prevent, not repeat.
+    """
+    routes: dict[str, str] = {}
+    for line in text.splitlines():
+        parts = line.rstrip("\n").split("\t")
+        if len(parts) < 2:
+            continue
+        raw, destination = parts[0].strip(), parts[1].strip()
+        if not INCOMING_NUMBER_RE.fullmatch(raw):
+            continue
+        if not INCOMING_DEST_RE.fullmatch(destination):
+            continue
+        number = internal_number(raw)
+        if number:
+            routes[number] = destination
+    return routes
+
+
+def parse_extensions(text: str) -> set[str]:
+    """The numbers FreePBX has a user/device for, as a set of dial strings."""
+    return {token.strip() for token in text.splitlines() if token.strip().isdigit()}
+
+
+def build_internal(routes: dict[str, str],
+                   extensions: set[str]) -> tuple[InternalNumber, ...]:
+    """Which numbers must be answered locally, and where each one goes.
+
+    A number that is also a FreePBX user/device goes to `[ext-local]`, so dialling
+    it rings the extension the operator provisioned. Anything else goes to the
+    destination its own inbound route already names — an agent, a ring group, a
+    queue — so an internal call reaches the same place an inbound call does.
+    """
+    out: list[InternalNumber] = []
+    for number in sorted(routes):
+        destination = (f"ext-local,{number},1" if number in extensions
+                       else routes[number])
+        out.append(InternalNumber(number=number, destination=destination))
+    return tuple(out)
+
+
+def render_internal_source(internal: tuple[InternalNumber, ...]) -> str:
+    """The fragment `asterisk_converge.py` appends to [from-internal-custom].
+
+    Exact `exten =>` lines (never a wildcard): Asterisk matches them before any
+    route, so the call is answered immediately and the route's pattern never sees
+    it. The body is regenerated every apply, so it is marked do-not-edit.
+    """
+    lines = [
+        "[from-internal-custom]",
+        "; Internal numbers — generated by pbx/outbound_route.py; do not edit.",
+        "; Each number below already has a FreePBX inbound route, so it is a line",
+        "; this estate owns: dialling it from an internal phone must reach the same",
+        "; place at once, as an exact match ahead of the outbound routes, instead of",
+        "; being held for the inter-digit timeout or taken by a route's pattern.",
+    ]
+    for entry in internal:
+        lines.append("")
+        lines.append(f"exten => {entry.number},1,NoOp(Internal number -> {entry.destination})")
+        lines.append(f" same => n,Goto({entry.destination})")
+    return "\n".join(lines) + "\n"
+
+
+EXACT_EXTEN_RE = re.compile(r"\s*exten\s*=>\s*(\d+)\s*,")
+
+
+def _exact_numbers(text: str, skip_owner: str | None = None) -> set[str]:
+    """Exact `exten => <number>,` lines in [from-internal-custom] occurrences.
+
+    `skip_owner` drops the lines inside that owner's marked segment, so our own
+    previous output is not mistaken for somebody else's answer.
+    """
+    numbers: set[str] = set()
+    for kind, *rest in ac.split_blocks(text):
+        if kind != "ctx" or rest[0] != "from-internal-custom":
+            continue
+        in_owned = False
+        for line in rest[1]:
+            stripped = line.strip()
+            if skip_owner and stripped == f"; >>> begin {skip_owner}":
+                in_owned = True
+                continue
+            if skip_owner and stripped == f"; >>> end {skip_owner}":
+                in_owned = False
+                continue
+            if in_owned:
+                continue
+            match = EXACT_EXTEN_RE.match(line)
+            if match:
+                numbers.add(match.group(1))
+    return numbers
+
+
+def reserved_numbers(have: str, included: str = "") -> set[str]:
+    """Numbers an exact `exten =>` in [from-internal-custom] already answers,
+    outside this tool's own segment — in the file and in anything it includes.
+
+    Asterisk keeps the first definition and ignores the rest, so a second one is
+    silently half-dead. The measured case is the agent extensions 8000-8008: rows
+    in the same `incoming` table as the DIDs, so they look internal, but Capstone's
+    own segment already dials 8000-8007 and the `#include`d
+    `extensions_custom_dograh.conf` dials 8008. Only [from-internal-custom] is
+    read — that is the context an internal number must be answered in, so an entry
+    in another context ([dograh-inbound] has 8000-8007 too) does not by itself
+    make the number dialable internally.
+    """
+    return (_exact_numbers(have, skip_owner=INTERNAL_OWNER)
+            | _exact_numbers(included))
+
+
+#: `#include <file>` / `#tryinclude <file>` — one level is what the measured
+#: case needs (`extensions_custom.conf` includes the generated dograh file).
+INCLUDE_RE = re.compile(r"\s*#\s*(?:include|tryinclude)\s+(\S+)\s*$")
+
+
+def read_includes(text: str, *, local: bool, container: str,
+                  base: str = os.path.dirname(EXTENSIONS_CONF_PATH)) -> str:
+    """The concatenated contents of a config file's `#include`d files.
+
+    A missing include is skipped rather than refused — an include naming a file
+    that is not there is exactly the condition Asterisk itself reports, and it is
+    not this tool's to fail the whole judgement over.
+    """
+    out: list[str] = []
+    for line in text.splitlines():
+        match = INCLUDE_RE.match(line)
+        if not match:
+            continue
+        name = match.group(1)
+        path = name if name.startswith("/") else f"{base.rstrip('/')}/{name}"
+        content = read_pbx_file(path, local=local, container=container)
+        if content:
+            out.append(content)
+    return "\n".join(out)
+
+
+def merge_internal(have: str, internal: tuple[InternalNumber, ...],
+                   included: str = "") -> str:
+    """The extensions_custom.conf an apply would write, or the bytes already there.
+
+    Append-shared through the same merger every other owner uses, so this tool
+    only ever rewrites its own `; >>> begin internal` segment and leaves the Zeus
+    and Capstone segments untouched. A number another segment — or an included
+    file — already answers is dropped rather than duplicated.
+    """
+    reserved = reserved_numbers(have, included)
+    wanted = tuple(e for e in internal if e.number not in reserved)
+    return ac.merge_into(have, render_internal_source(wanted),
+                         owner=INTERNAL_OWNER, append_shared={"from-internal-custom"})
+
+
+def judge_internal(state: State) -> list[Finding]:
+    """Findings for the internal-number segment.
+
+    Empty when there are no internal numbers to write (an estate that routes
+    nothing inwards is not judged, so a first run on a plain PBX writes nothing),
+    or when the segment already matches what the `incoming` table implies.
+    """
+    if not state.internal:
+        return []
+    if state.extensions_conf is None:
+        return [Finding(
+            state="internal-numbers",
+            detail=f"{len(state.internal)} internal number(s) are dialled within "
+                   "this estate, but extensions_custom.conf could not be read, so "
+                   "there is nowhere to answer them ahead of the outbound routes",
+            repair="apply: read extensions_custom.conf on the PBX and re-run",
+        )]
+    want = merge_internal(state.extensions_conf, state.internal, state.included_conf)
+    if want == state.extensions_conf:
+        return []
+    return [Finding(
+        state="internal-numbers",
+        detail=f"{len(state.internal)} internal number(s) ("
+               + ", ".join(e.number for e in state.internal[:4])
+               + (" …" if len(state.internal) > 4 else "")
+               + ") match an outbound route's pattern, so an internal call is "
+               "held for the inter-digit timeout — or leaves by the trunk",
+        repair="apply: write the exact internal destinations into "
+               "[from-internal-custom], ahead of every outbound route",
+    )]
 
 
 def _order(routes: tuple[Route, ...], target: Route | None,
@@ -446,8 +736,51 @@ def mysql(sql: str, *, local: bool, container: str) -> str:
     return pbx_db.mysql_exec(container, sql)
 
 
+def read_pbx_file(path: str, *, local: bool, container: str) -> str | None:
+    """A config file on the PBX, or None when it cannot be read.
+
+    `local` is the in-container / bare-metal path; otherwise the host shells into
+    the container. Absent is a real answer (the file may not exist yet) and is
+    None rather than "", so a caller can tell "empty" from "could not read".
+    """
+    args = ["cat", path] if local else ["docker", "exec", container, "cat", path]
+    try:
+        proc = subprocess.run(args, capture_output=True, text=True, timeout=30)
+    except (OSError, subprocess.SubprocessError):
+        return None
+    return proc.stdout if proc.returncode == 0 else None
+
+
+def write_pbx_file(path: str, text: str, *, local: bool, container: str) -> None:
+    """Overwrite a config file on the PBX, or refuse loudly."""
+    if local:
+        with open(path, "w", encoding="utf-8") as handle:
+            handle.write(text)
+        return
+    # Write beside the target and rename, so a reload never sees a half-written
+    # file; re-own it as Asterisk does for the other *_custom.conf fragments.
+    script = (
+        "set -e; "
+        "tmp=$(mktemp /etc/asterisk/.outbound-route.XXXXXX); "
+        "cat > \"$tmp\"; "
+        "chown asterisk:asterisk \"$tmp\" 2>/dev/null || true; "
+        f"mv \"$tmp\" {path}"
+    )
+    proc = subprocess.run(
+        ["docker", "exec", "-i", container, "sh", "-c", script],
+        input=text, capture_output=True, text=True, timeout=60,
+    )
+    if proc.returncode != 0:
+        detail = proc.stderr.strip().splitlines()
+        raise pbx_db.RouteError(
+            f"could not write {path} in {container}: "
+            f"{detail[-1] if detail else proc.returncode}"
+        )
+
+
 def load_state(*, local: bool, container: str, trunk_name: str) -> State:
-    """Read the routes, patterns, trunks — and the trunk we need, by name."""
+    """Read the routes, patterns, trunks, the trunk we need, and the numbers the
+    PBX already answers inwards."""
     rows = parse_routes(mysql(ROUTES_QUERY, local=local, container=container))
     patterns = parse_patterns(mysql(PATTERNS_QUERY, local=local, container=container))
     trunks = parse_trunks(mysql(TRUNKS_QUERY, local=local, container=container))
@@ -462,10 +795,20 @@ def load_state(*, local: bool, container: str, trunk_name: str) -> State:
         if token.isdigit():
             trunk_id = int(token)
             break
+    internal = build_internal(
+        parse_incoming_numbers(mysql(INCOMING_QUERY, local=local, container=container)),
+        parse_extensions(mysql(DEVICES_QUERY, local=local, container=container)),
+    )
+    extensions_conf = read_pbx_file(EXTENSIONS_CONF_PATH, local=local, container=container)
+    included_conf = (read_includes(extensions_conf, local=local, container=container)
+                     if extensions_conf is not None else "")
     return State(
         routes=build_routes(rows, patterns, trunks),
         trunk_id=trunk_id,
         trunk_name=trunk_name,
+        internal=internal,
+        extensions_conf=extensions_conf,
+        included_conf=included_conf,
     )
 
 
@@ -601,6 +944,7 @@ def main(argv: list[str] | None = None) -> int:
     doomed = [r for r in state.routes if r.name in drop_names and r.name != args.name]
 
     findings, plan = judge(state, args.name)
+    findings += judge_internal(state)
     if doomed:
         named = ", ".join(f"{r.route_id} ({r.name})" for r in doomed)
         findings.append(Finding(
@@ -613,13 +957,16 @@ def main(argv: list[str] | None = None) -> int:
 
     where = "the local PBX" if local else container
     print(f"outbound-route: {len(state.routes)} route(s) on {where}, "
-          f"trunk {args.trunk} is {state.trunk_id}")
+          f"trunk {args.trunk} is {state.trunk_id}"
+          + (f", {len(state.internal)} internal number(s)" if state.internal else ""))
     for finding in findings:
         print(f"  {finding.state}: {finding.detail}", file=sys.stderr)
         print(f"    repair: {finding.repair}", file=sys.stderr)
     if not findings:
         print(f"outbound-route: route {args.name!r} normalises dialled numbers and "
-              "precedes anything that would take its calls")
+              "precedes anything that would take its calls"
+              + ("; every internal number is answered ahead of it"
+                 if state.internal else ""))
         return 0
 
     if not args.apply:
@@ -637,6 +984,17 @@ def main(argv: list[str] | None = None) -> int:
             findings, plan = judge(state, args.name)
         plan = ensure_route(plan, local=local, container=container)
         mysql(render_apply_sql(plan), local=local, container=container)
+        if state.internal:
+            if state.extensions_conf is None:
+                raise pbx_db.RouteError(
+                    "extensions_custom.conf could not be read, so the internal "
+                    "destinations were not written"
+                )
+            merged = merge_internal(state.extensions_conf, state.internal,
+                                    state.included_conf)
+            if merged != state.extensions_conf:
+                write_pbx_file(EXTENSIONS_CONF_PATH, merged,
+                               local=local, container=container)
     except pbx_db.RouteError as exc:
         print(f"outbound-route: {exc} — the route was not converged", file=sys.stderr)
         return 2
@@ -650,6 +1008,7 @@ def main(argv: list[str] | None = None) -> int:
         print(f"outbound-route: {exc} — written but not verified", file=sys.stderr)
         return 2
     remaining, _ = judge(state, args.name)
+    remaining += judge_internal(state)
     still_named = [r for r in state.routes if r.name in drop_names and r.name != args.name]
     if remaining or still_named:
         for finding in remaining:
@@ -661,9 +1020,11 @@ def main(argv: list[str] | None = None) -> int:
         return 1
     dropped = (f" (removed duplicate route(s) "
                f"{', '.join(r.name for r in doomed)})") if doomed else ""
+    internals = (f" and {len(state.internal)} internal number(s) answered ahead "
+                 "of the routes") if state.internal else ""
     print(f"outbound-route: route {args.name!r} converged (normalises dialled "
           f"numbers, trunk {args.trunk} first, ahead of anything that would take "
-          f"its calls){dropped}")
+          f"its calls){dropped}{internals}")
     return 0
 
 

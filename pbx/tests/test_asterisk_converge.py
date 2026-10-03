@@ -31,6 +31,50 @@ class SplitBlocksTest(unittest.TestCase):
         self.assertNotIn("; doc header", blocks[1][2][0])
 
 
+class TrailingDirectiveTest(unittest.TestCase):
+    """A `#include` after the last context is file-scope, not that context's tail.
+
+    The measured loss: `scripts/sync_dograh_routes.py` appends
+    `#include extensions_custom_dograh.conf` at end-of-file, and the first
+    `[dograh-inbound]` replace deleted it — orphaning the file that carries
+    agent extensions beyond the static 8000-8007 set.
+    """
+
+    DOGRAH = (
+        "[dograh-inbound]\n"
+        "exten => 8000,1,Stasis(dograh_deadbeef)\n"
+        " same => n,Hangup()\n"
+    )
+    TARGET_WITH_TAIL = (
+        "[dograh-inbound]\n"
+        "exten => 8000,1,NoOp(old)\n"
+        "\n"
+        "#include extensions_custom_dograh.conf\n"
+    )
+
+    def test_a_trailing_include_is_not_part_of_the_last_context(self):
+        blocks = ac.split_blocks(self.TARGET_WITH_TAIL)
+        self.assertEqual([b[0] for b in blocks], ["ctx", "text"])
+        self.assertIn("#include extensions_custom_dograh.conf\n", blocks[1][1])
+        self.assertNotIn("#include", blocks[0][2])
+
+    def test_replacing_the_last_context_keeps_the_include(self):
+        merged = ac.merge_into(self.TARGET_WITH_TAIL, self.DOGRAH, owner="capstone")
+        self.assertIn("Stasis(dograh_deadbeef)", merged)
+        self.assertNotIn("NoOp(old)", merged)
+        self.assertIn("#include extensions_custom_dograh.conf", merged)
+
+    def test_the_split_is_idempotent(self):
+        once = ac.merge_into(self.TARGET_WITH_TAIL, self.DOGRAH, owner="capstone")
+        twice = ac.merge_into(once, self.DOGRAH, owner="capstone")
+        self.assertEqual(once, twice)
+        self.assertEqual(once.count("#include extensions_custom_dograh.conf"), 1)
+
+    def test_a_file_without_a_trailing_directive_is_unchanged(self):
+        plain = "[a]\nexten => 1,1,NoOp()\n"
+        self.assertEqual(ac.serialize(ac.split_blocks(plain)), plain)
+
+
 class ReplaceTest(unittest.TestCase):
     ZEUS = (
         "; Zeus portal dialplan\n"
