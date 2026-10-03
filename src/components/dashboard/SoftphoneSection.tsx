@@ -49,6 +49,8 @@ export default function SoftphoneSection({ extensions, phoneNumbers }: Props) {
   const [volume, setVolume] = useState(1);
   const [showDtmf, setShowDtmf] = useState(false);
   const [muted, setMuted] = useState(false);
+  const [privateHold, setPrivateHold] = useState(false);
+  const [privateHoldBusy, setPrivateHoldBusy] = useState(false);
 
   const userAgentRef = useRef<UserAgent | null>(null);
   const registererRef = useRef<Registerer | null>(null);
@@ -513,19 +515,22 @@ export default function SoftphoneSection({ extensions, phoneNumbers }: Props) {
     }
   }
 
+  function setMicEnabled(enabled: boolean) {
+    const call = activeCallRef.current;
+    const pc = call?.session?.sessionDescriptionHandler?.peerConnection as RTCPeerConnection | undefined;
+    pc?.getSenders().forEach((sender: RTCRtpSender) => {
+      if (sender.track?.kind === "audio") sender.track.enabled = enabled;
+    });
+  }
+
   function toggleMute() {
     const call = activeCallRef.current;
     if (!call) return;
     const muted = !call.muted;
     try {
-      const pc = call.session?.sessionDescriptionHandler?.peerConnection as RTCPeerConnection | undefined;
-      if (pc) {
-        pc.getSenders().forEach((sender: RTCRtpSender) => {
-          if (sender.track?.kind === "audio") {
-            sender.track.enabled = !muted;
-          }
-        });
-      }
+      // Private Hold always owns the outgoing media gate. Toggling manual mute
+      // while held changes what Resume restores, but never leaks the mic.
+      setMicEnabled(!muted && !privateHold);
     } catch {
       // ignore
     }
@@ -533,24 +538,27 @@ export default function SoftphoneSection({ extensions, phoneNumbers }: Props) {
     setMuted(muted);
   }
 
-  function toggleHold() {
+  async function togglePrivateHold() {
     const call = activeCallRef.current;
-    if (!call) return;
+    if (!call || !selectedExt || privateHoldBusy || callState !== "in-call") return;
+    const next = !privateHold;
+    setPrivateHoldBusy(true);
 
-    if (callState === "in-call") {
-      setCallState("held");
-      try {
-        call.session.hold?.();
-      } catch {
-        // ignore
-      }
-    } else if (callState === "held") {
-      setCallState("in-call");
-      try {
-        call.session.unhold?.();
-      } catch {
-        // ignore
-      }
+    // Gate the microphone before asking the PBX for MOH so no speech can leak
+    // during the network round-trip. On a failed enter we restore manual mute.
+    if (next) setMicEnabled(false);
+    try {
+      await api("/api/ami/private-hold", {
+        method: "POST",
+        body: JSON.stringify({ extension_id: selectedExt.id, active: next }),
+      });
+      setPrivateHold(next);
+      if (!next) setMicEnabled(!call.muted);
+    } catch (e) {
+      if (next) setMicEnabled(!call.muted);
+      toast.error(e instanceof Error ? e.message : "Private hold failed");
+    } finally {
+      setPrivateHoldBusy(false);
     }
   }
 
@@ -569,6 +577,8 @@ export default function SoftphoneSection({ extensions, phoneNumbers }: Props) {
     setActiveRemoteId("");
     activeCallRef.current = null;
     setMuted(false);
+    setPrivateHold(false);
+    setPrivateHoldBusy(false);
     setDialNumber("");
     setShowDtmf(false);
     setCallState((prev) => {
@@ -917,7 +927,7 @@ export default function SoftphoneSection({ extensions, phoneNumbers }: Props) {
                     </div>
                     <div>
                       <div className="text-lg font-semibold text-[var(--foreground)]">
-                        {callState === "held" ? "On Hold" : callState === "ringing-out" ? "Ringing..." : "Connected"}
+                        {privateHold ? "PRIVATE HOLD — Caller hears hold music" : callState === "ringing-out" ? "Ringing..." : "Connected"}
                       </div>
                       <div className="text-sm text-[var(--text-secondary)]">
                         {activeRemoteId || "In call"}
@@ -968,11 +978,11 @@ export default function SoftphoneSection({ extensions, phoneNumbers }: Props) {
                           )}
                         </svg>
                       </button>
-                      <button type="button" onClick={toggleHold} className={`flex h-12 w-12 items-center justify-center rounded-full border transition ${
-                        callState === "held"
+                      <button type="button" onClick={togglePrivateHold} disabled={privateHoldBusy} className={`flex h-12 w-12 items-center justify-center rounded-full border transition ${
+                        privateHold
                           ? "bg-sun-400/20 border-sun-400/50 text-sun-400"
                           : "border-[var(--input-border)] bg-[var(--input-bg)] text-[var(--text-secondary)] hover:text-[var(--foreground)] hover:bg-[var(--btn-ghost-hover-bg)]"
-                      }`} title="Hold">
+                      }`} title={privateHold ? "Resume" : "Private Hold"}>
                         <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
                           <line x1="6" x2="6" y1="4" y2="20"/><line x1="18" x2="18" y1="4" y2="20"/>
                         </svg>
