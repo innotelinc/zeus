@@ -44,7 +44,6 @@ export async function POST(req: Request) {
     .get(String(body.id), user.id) as FreePBXExtension | undefined;
   if (!ext) return NextResponse.json({ error: "Extension not found" }, { status: 404 });
 
-  const before = readWebrtcState(ext.extension_id);
   const pbxSecret = pbxSecretFor(ext.extension_id);
   const adopted = Boolean(pbxSecret) && pbxSecret !== ext.extension_secret;
   const secret = pbxSecret || ext.extension_secret || "";
@@ -77,9 +76,10 @@ export async function POST(req: Request) {
   // A repair also fixes the address the phone is handed, for a box that was
   // built before it was set (nothing wrote this file on older boots).
   const media = provisionMediaAddress(ext.extension_id);
-  const reloaded = await reloadPjsipIfLive(
-    media.written ? { ...softphone, provisioned: true } : before,
-  );
+  // Reload based on the state we just wrote, never the stale pre-repair read.
+  // The previous code used `before` whenever media_address already existed;
+  // that made a missing WebRTC section write successfully but skip the reload.
+  const reloaded = await reloadPjsipIfLive(softphone);
 
   if (adopted) {
     db.prepare("UPDATE freepbx_extensions SET extension_secret = ? WHERE id = ? AND user_id = ?").run(

@@ -226,6 +226,34 @@ export class AmiClient {
     });
   }
 
+  /**
+   * Return live channel details from AMI Status.
+   *
+   * Private Hold needs the channel bridged to the user's PJSIP leg.  Acting on
+   * the user's own channel would send MOH back to the browser; acting on its
+   * bridged peer sends MOH only to the remote caller.
+   */
+  async listChannelDetails(): Promise<Array<Record<string, string>>> {
+    return new Promise((resolve, reject) => {
+      const channels: Array<Record<string, string>> = [];
+      let complete = false;
+      const unsubscribe = this.onEvent((event) => {
+        if (event.Event === "Status") channels.push({ ...event });
+        if (event.Event === "StatusComplete") {
+          complete = true;
+          unsubscribe();
+          resolve(channels);
+        }
+      });
+      this.sendAction({ Action: "Status" }).catch((err) => {
+        if (!complete) { unsubscribe(); reject(err); }
+      });
+      setTimeout(() => {
+        if (!complete) { unsubscribe(); resolve(channels); }
+      }, 5_000);
+    });
+  }
+
   /** Disconnect and stop reconnecting. */
   disconnect(): void {
     this.shouldReconnect = false;
