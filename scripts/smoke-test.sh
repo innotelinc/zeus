@@ -500,7 +500,7 @@ if [ "$SCOPE" = all ] || [ "$SCOPE" = pbx ]; then
       # in; it must be an outbound route, not something local.
       outbound_first="$(sed -nE "s/^\[ Included context '([^']+)'.*/\1/p; s/^\[ Context '([^']+)'.*/\1/p" <<<"$outbound_dp" | head -1)"
       if [[ "$outbound_first" != outrt-* ]]; then
-        fail "dialling $outbound_sample is answered by '${outbound_first:-nothing}' before any outbound route — a local pattern shadows the route (an `_Z.`/`_X.` catch-all in [from-zeus-portal] does this; the trunk stays Registered while the call never leaves the PBX)"
+        fail "dialling $outbound_sample is answered by '${outbound_first:-nothing}' before any outbound route — a local pattern shadows the route (an \`_Z.\`/\`_X.\` catch-all in [from-zeus-portal] does this; the trunk stays Registered while the call never leaves the PBX)"
       elif grep -qE 'macro-dialout-trunk,s,1\([0-9]+,1\$\{EXTEN\}' <<<"$outbound_dp"; then
         pass "a ten-digit call ($outbound_sample) is normalised to 1\${EXTEN} and dialled out"
       else
