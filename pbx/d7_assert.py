@@ -262,8 +262,8 @@ def verdict_gateway(
 ) -> list[Finding]:
     """One finding per configured pin — today that is the summary path only.
 
-    The summary pin is asserted when it is configured; an unset one falls back
-    to `OLLAMA_MODEL`, which this check cannot see.
+    The summary pin is asserted when configured; the portal refuses summaries
+    when it is unset rather than guessing a model or falling back to Ollama.
     """
     if status != 200:
         return [

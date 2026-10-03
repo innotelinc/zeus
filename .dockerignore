@@ -15,9 +15,7 @@ vendor/*
 !vendor/*.tgz.gpg
 *.log
 .env
-.env.local
-.env.development
-.env.test
+.env.*
 .npm
 .cache
 coverage
