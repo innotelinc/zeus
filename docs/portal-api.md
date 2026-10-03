@@ -226,16 +226,18 @@ new messages and their AI summaries/transcripts.
 ### `POST /api/voicemail/summary` — AI summary
 
 Body: `{"voicemail_id": "…"}`. Summarises the stored transcript with the
-summary model — the estate gateway (OmniRoute) in the deployment, reached
-through its Ollama-compatible surface, or a plain Ollama on a single box —
+explicitly configured summary model through the shared OmniRoute gateway's
+OpenAI-compatible `/v1/chat/completions` API —
 and persists it to `voicemails.summary`. Idempotent (re-runs regenerate).
 
 Responses: `200 {"success":true,"summary":"…"}`; `400` no transcript;
 `404` not found/not owned; `502` model error; `503` endpoint unreachable.
 
 Endpoint and model are a **separate pin** from the call path's:
-`VOICEMAIL_SUMMARY_URL` / `VOICEMAIL_SUMMARY_MODEL`, falling back to
-`OLLAMA_URL` / `OLLAMA_MODEL`. Two pins, because the gateway's free routes
+`VOICEMAIL_SUMMARY_URL` / `VOICEMAIL_SUMMARY_MODEL`, with no direct Ollama
+fallback. `OMNIROUTE_API_KEY` is resolved from Cerulean Vault at startup and
+sent as a bearer credential. A missing model/key returns 503 (not configured).
+Two pins, because the gateway's free routes
 cooldown per model — one consumer exhausting a model must not silence the
 other. `pbx/d7_assert.py` asserts the pin is offered by the gateway's live
 catalogue.

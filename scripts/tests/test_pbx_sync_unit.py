@@ -99,6 +99,26 @@ class WrapperGatesBeforeItApplies(unittest.TestCase):
         self.assertIn("--devices-tsv -", self.text)
         self.assertIn("--asterisk-dir /etc/asterisk", self.text)
 
+    def test_it_reconciles_the_portals_write_access_every_tick(self):
+        """The grant the Repair button silently depends on.
+
+        The portal writes `pjsip.endpoint_custom_post.conf` and
+        `pjsip_media_custom.conf`, but the PBX's boot entrypoint runs
+        `fwconsole chown`, whose framework rule lands as 0664
+        asterisk:asterisk across `/etc/asterisk`. The portal runs as uid 1001
+        and is not in that group, so `writeFileSync` throws EACCES and the
+        repair route reports the *state* it failed to change — the operator
+        reads the same sentence before and after clicking Repair. The
+        entrypoint re-asserts it after each chown; the timer is what heals a
+        box whose image predates that, or one a hand-run chown reverted. Like
+        the media address it is derivable and idempotent, so the timer both
+        judges it and applies on drift.
+        """
+        self.assertIn("portal_config_access.py", self.text)
+        self.assertIn("access_run --check", self.text)
+        self.assertIn("access_run --apply", self.text)
+        self.assertIn("--asterisk-dir /etc/asterisk", self.text)
+
     def test_it_reconciles_the_outbound_route_every_tick(self):
         """The route that normalises a dialled number, checked and re-applied.
 

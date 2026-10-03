@@ -245,6 +245,22 @@ services:
       - apparmor=unconfined
     depends_on:
       - freepbx
+    # The portal WRITES two files the PBX owns: `pjsip.endpoint_custom_post.conf`
+    # (the `[<ext>](+)` WebRTC blocks) and `pjsip_media_custom.conf` (the
+    # per-endpoint `media_address`). They live on the shared `asterisk-config`
+    # volume, and the PBX's boot entrypoint runs `fwconsole chown`, which leaves
+    # them 0664 asterisk:asterisk — owner+group only. This container runs as
+    # `nextjs` (uid 1001), so its write throws EACCES and Repair reports the
+    # state it failed to change: the button silently does nothing.
+    #
+    # NOTE: `group_add: [asterisk]` does NOT fix this. The entrypoint drops
+    # privileges with `su-exec nextjs:nodejs`, which RESETS the supplementary
+    # group set, so the granted gid never reaches the Node server (measured on
+    # .30: `su-exec nextjs:nodejs id` shows `groups=1001`). The fix is on the
+    # PBX side — the files are given the portal's PRIMARY gid instead
+    # (`pbx/portal_config_access.py`, run from docker-entrypoint-full.sh and the
+    # zeus-pbx-sync timer). No group_add is needed, and adding one would only
+    # paper over the fact that it cannot work.
     # HOST networking, deliberately — PROJECT RULE: LAN addresses only.
     #
     # On the bridge (pbx-net, 172.31.0.0/16) every call the portal makes to the
@@ -252,7 +268,7 @@ services:
     # permit and the FreePBX access log both end up keyed on a Docker address —
     # and Docker addresses do not resolve correctly for this project. Joining the
     # host namespace instead lets the portal reach every service on this host's
-    # LAN IP, so Asterisk sees 192.168.1.46 and only the LAN subnet is ever
+    # LAN IP, so Asterisk sees 192.168.1.30 and only the LAN subnet is ever
     # permitted (no `permit = 172.16.0.0/12` anywhere).
     #
     # Consequences: the portal listens on the host port directly (PORT below)
@@ -269,6 +285,10 @@ services:
       # 3001 here IS the port NPM forwards to. Matches docker-compose.yml, so
       # the full stack stays off the shared :3000 owned by the Signara frontend.
       PORT: "3001"
+      # Shared gateway; credentials are resolved from Cerulean Vault at boot.
+      VOICEMAIL_SUMMARY_URL: ${VOICEMAIL_SUMMARY_URL:-http://192.168.1.71:20128/v1}
+      VOICEMAIL_SUMMARY_MODEL: ${VOICEMAIL_SUMMARY_MODEL:-}
+      OMNIROUTE_API_KEY: ${OMNIROUTE_API_KEY:-}
       # Next binds to $HOSTNAME — pin it so the server listens on all local
       # interfaces (0.0.0.0) instead of failing with EADDRNOTAVAIL.
       HOSTNAME: "0.0.0.0"

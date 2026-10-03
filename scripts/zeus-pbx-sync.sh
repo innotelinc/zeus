@@ -37,6 +37,7 @@ if [ -f "${REPO_ROOT}/pbx/dograh_routes.py" ] && [ -f "$PORTAL_DB" ]; then
 fi
 
 # ── Media address: judged, and converged on drift ────────────────
+# (The portal's write access to the file it appends to is re-asserted below.)
 # The boot entrypoint `docker-entrypoint-full.sh` converges the address Asterisk
 # advertises to a LAN phone into `pjsip_media_custom.conf`. On a box whose image
 # predates that change the entrypoint never runs it, and nothing else notices:
@@ -79,6 +80,39 @@ if [ -n "$MEDIA_ADDRESS" ] \
   fi
   if [ "$media_rc" != 0 ]; then
     echo "zeus-pbx-sync: media addresses could not be judged (media-address exit $media_rc) — check LAN_IP/PJSIP_MEDIA_ADDRESS and the PBX" >&2
+  fi
+fi
+
+# ── The portal's write access to its own config files ───────────
+# The portal (uid 1001) writes pjsip.endpoint_custom_post.conf and
+# pjsip_media_custom.conf, but `fwconsole chown` on every boot leaves them
+# 0664 asterisk:asterisk — owner+group only — so the portal holds no write bit
+# and its Repair button silently does nothing (the route reports the state it
+# failed to change). A compose `group_add` cannot fix it either: the portal's
+# entrypoint drops privileges with `su-exec nextjs:nodejs`, which resets the
+# supplementary group set. The tool therefore gives the files the portal's
+# PRIMARY gid, which survives `su-exec`. The entrypoint does it after each
+# chown; this is what heals a box whose image predates that, or one an
+# operator's own chown reverted. Judged every tick and applied on drift, like
+# the media address: it is derivable and idempotent.
+access_run() {
+  docker exec "$PBX_CONTAINER" python3 /opt/zeus/pbx/portal_config_access.py \
+    --asterisk-dir /etc/asterisk "$1" 2>&1
+}
+access_say() { printf '%s\n' "$1" | sed 's/^portal-access: /  portal-access: /' >&2; }
+
+if docker exec "$PBX_CONTAINER" test -f /opt/zeus/pbx/portal_config_access.py >/dev/null 2>&1; then
+  access_rc=0
+  access_out="$(access_run --check)" || access_rc=$?
+  [ -n "$access_out" ] && access_say "$access_out"
+  if [ "$access_rc" = 1 ]; then
+    access_rc=0
+    access_out="$(access_run --apply)" || access_rc=$?
+    [ -n "$access_out" ] && access_say "$access_out"
+    [ "$access_rc" = 0 ] && echo "zeus-pbx-sync: portal config write access re-asserted (pbx/portal_config_access.py)" >&2
+  fi
+  if [ "$access_rc" != 0 ]; then
+    echo "zeus-pbx-sync: portal config write access could not be judged (portal-access exit $access_rc) — Repair will report state instead of writing" >&2
   fi
 fi
 

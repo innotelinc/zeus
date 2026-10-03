@@ -21,6 +21,7 @@ operational shape.
 | `media_address.py` | Keep the address Asterisk advertises to a LAN phone (`media_address` on each sip/pjsip endpoint) — **entrypoint-owned**, re-derived every boot by `docker-entrypoint-full.sh` / `scripts/setup.sh` and reconciled by the `zeus-pbx-sync` timer (`scripts/zeus-pbx-sync.sh`) so an image rebuild cannot lose it. Writes its own file `pjsip_media_custom.conf` and one `#include` in the portal-shared `pjsip.endpoint_custom_post.conf`; refuses a docker/loopback address. `--check` / `--apply`, `--devices-tsv` judges off-host. Exit 1 = an apply converges it, 2 = cannot tell — see [The media address Asterisk advertises](#the-media-address-asterisk-advertises-container--lan-phones) |
 | `outbound_route.py` | Keep the route that normalises a dialled number — the one that gives a ten-digit call the `1` VoIP.ms terminates on. **Entrypoint-owned**, converged on boot by `docker-entrypoint-full.sh` / `scripts/setup.sh` and reconciled every tick by `scripts/zeus-pbx-sync.sh`. Creates the route (`PSTN` by default, `PBX_OUTBOUND_ROUTE` to rename) if missing, requires the two normalisation rules (ten-digit -> `1`, seven-digit -> `1413`) — preserving any extra patterns an existing route already has — attaches the VoIP.ms trunk first, and lifts the route above anything ahead of it that would take the same calls — a catch-all like `X.`, or a duplicate route pointed at another trunk. FreePBX evaluates routes in sequence order, so a route ahead swallows the call before the named route and its normalisation are reached. Refuses (exit 2) when there is no trunk row to attach. `--check` / `--apply`, `--local` for the in-container / bare-metal MySQL, and `--drop-route NAME` to remove a duplicate route an operator names (never automatic). Exit 1 = an apply converges it — see [The outbound route](#the-outbound-route-a-dialled-number-reaches-the-carrier) |
 | `rtp_settings_guard.py` | Keep the two `rtp_additional.conf` rows FreePBX rewrites wrong: `stunaddr` and the TURN credential. **Entrypoint-owned** — `docker-entrypoint-full.sh` runs it after the post-reload RTP write, because `fwconsole reload` regenerates the file from `kvstore_Sipsettings` every time. Two silent failures, both verified live on zeus (FreePBX 17.0.33 / Asterisk 22.11): `Sipsettings::genConfig()` runs every RTP value through `strtolower()` — a TURN password is case-sensitive, so coturn answered `credentials are incorrect (check_stun_auth)` once per call and the WebRTC relay candidates were dead — and `stunaddr` pointed at that same coturn, which is RFC 5389 and silently drops the cookie-less RFC 3489 request Asterisk's `main/stun.c` sends, costing 3x3s of retries on *every* call. STUN and TURN are therefore different servers here. `--rtp-conf`, `--stun-addr` (default `$PJSIP_STUN_ADDR`, else `stun.l.google.com:19302`; `''` disables discovery), `--turn-username`/`--turn-password` (default `$TURN_USERNAME`/`$TURN_CREDENTIAL`), `--check` / `--apply`. Exit 1 = an apply converges it, 2 = cannot tell — see [The RTP rows FreePBX rewrites](#the-rtp-rows-freepbx-rewrites) |
+| `portal_config_access.py` | Keep the operator-owned PJSIP files the **portal** writes writable *by the portal* (`pjsip.endpoint_custom_post.conf`, `pjsip_media_custom.conf`). **Entrypoint-owned** — `docker-entrypoint-full.sh` runs it immediately after its `fwconsole chown` (which leaves them `0664 asterisk:asterisk` on every boot) and `scripts/zeus-pbx-sync.sh` re-asserts it every tick. It gives the files the portal's **primary gid**, because the portal's entrypoint drops privileges with `su-exec`, which discards any `group_add` grant. `--check` / `--apply`, `--portal-uid`/`--portal-gid`/`--portal-groups`/`--pbx-group` to judge off-host. Exit 1 = an apply converges it, 2 = cannot tell — see [The files the portal writes, and who may write them](#the-files-the-portal-writes-and-who-may-write-them) |
 | `pjsip_owner_check.py` | Who owns the PJSIP endpoint for an extension — the load tree, the duplicate ids, and who carries the `#include`. Read-only, `--json` for the raw measurement, exit 1 on a two-owner state — see [Who owns a PJSIP endpoint](#who-owns-a-pjsip-endpoint) |
 | `provision_extension.py` | **The one owner of extension/device creation** (D6): check-then-create through FreePBX's own `addDevice`/`addUser`, with a preflight that refuses on an orphaned `sip`/`pjsip` row, leftover `AMPUSER` state, a half-created extension or a two-owner endpoint. `--check` / `--apply`, `--observed-json` to judge off-host, exit 1 = an apply converges it, 3 = only a person can — see [One provisioning path](#one-provisioning-path-for-extensions) |
 | `d7_assert.py` | The three D7 claims about the live stack (call recorded, Dograh's ARI app registered, one gateway serving the model pins this repo still holds — the summary path's `VOICEMAIL_SUMMARY_MODEL`, since the call path's belongs to Dograh). `--call` places a self-contained probe call. Exit 2 = nothing could be evaluated |
@@ -701,6 +702,106 @@ migrated. It is a measurement to run and read. The decision it fed is now made �
 FreePBX keeps the endpoint and the portal extends it via
 `pjsip.endpoint_custom_post.conf` — and is recorded in
 [docs/voice-convergence.md](../docs/voice-convergence.md) §11.5.
+
+## The files the portal writes, and who may write them
+
+The portal is the *second* writer of two operator-owned files:
+
+| File | The portal writes | The PBX writes |
+|---|---|---|
+| `pjsip.endpoint_custom_post.conf` | `[<ext>](+)` + the WebRTC media settings (`src/lib/pjsip-endpoint.ts`), and the `#include` for the media file | the SMS-DID `[<did>](+);` blocks (`scripts/setup.sh`) |
+| `pjsip_media_custom.conf` | the same `[<ext>](+) media_address=` section the boot owner renders, for a phone created *between* boots | the whole file (`pbx/media_address.py`) |
+
+Both live on the shared `pbx-asterisk-config` volume, and both are the portal's
+to write — that is the endpoint decision (below). What nothing established is
+whether the portal's **process** can write them, and on `.30` it could not.
+
+**The measured failure.** The portal is a Node process running as the image's
+`nextjs` user (uid 1001); Asterisk runs as `asterisk`. The PBX's own entrypoint
+runs `fwconsole chown` on every boot, and FreePBX's chown walks `$ASTETCDIR`
+recursively with its framework rule (`Console/Chown.class.php`,
+`systemSetRecursivePermissions`, mode `0775` with the execute bit stripped for
+files) — so **every file under `/etc/asterisk` ends up `0664
+asterisk:asterisk`**. `0664` is owner+group; uid 1001 is neither. The portal's
+`writeFileSync` throws `EACCES`, and the repair route catches it and reports the
+*state* rather than the write failure, because `stateFor()` cannot read an
+append that was never written:
+
+```
+pjsip.endpoint_custom_post.conf does not carry `[4132643964](+)`, so Asterisk has
+no WebRTC endpoint for this extension and a browser cannot register. Add
+`[4132643964](+)` with the media settings — the repair path does.
+```
+
+That is the same sentence the operator read *before* clicking Repair. The route
+returned 200, the console reported success, and the file was untouched — the
+whole symptom is "the Repair button does nothing".
+
+**The fix gives the files the portal's own group.**
+
+The obvious grant — put the portal in the `asterisk` group with compose
+`group_add` and leave the files `0664 asterisk:asterisk` — **does not work on
+this image, and finding that out is the second half of the bug.** Measured on
+`.30`:
+
+```
+# docker exec zeus-portal sh -c 'su-exec nextjs:nodejs id'
+uid=1001(nextjs) gid=1001(nodejs) groups=1001(nodejs)
+```
+
+`group_add` does reach the container (`docker exec zeus-portal id` shows the
+granted gid), but the portal's entrypoint drops privileges with
+`su-exec nextjs:nodejs` (`docker-entrypoint.sh`), and **`su-exec` resets the
+supplementary group set to the target user's own groups**. The grant is
+discarded before the Node server is ever exec'd. Writing from the server's exact
+identity, on the file in its `fwconsole chown` state:
+
+```
+997:1000 mode 664  ->  WRITE FAILED EACCES     # the live bug
+997:1001 mode 664  ->  WRITE OK                # the fix
+```
+
+So the files are given the portal's **primary** gid, which survives `su-exec`:
+`asterisk:<portal-gid>` at `0664`. Asterisk (the owner) keeps its access; the
+portal (its primary group) gains write. Nothing else changes hands, and no
+container's group set has to be right for it to hold.
+
+| Half | Where | Why |
+|---|---|---|
+| the files are group-writable (`0664`) | `pbx/portal_config_access.py --apply` | FreePBX already leaves them so; the mode is re-asserted because a `freepbx_chown.conf` override or a hand `chmod` can take it away |
+| the files' group is the **portal's primary gid** | same tool | the load-bearing half — `fwconsole chown` resets the group to `asterisk` on every boot, and after `su-exec` the portal cannot use that |
+
+`docker-compose.full.yml` and `ips/groups/2-voice.yml` deliberately carry **no**
+`group_add` for this: it cannot work, and carrying it would make the fix look
+like it depends on a grant that `su-exec` throws away.
+
+**Why not chmod at the portal's write site?** Because the portal can `chmod` a
+file only if it *owns* it, and after `fwconsole chown` it does not. The grant has
+to come from the side that owns the files, which is the PBX — hence a PBX-side
+tool rather than a `try { chmod } catch` in the portal.
+
+**Why the tool exists at all rather than a `chmod` line in the entrypoint.** The
+same reason `media_address.py` and `outbound_route.py` do: it is a judgement with
+an exit code, so the estate can *say* the portal cannot write its files instead
+of discovering it as a button that does nothing. `--check` is read-only and
+`--portal-uid`/`--portal-groups`/`--pbx-group` let a box be judged from off-host.
+
+```bash
+# judge (0 in sync, 1 an apply converges it, 2 cannot tell), and converge by hand
+docker exec zeus-freepbx python3 /opt/zeus/pbx/portal_config_access.py --check
+docker exec zeus-freepbx python3 /opt/zeus/pbx/portal_config_access.py --apply
+
+# what the portal's server actually holds, judged without the PBX
+# (`--portal-groups` defaults to nextjs's own groups — what survives su-exec)
+docker exec zeus-portal sh -c 'su-exec nextjs:nodejs id'   # the ground truth
+python3 pbx/portal_config_access.py --portal-uid 1001 --portal-gid 1001 --check
+```
+
+**The portal also reports it now.** A write that throws is no longer swallowed
+into a 200 whose body restates the unchanged state: the repair route answers
+`409 webrtc_settings_not_writable` with the cause and the repair, and names a
+half-repair (the WebRTC settings landed, the media address did not) in
+`media_address_reason` instead of claiming both.
 
 ## One provisioning path (for extensions)
 

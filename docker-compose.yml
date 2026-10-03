@@ -44,6 +44,10 @@ services:
     environment:
       - NODE_ENV=production
       - PORT=3000
+      # Shared gateway; credentials are resolved from Cerulean Vault at boot.
+      - VOICEMAIL_SUMMARY_URL=${VOICEMAIL_SUMMARY_URL:-http://192.168.1.71:20128/v1}
+      - VOICEMAIL_SUMMARY_MODEL=${VOICEMAIL_SUMMARY_MODEL:-}
+      - OMNIROUTE_API_KEY=${OMNIROUTE_API_KEY:-}
       # Next binds to $HOSTNAME (set to the public IP in .env, or injected by
       # Docker as the container id) — pin it so the server listens on all
       # local interfaces (0.0.0.0) instead of failing with EADDRNOTAVAIL.
@@ -174,7 +178,7 @@ services:
   # ── OmniRoute: single AI model gateway for the entire stack ──────────
   # All subsystems (Capstone, Rizzaura, Atlas, AthenIQ) point here.
   #
-  # Profile-gated: the CANONICAL gateway for the estate runs on 192.168.1.46
+  # Profile-gated: the CANONICAL gateway for the estate runs on 192.168.1.71
   # (published through the oauth2-proxy door on :20128), and every consumer
   # here — the portal, AVA, Capstone — points at that one. Starting this
   # service would create a second, empty gateway on :20128 that answers

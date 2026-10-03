@@ -292,7 +292,7 @@ chown asterisk:asterisk "${LOGGER_CUSTOM}" 2>/dev/null || true
 # inside this container at all (there is no extra_hosts entry, so every lookup
 # fails), and a bridge/service name or a subnet recorded by a different stack
 # is at best a coincidence. Set PJSIP_STUN_TURN_ADDR to the LAN IP (e.g.
-# 192.168.1.46) and PJSIP_LOCAL_NETS to that LAN subnet; the `coturn` compose
+# 192.168.1.30) and PJSIP_LOCAL_NETS to that LAN subnet; the `coturn` compose
 # alias remains only as a last-resort fallback and warns when it is used.
 # Do NOT use host.docker.internal: ast_sockaddr_resolve fails on that alias and
 # silently disables STUN.
@@ -430,6 +430,8 @@ PYEOF
 fi
 
 # ── The media address Asterisk advertises to LAN phones ─────────────────────
+# (The portal's own write access to these files is re-asserted above, right
+# after the fwconsole chown that would otherwise take it away.)
 # A phone on the LAN is handed the address it should send media to in the answer
 # SDP. Inside the container Asterisk's own local address is the docker bridge
 # (172.x), which the phone cannot reach: it sends its voice and every DTMF digit
@@ -1352,6 +1354,34 @@ WSSEOF
     echo ">>> [modules] boot reload failed — see /tmp/fwconsole-boot-reload.log"
   fi
   echo ">>> FreePBX modules refreshed"
+
+  # ── Let the portal write the files it owns ─────────────────
+  # `fwconsole chown` above just imposed its framework rule on everything in
+  # $ASTETCDIR (Console/Chown.class.php's `systemSetRecursivePermissions`,
+  # 0775 with the execute bit stripped for files — so **0664**
+  # asterisk:asterisk). 0664 is owner+group, and the portal runs as `nextjs`
+  # (uid 1001), which is neither — so the repair path's `writeFileSync` into
+  # pjsip.endpoint_custom_post.conf throws EACCES, the route reports the
+  # *state* it failed to change, and Repair silently does nothing.
+  #
+  # Putting the portal in the `asterisk` group does NOT fix it: the portal's
+  # entrypoint drops privileges with `su-exec nextjs:nodejs`, which resets the
+  # supplementary group set, so a compose `group_add` grant never reaches the
+  # Node server (measured on .30). The files are therefore given the portal's
+  # PRIMARY gid, which survives `su-exec` — the portal keeps its owner (997) and
+  # only the group moves. See pbx/portal_config_access.py.
+  if [ -f /opt/zeus/pbx/portal_config_access.py ]; then
+    set +e
+    python3 /opt/zeus/pbx/portal_config_access.py \
+      --asterisk-dir "$ASTERISK_ETC" --apply
+    access_rc=$?
+    set -e
+    if [ "$access_rc" = 0 ]; then
+      echo ">>> portal config access: the portal can write its pjsip files"
+    else
+      echo ">>> WARNING: the portal may not be able to write its pjsip files (rc=${access_rc}); Repair will report the state instead of writing it (pbx/portal_config_access.py)" >&2
+    fi
+  fi
 
   # Re-assert the RTP plane after the boot reload. The `fwconsole reload` above
   # just regenerated rtp_additional.conf from kvstore_Sipsettings and the core

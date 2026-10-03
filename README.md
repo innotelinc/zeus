@@ -352,7 +352,18 @@ python3 scripts/npm-proxy-hosts.py --no-ssl
 
 ## AI Voicemail Summaries & Call Routing
 
-- The portal summarises voicemail transcripts with a pinned model — the estate gateway in the deployment, a plain **Ollama** on a single box (`VOICEMAIL_SUMMARY_URL`/`VOICEMAIL_SUMMARY_MODEL`, falling back to `OLLAMA_URL`/`OLLAMA_MODEL`) — click the ✨ button on any voicemail. The pin is its own, not the call path's, so a free-tier cooldown on one cannot silence the other.
+- **Vosk transcribes; the shared gateway summarises.** The portal uses OmniRoute's OpenAI-compatible chat API at `http://192.168.1.71:20128/v1`. No local Ollama service or extra voice-host RAM is needed. The bare-metal AI CDR installer below remains a separate legacy path.
+- Set `VOICEMAIL_SUMMARY_MODEL` to a model verified against the authenticated gateway catalogue and a test completion. There is no guessed default and no direct `OLLAMA_URL` fallback.
+- Store the gateway credential in Cerulean Vault at `cerulean/zeus`, then use `OMNIROUTE_API_KEY=vault://cerulean/zeus#OMNIROUTE_API_KEY`. The portal entrypoint resolves it with the existing product-scoped token before startup. URLs and model IDs are non-secret configuration; provider credentials belong to the gateway, not Zeus.
+- Use `scripts/vault-migrate.py --from-env-file .env --keys OMNIROUTE_API_KEY` with `VAULT_ADDR`, the product-scoped `VAULT_TOKEN_FILE`, `VAULT_PREFIX=cerulean` and `VAULT_PATH=zeus` to migrate an existing key. Verify the secret reads back before replacing its plaintext assignment with the reference. Do not copy platform root tokens into Zeus or log credential values.
+- Deploy a newly built portal image before recreating the portal: the old published image does not contain this chat API or the expanded Vault resolver.
+- Deployment verified on `.30` (2026-10-01): `compose.gateway-vault.yml` selects `zeus/portal:gateway-vault-20261001`, the authenticated free route `auto/best-free`, and the Vault reference. Preserve this override on subsequent deployments:
+
+```bash
+docker compose -f docker-compose.full.yml -f compose.gateway-vault.yml up -d --no-deps portal
+```
+
+The dedicated `zeus-voicemail` key has no dollar-based usage cap. Free routes still have provider time limits/cooldowns. A synthetic authenticated voicemail request returned 200 and its summary persisted; the synthetic records were removed. The PBX was not restarted. Rollback image `zeus/portal:pre-gateway-vault-20261001` is retained on `.30`; a rollback must select that image and restore the previous portal environment, not change the PBX.
 - The bare-metal installer keeps the full AI stack: **VOSK** speech-to-text (voicemail transcription) + **AI CDR** call summaries (Ollama) + the ARI/WebSocket client for AI call handling. AI-driven call routing hooks (business-hours routing, AI receptionist) are dialplan-level and configured in `setup.sh`.
 
 ---
@@ -371,8 +382,8 @@ Templates: `.env.example` (npm/dev), `.env.docker.example` (Docker). Key groups:
 | `NPM_BASE_DOMAIN` / `NPM_UPSTREAM_HOST` | Proxy host base domain + Docker host IP |
 | `NPM_LETSENCRYPT_EMAIL` | Let's Encrypt email for proxy-host certs |
 | `NPM_WILDCARD_CERT` / `NPM_DNS_PROVIDER` / `NPM_TSIG_NAMESERVER` / `NPM_TSIG_KEY_NAME` / `NPM_TSIG_KEY_SECRET` / `NPM_TSIG_ALGORITHM` | Wildcard cert via DNS-01 (TSIG/rfc2136) — auto-provisioned |
-| `OLLAMA_URL` / `OLLAMA_MODEL` | Model endpoint + fallback for AI voicemail summaries |
-| `VOICEMAIL_SUMMARY_URL` / `VOICEMAIL_SUMMARY_MODEL` | The summary path's own pin — endpoint and model, kept off the shared `OLLAMA_MODEL` so one model's free-tier cooldown cannot silence the other. Fall back to `OLLAMA_URL` / `OLLAMA_MODEL` |
+| `OMNIROUTE_API_KEY` | Gateway credential; use `vault://cerulean/zeus#OMNIROUTE_API_KEY` |
+| `VOICEMAIL_SUMMARY_URL` / `VOICEMAIL_SUMMARY_MODEL` | Shared gateway API base (including `/v1`) and explicitly verified summary model; no direct Ollama fallback |
 | `NEXT_PUBLIC_BRAND_NAME` | White-label brand override |
 | `SESSION_SECRET` | Session signing key (auto-generated if unset) |
 | `VOIPMS_API_USERNAME` / `_PASSWORD` / `VOIPMS_WEBHOOK_SECRET` | VoIP.ms API + SMS webhook |
@@ -580,7 +591,7 @@ than the `pbx-net` bridge. On the bridge, every call it makes to FreePBX, AMI an
 AvantFax arrives **sourced from the container's own `172.31.x.x` address**, so the
 AMI permit and the FreePBX access log both end up keyed on a Docker address. On
 the host network it reaches all three on this host's LAN IP, Asterisk sees
-`192.168.1.46`, and the permit is the LAN subnet only. Nothing references the
+`192.168.1.30`, and the permit is the LAN subnet only. Nothing references the
 portal by container name (the PBX never calls back into it), so there is no
 Docker DNS name to lose — and NPM still forwards to `<LAN_IP>:3001`.
 
