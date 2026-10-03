@@ -1,0 +1,12 @@
+# Apply only after building/loading the portal image with gateway + Vault support.
+# docker compose -f docker-compose.full.yml -f compose.gateway-vault.yml up -d --no-deps portal
+services:
+  portal:
+    image: zeus/portal:gateway-vault-20261001b
+    pull_policy: never
+    environment:
+      VOICEMAIL_SUMMARY_URL: http://192.168.1.71:20128/v1
+      VOICEMAIL_SUMMARY_MODEL: auto/best-free
+      OMNIROUTE_API_KEY: vault://cerulean/zeus#OMNIROUTE_API_KEY
+      OLLAMA_URL: ""
+      OLLAMA_MODEL: ""
