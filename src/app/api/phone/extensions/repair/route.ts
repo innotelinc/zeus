@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 import { requireUser, badRequest } from "@/lib/api-helpers";
 import db from "@/lib/db";
-import { MEDIA_FILE, POST_FILE, provisionMediaAddress, provisionWebrtc, readWebrtcState, removeLegacyFragment, sectionHeader } from "@/lib/pjsip-endpoint";
+import { MEDIA_FILE, POST_FILE, provisionMediaAddress, provisionWebrtc, readWebrtcState, removeLegacyFragment, sectionHeader, type MediaAddressState, type SoftphoneState } from "@/lib/pjsip-endpoint";
 import { pbxSecretFor } from "@/lib/pjsip-secret";
 import { reloadPjsipIfLive } from "@/lib/pjsip-reload";
 import { assessSoftphone } from "@/lib/extension-readiness";
@@ -72,10 +72,59 @@ export async function POST(req: Request) {
   }
 
   // One write, in a file the portal owns, appending to an object FreePBX owns.
-  const softphone = provisionWebrtc(ext.extension_id);
+  //
+  // A write that throws must NOT be swallowed into a success: the whole
+  // reported symptom of the missing group-write bit was a 200 whose body
+  // restated the state the repair had failed to change — "…does not carry
+  // `[<ext>](+)` … Add `[<ext>](+)` … the repair path does" — which is the
+  // same sentence the operator read *before* clicking Repair. Name the cause
+  // and the fix instead (pbx/portal_config_access.py).
+  let softphone: SoftphoneState;
+  try {
+    softphone = provisionWebrtc(ext.extension_id);
+  } catch (e) {
+    return NextResponse.json(
+      {
+        error: "webrtc_settings_not_writable",
+        reason:
+          `could not write ${POST_FILE} for Ext ${ext.extension_id}: ` +
+          `${e instanceof Error ? e.message : "unknown error"}`,
+        repair:
+          "the portal must be able to write the operator-owned PJSIP files it extends. " +
+          "On the PBX run `python3 pbx/portal_config_access.py --apply` (the PBX entrypoint " +
+          "and the zeus-pbx-sync timer already do): it gives those files the portal's own " +
+          "primary gid. FreePBX's `fwconsole chown` leaves every file under /etc/asterisk " +
+          "at 0664 asterisk:asterisk on every boot, and the portal's entrypoint drops " +
+          "privileges with `su-exec`, which discards any `group_add` grant — so the group " +
+          "has to be the portal's own, not the asterisk group.",
+        softphone: assessSoftphone(
+          ext.extension_id,
+          secret,
+          pbxSecret,
+          readWebrtcState(ext.extension_id),
+        ),
+      },
+      { status: 409 },
+    );
+  }
   // A repair also fixes the address the phone is handed, for a box that was
   // built before it was set (nothing wrote this file on older boots).
-  const media = provisionMediaAddress(ext.extension_id);
+  let media: MediaAddressState;
+  try {
+    media = provisionMediaAddress(ext.extension_id);
+  } catch (e) {
+    // The WebRTC half landed, so this is a partial repair rather than a
+    // failure: report it as such instead of claiming both.
+    media = {
+      written: false,
+      file: MEDIA_FILE,
+      address: "",
+      reason:
+        `the WebRTC settings were written, but the media address could not be: ` +
+        `${e instanceof Error ? e.message : "unknown error"}. ` +
+        `Make ${MEDIA_FILE} group-writable by the asterisk group (pbx/portal_config_access.py).`,
+    };
+  }
   // Reload based on the state we just wrote, never the stale pre-repair read.
   // The previous code used `before` whenever media_address already existed;
   // that made a missing WebRTC section write successfully but skip the reload.
@@ -101,6 +150,9 @@ export async function POST(req: Request) {
     media_address_file: MEDIA_FILE,
     media_address: media.address,
     media_address_written: media.written,
+    // Named so a half-repair is visible: the WebRTC settings landed and the
+    // media address did not, which is a different story from "repair failed".
+    media_address_reason: media.written ? "" : media.reason,
     softphone: readiness,
   });
 }
