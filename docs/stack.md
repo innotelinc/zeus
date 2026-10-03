@@ -170,7 +170,10 @@ The platform's SecretOps is **Cerulean Vault** — HashiCorp Vault, KV v2, hoste
 Cerulean — with `vault://<mount>/<path>#<key>` references in `.env`:
 
 ```bash
+SESSION_SECRET=vault://cerulean/zeus#SESSION_SECRET
 VOIPMS_SIP_PASS=vault://cerulean/zeus#VOIPMS_SIP_PASS
+AUTHENTIK_CLIENT_SECRET=vault://cerulean/zeus#AUTHENTIK_CLIENT_SECRET
+# … one reference per secret; Vault holds the value, `.env` only names it
 ```
 
 Cerulean mints this stack's **path-scoped** token (its policy covers only
@@ -202,16 +205,75 @@ Next.js server boots — so every consumer reads the plain value from
 - `VAULT_ADDR` plus `VAULT_TOKEN` (or `VAULT_TOKEN_FILE`) are the only required
   settings; `VAULT_PREFIX` defaults to `cerulean`, and `VAULT_NAMESPACE` /
   `VAULT_SKIP_VERIFY` / `VAULT_CACERT` cover Enterprise namespaces and TLS.
-- Resolvable keys: `SESSION_SECRET`, `VOIPMS_SIP_PASS`, `VOIPMS_API_USERNAME`,
-  `VOIPMS_API_PASSWORD`, `VOIPMS_IAX_PASS`, `VOIPMS_WEBHOOK_SECRET`,
-  `FREEPBX_AMI_SECRET`, `ASTERISK_AMI_SECRET`, `AVANTFAX_WEBHOOK_SECRET`,
-  `STRIPE_SECRET_KEY`, `STRIPE_WEBHOOK_SECRET`, `TURN_CREDENTIAL`.
+- Resolvable keys (`VAULT_KEYS` in `docker-entrypoint.sh`): `SESSION_SECRET`,
+  `VOIPMS_SIP_PASS`, `VOIPMS_API_USERNAME`, `VOIPMS_API_PASSWORD`,
+  `VOIPMS_IAX_PASS`, `VOIPMS_WEBHOOK_SECRET`, `FREEPBX_AMI_SECRET`,
+  `ASTERISK_AMI_SECRET`, `AVANTFAX_WEBHOOK_SECRET`, `STRIPE_SECRET_KEY`,
+  `STRIPE_WEBHOOK_SECRET`, `TURN_CREDENTIAL`, `OMNIROUTE_API_KEY`,
+  `AUTHENTIK_CLIENT_SECRET`, `AUTHENTIK_SECRET_KEY`, `AUTHENTIK_TOKEN`,
+  `AUTHENTIK_POSTGRES_PASSWORD`, `AUTHENTIK_REDIS_PASSWORD`,
+  `AUTHENTIK_BOOTSTRAP_PASSWORD`.
+- **Whole-env resolution (compose interpolation).** A key another service reads
+  through compose interpolation — `TURN_CREDENTIAL` for coturn,
+  `FREEPBX_AMI_SECRET` / `PBX_DB_PASS` / `AVANTFAX_DB_PASS` for freepbx — never
+  reaches that service through the portal entrypoint, so it cannot be a
+  reference in `.env` unless the file is resolved *before* compose runs. Every
+  `docker compose` invocation for this stack goes through
+  `scripts/compose-vault.sh`, which runs `scripts/vault-env-file.mjs` (the
+  file-level companion to the portal's `vault-env.mjs`) over `.env` into
+  `data/.env.resolved` and passes it as `--env-file`. Compose then interpolates
+  real values for freepbx/coturn, while the portal's own `env_file: .env` still
+  carries references that its entrypoint resolves at boot.
+  `scripts/compose-vault.sh --check` resolves and reports without running
+  compose. A plain `docker compose up` bypasses all of this and would hand a
+  sibling the literal reference string.
 - A reference that cannot be resolved — unconfigured Vault, an unreachable
   server, a missing key, an empty value — **fails the container** rather than
   booting with a literal reference, and a leftover `infisical://` value is
   refused outright. Plain values pass through untouched.
+- **Every reference needs one of the two routes above.** Adding a `vault://`
+  reference to `.env` is a two-place edit: put the key in `VAULT_KEYS`
+  (route 1) or make a compose file interpolate it as `${KEY:-}` (route 2).
+  A key in neither reaches the consumer as the literal `vault://…` string,
+  which is non-empty — so truthiness guards pass, the container boots healthy,
+  and health checks stay green. Nothing fails until a value is sent to a third
+  party. `scripts/vault-coverage.test.mjs` asserts the invariant over `.env` and
+  the tracked examples, so the omission fails CI instead of sign-in.
 - One read per Vault path, not per key: the whole key list above is one secret,
   so a boot costs a single round trip.
+
+### Migrated 2026-10-01
+
+Ten references now resolve at boot (was two). `VOIPMS_API_PASSWORD`,
+`OMNIROUTE_API_KEY` and the six `AUTHENTIK_*` secrets moved into `cerulean/zeus`
+(union with the existing `SESSION_SECRET` / `VOIPMS_SIP_PASS`), `.env` was
+rewritten to references, and the portal image was rebuilt
+(`zeus/portal:gateway-vault-20261001b`) with the extended `VAULT_KEYS` list.
+Startup logs `[zeus][vault] resolved 10 secret reference(s) from cerulean …`.
+
+Later the same day the shared keys left `.env` at rest
+(`cerulean/zeus` now holds 14): `FREEPBX_AMI_SECRET`, `TURN_CREDENTIAL`,
+`PBX_DB_PASS` and `AVANTFAX_DB_PASS` are references, and
+`scripts/compose-vault.sh` + `scripts/vault-env-file.mjs` resolve the whole
+file before compose so freepbx/coturn still receive real values — verified with
+`compose-vault.sh … config`, where only the portal's `env_file` block retains
+references. `NPM_*` and other values only the provisioning scripts read stay
+plaintext, because `scripts/setup.sh` reads `.env` directly.
+
+The estate-wide reference checker (`ips/scripts/check-vault-refs.py`) then
+flagged five more values as **present but not usable**: `AUTHENTIK_SECRET_KEY`,
+`AUTHENTIK_TOKEN`, `AUTHENTIK_POSTGRES_PASSWORD`, `AUTHENTIK_REDIS_PASSWORD`
+and `AUTHENTIK_BOOTSTRAP_PASSWORD`. The 2026-09-16 migration had copied the
+`change-me-…` placeholders **and their trailing `# openssl rand …` comments**
+straight out of `.env.docker.example`, so Vault held a comment-contaminated
+placeholder instead of a secret. They drive only
+`docker-compose.platform.yml` (the optional self-hosted Authentik, which is not
+deployed — `auth.zeus.innotel.us` is served by Cerulean's Authentik), so nothing
+was broken at runtime; the values were still the worst of both worlds, looking
+configured in every review and failing the day the platform compose is used.
+All five were replaced with freshly minted values (`openssl rand -base64 36` /
+`-base64 48` / `-base64 36` / `-hex 32` / `-base64 18`, as the template
+documents), and the checker now reports all 26 estate references resolve.
 
 ## Co-hosting with Capstone (shared host)
 
