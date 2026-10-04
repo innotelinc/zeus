@@ -294,6 +294,22 @@ ari_conf_guard() {
   fi
 }
 
+# The writing half of the guard, used only on the apply path. `--check` stays
+# read-only: a drift check runs immediately before a change and must not be the
+# thing that changes it. A dropped [general] block is FreePBX's own maintenance
+# clobbering a file this repo only converges a section into, so nothing else here
+# can put it back and the apply path has to.
+ari_conf_repair() {
+  if [ "$PBX_TARGET" = "container" ]; then
+    docker compose -f "$REPO_ROOT/docker-compose.full.yml" exec -T freepbx \
+      test -f /opt/zeus/pbx/ari_conf_guard.py >/dev/null 2>&1 || return 0
+    docker compose -f "$REPO_ROOT/docker-compose.full.yml" exec -T freepbx \
+      python3 /opt/zeus/pbx/ari_conf_guard.py --repair --quiet --ari-conf /etc/asterisk/ari.conf
+  else
+    python3 "$ARI_GUARD" --repair --quiet --ari-conf "$(pbx_asterisk_dir)/ari.conf"
+  fi
+}
+
 render_fragments
 
 # extensions_custom.conf / ari.conf are SHARED files: once another product
@@ -396,6 +412,13 @@ if [ "$drift" = 1 ] || [ "$RELOAD" = 1 ]; then
       chmod 640 "$host" 2>/dev/null || true
     fi
   done
+  # Restore ari.conf's [general] include block BEFORE the reload, so the reload
+  # that is about to run applies a PBX whose ARI endpoint is actually registered.
+  # Converge proves zeus's [<user>] section is current; it cannot see that the
+  # block around it was dropped, which is why the repair is a separate step.
+  if ! ari_conf_repair; then
+    echo "zeus-pbx: WARNING: ari.conf [general] include block is still missing — ARI users will not load until it is restored" >&2
+  fi
   reload_pbx
   if ! ari_conf_guard; then
     echo "zeus-pbx: WARNING: ari.conf [general] include block is still missing — ARI users will not load until it is restored" >&2

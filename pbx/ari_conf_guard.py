@@ -20,8 +20,12 @@ passed — yet `ari_additional_custom.conf` (where Capstone's `[dograh]` user
 lives) was no longer included, `/ari/asterisk/info` started returning 404, and
 the only symptom was calls that were never answered.
 
-This guard asserts the *include plumbing* survives. It is a plain detector: it
-reports drift (exit 1) and never edits the file.
+This guard asserts the *include plumbing* survives. Detection is read-only: it
+reports drift (exit 1) and never edits the file. `--repair` is the one writing
+path, and it is deliberately narrow — it puts back only what the detector proved
+missing (a dropped `[general]` block or an absent `#include`), never invents a
+file, and never overrides an explicit `enabled = no`, which is a decision rather
+than an accident.
 
 Contract
 --------
@@ -39,8 +43,9 @@ Usage:
   ari_conf_guard.py --ari-conf /etc/asterisk/ari.conf
   ari_conf_guard.py --ari-conf <file> --asterisk-dir <dir> [--require-include NAME]...
   ari_conf_guard.py --ari-conf <file> --check     # exit 1 on drift (default behaviour)
+  ari_conf_guard.py --ari-conf <file> --repair    # restore a dropped include block
 
-Exit codes: 0 in sync, 1 drift, 2 usage/IO error.
+Exit codes: 0 in sync (or repaired), 1 drift (or unrepairable), 2 usage/IO error.
 """
 from __future__ import annotations
 
@@ -139,6 +144,90 @@ def evaluate(ari_conf: str, asterisk_dir: str, require_includes=None):
     return ok, lines
 
 
+def canonical_block(fragments):
+    """The `[general]` include block, in FreePBX's own fragment order."""
+    return "[general]\n" + "".join("#include %s\n" % frag for frag in fragments)
+
+
+def insert_includes(text: str, missing) -> str:
+    """Add the `#include` lines for `missing`, just under the `[general]` header."""
+    out: list[str] = []
+    inserted = False
+    for line in text.splitlines(keepends=True):
+        out.append(line)
+        match = SECTION_RE.match(line)
+        if not inserted and match and match.group(1) == "general":
+            out.extend("#include %s\n" % frag for frag in missing)
+            inserted = True
+    return "".join(out)
+
+
+def repair(ari_conf: str, asterisk_dir: str, require_includes=None):
+    """Put back the include plumbing `evaluate` proved missing.
+
+    Returns ``(ok, changed, lines)``. Two things it will not do, on purpose: it
+    does not create `ari.conf` (only an existing file is repaired — inventing one
+    would hide that the build is wrong), and it does not touch a `[general]` that
+    sets ``enabled = no`` (that is somebody's decision, not a clobber).
+
+    The write goes through ``os.path.realpath`` so a symlinked `ari.conf` — the
+    FreePBX `arimanager` module's own file — is rewritten in place rather than
+    being replaced by a regular file.
+    """
+    lines: list[str] = []
+    if require_includes:
+        fragments = [f for f in require_includes]
+    else:
+        fragments = [f for f in KNOWN_FRAGMENTS
+                     if os.path.isfile(os.path.join(asterisk_dir, f))]
+
+    if not fragments:
+        lines.append("no FreePBX ARI include fragments next to ari.conf — nothing to repair")
+        return True, False, lines
+
+    if not os.path.isfile(ari_conf):
+        lines.append("ari.conf is missing — refusing to create it (repair only edits an "
+                     "existing file)")
+        return False, False, lines
+
+    with open(ari_conf, "r", encoding="utf-8", errors="replace") as fh:
+        original = fh.read()
+
+    has_general, enabled, includes = parse(original)
+    missing = [frag for frag in fragments if frag not in includes]
+
+    if has_general and enabled == "no":
+        lines.append("[general] sets enabled = no — refusing to change an explicit decision")
+        return False, False, lines
+    if has_general and not missing:
+        lines.append("ari.conf [general] include block already intact")
+        return True, False, lines
+
+    if not has_general:
+        # The whole block was dropped: put it back at the top of the file, where
+        # FreePBX's generator keeps it.
+        text = canonical_block(fragments) + "\n" + original
+        what = "restored the dropped [general] include block (%s)" % ", ".join(fragments)
+    else:
+        text = insert_includes(original, missing)
+        what = "added missing #include line(s): %s" % ", ".join(missing)
+
+    real = os.path.realpath(ari_conf)
+    temp = "%s.guard-repair.tmp" % real
+    with open(temp, "w", encoding="utf-8") as fh:
+        fh.write(text)
+    try:
+        st = os.stat(real)
+        os.chmod(temp, st.st_mode & 0o7777)
+        os.chown(temp, st.st_uid, st.st_gid)
+    except OSError:  # pragma: no cover - ownership is best-effort
+        pass
+    os.replace(temp, real)
+
+    lines.append(what)
+    return True, True, lines
+
+
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser(
         description=__doc__,
@@ -153,6 +242,9 @@ def main(argv=None) -> int:
                     metavar="NAME",
                     help="fragment that MUST be included, even if absent on disk "
                          "(repeatable; default: every known fragment present)")
+    ap.add_argument("--repair", action="store_true",
+                    help="restore the [general] include block when it is missing "
+                         "(writes ari.conf; refuses an explicit enabled = no)")
     ap.add_argument("-q", "--quiet", action="store_true",
                     help="print nothing when in sync (findings always print)")
     args = ap.parse_args(argv)
@@ -162,6 +254,14 @@ def main(argv=None) -> int:
     if not os.path.isdir(asterisk_dir):
         print("ari-conf-guard: no such directory: %s" % asterisk_dir, file=sys.stderr)
         return 2
+
+    if args.repair:
+        ok, changed, findings = repair(ari_conf, asterisk_dir,
+                                       require_includes=args.require_include or None)
+        if not (args.quiet and ok and not changed):
+            for line in findings:
+                print("ari-conf-guard: %s" % line, file=sys.stderr)
+        return 0 if ok else 1
 
     ok, findings = evaluate(ari_conf, asterisk_dir,
                             require_includes=args.require_include or None)
