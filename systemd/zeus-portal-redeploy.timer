@@ -1,0 +1,15 @@
+[Unit]
+Description=Zeus — periodic portal redeploy check
+Documentation=https://zeus.innotel.us
+
+[Timer]
+# Deploy-on-change: the service is hash-gated, so most runs exit without
+# touching npm or systemd. Runs shortly after boot (once the portal is up) and
+# then every 5 minutes, which is the window between editing the portal and the
+# running server serving the new build.
+OnBootSec=5min
+OnUnitActiveSec=5min
+Unit=zeus-portal-redeploy.service
+
+[Install]
+WantedBy=timers.target

@@ -1,0 +1,24 @@
+[Unit]
+Description=Zeus — rebuild + restart the portal when its source changed
+Documentation=https://zeus.innotel.us
+After=network-online.target zeus-portal.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+# WorkingDirectory is rewritten to the real repo root at install time by
+# scripts/setup-portal.sh (the Capstone convention). Do not hard-code a host path.
+WorkingDirectory=/PATH/TO/ZEUS
+
+# The portal is built in place, so a code change does nothing to the running
+# server until it is rebuilt and restarted. The script is hash-gated: it
+# compares the portal sources against the stamp left by the last build and does
+# nothing (no npm, no systemd) when they match. That is why running it on a timer
+# is cheap.
+ExecStart=/bin/bash scripts/redeploy-portal.sh
+
+# A cold build on a small box can take a while; allow for it.
+TimeoutStartSec=900s
+
+StandardOutput=journal
+StandardError=journal

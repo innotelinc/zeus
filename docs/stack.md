@@ -242,6 +242,28 @@ Next.js server boots — so every consumer reads the plain value from
 - One read per Vault path, not per key: the whole key list above is one secret,
   so a boot costs a single round trip.
 
+### Rebuilding the portal after a source change
+
+The portal is built **in place** and run by `zeus-portal.service`
+(`scripts/setup-portal.sh`: `npm run build`, then `systemctl start
+zeus-portal`). A `src/` change therefore does nothing to the running server
+until it is rebuilt and restarted — the reason a committed fix (for example an
+`AUTHENTIK_CLIENT_SECRET` that was a `vault://` reference) can be live in the
+repo while the deployed portal still fails the token exchange.
+
+```bash
+scripts/redeploy-portal.sh          # rebuild + restart, only if sources changed
+scripts/redeploy-portal.sh --check  # exit 1 if a rebuild is pending (CI-friendly)
+scripts/redeploy-portal.sh --force  # rebuild unconditionally
+```
+
+The script is hash-gated: it stamps the portal sources after a successful build
+and touches nothing when they match. Point it at the installed copy with
+`ZEUS_PORTAL_APP_DIR` when the portal does not run from this checkout.
+`setup-portal.sh` enables `zeus-portal-redeploy.timer`, which runs it every 5
+minutes, so the running portal does not lag the repo. CI's `portal-deploy-guard`
+job runs `--check` and the vault-resolution tests together.
+
 ### Migrated 2026-10-01
 
 Ten references now resolve at boot (was two). `VOIPMS_API_PASSWORD`,

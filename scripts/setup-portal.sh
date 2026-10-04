@@ -178,7 +178,8 @@ echo ">>> [4/4] Systemd service + firewall"
 # Version-controlled unit templates live in systemd/ (the Capstone
 # convention); rewrite @APP_DIR@ and the placeholder repo path at install
 # time — never hand-edit the live unit.
-for unit in zeus-portal.service zeus-pbx-sync.service zeus-pbx-sync.timer; do
+for unit in zeus-portal.service zeus-pbx-sync.service zeus-pbx-sync.timer \
+            zeus-portal-redeploy.service zeus-portal-redeploy.timer; do
   sed \
     -e "s|@APP_DIR@|${APP_DIR}|g" \
     -e "s|/PATH/TO/ZEUS|${REPO_DIR}|g" \
@@ -188,6 +189,10 @@ done
 systemctl daemon-reload
 systemctl enable zeus-portal
 systemctl start  zeus-portal
+# Portal redeploy: the app is built in place, so a src/ change is invisible to
+# the running server until it is rebuilt and restarted. The timer reconciles
+# that drift (the script is hash-gated, so an unchanged tree costs nothing).
+systemctl enable --now zeus-portal-redeploy.timer
 # PBX fragment reconciliation — enabled when scripts/pbx.env exists
 if [ -f "${SCRIPT_DIR}/pbx.env" ]; then
   systemctl enable --now zeus-pbx-sync.timer

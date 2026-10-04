@@ -106,3 +106,38 @@ jobs:
             bad=1
           fi
           exit $bad
+
+  # The two halves of "a fix landed but the live portal still errors": the
+  # source may be ahead of the built app (Next is built in place and run by
+  # zeus-portal.service, so a src/ change is invisible until it is rebuilt), or
+  # a `vault://` reference may reach a consumer unresolved — which boots healthy
+  # and fails only at the point of use (AUTHENTIK_CLIENT_SECRET surfacing as
+  # `invalid_client` at the token exchange, i.e. "Could not complete the
+  # sign-in"). The vault tests mock Vault, so no network or IdP is needed.
+  portal-deploy-guard:
+    name: Portal deploy drift + vault references
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Is the built portal in sync with the source?
+        run: |
+          set -uo pipefail
+          rc=0
+          scripts/redeploy-portal.sh --check || rc=$?
+          case "$rc" in
+            0) echo "::notice::portal sources match the last build" ;;
+            1) echo "::warning::a portal rebuild is pending — the running server lags the repo (the redeploy timer reconciles it)" ;;
+            *) echo "::error::redeploy-portal --check failed (exit $rc)"; exit "$rc" ;;
+          esac
+
+      - name: Every vault:// reference is resolved before use
+        run: node --test scripts/vault-coverage.test.mjs scripts/vault-env.test.mjs
