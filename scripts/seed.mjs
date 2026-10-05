@@ -1,6 +1,5 @@
 import { randomUUID } from "node:crypto";
 import Database from "better-sqlite3";
-import bcrypt from "bcryptjs";
 import { readFileSync, existsSync, mkdirSync } from "node:fs";
 import { join } from "node:path";
 
@@ -15,58 +14,56 @@ const schemaPath = join(process.cwd(), "scripts", "schema.sql");
 const schema = readFileSync(schemaPath, "utf8");
 db.exec(schema);
 
-// ── Seed demo user ──
-const userId = randomUUID();
-// Documented demo password (printed at the bottom).
-const DEMO_PASSWORD = "8dpWR8wl4eYncm5v";
-// Hash generated at runtime so it can never drift from DEMO_PASSWORD.
-const passwordHash = bcrypt.hashSync(DEMO_PASSWORD, 10);
+// ═══════════════════════════════════════════════════════════════════
+// A fresh database seeds the estate's own infrastructure, and nothing else.
+//
+// There is deliberately **no demo dataset**: no demo user, number, contact, SMS
+// conversation, fax, voicemail or call history. Those rows described nothing
+// real, so every screen started out full of fixtures an operator had to learn
+// to ignore. The "demo extension" was the worst of them — it named a phone no
+// PBX had, so the health panel could only ever report it as "No contact".
+//
+// What *is* seeded is the fax service, and it is not a fixture: four HylaFAX
+// virtual modems really run on this estate (`ttyIAX1`–`ttyIAX4`, started by
+// docker-entrypoint-full.sh), and the rows below are how the portal manages
+// them.
+// ═══════════════════════════════════════════════════════════════════
 
-const existing = db.prepare("SELECT id, password_hash FROM users WHERE email = ?").get("demo@zeus.innotel.us");
-if (existing) {
-  // Self-healing: if the stored hash doesn't match the documented password,
-  // repair it. This fixes any drift (manual edits, older seeds with a bad
-  // hash, or the legacy broken $2a$ hash) without hardcoding a specific
-  // broken value.
-  if (bcrypt.compareSync(DEMO_PASSWORD, existing.password_hash)) {
-    console.log("✅ Demo user exists with correct password. Skipping seed.");
-    db.close();
-    process.exit(0);
-  }
-  db.prepare("UPDATE users SET password_hash = ? WHERE email = ?").run(passwordHash, "demo@zeus.innotel.us");
-  console.log("🔧 Repaired demo password hash to the documented password. Login now works.");
-  db.close();
-  process.exit(0);
+// ── The account the fax lines belong to ───────────────────────────
+// `freepbx_extensions.user_id` is a NOT NULL foreign key, so the lines need an
+// owner, and in production they belong to this tenant — a fresh database
+// matches. The account is written the way the portal's own OIDC path and
+// `scripts/legacy_portal_merge.py` write one: `password_hash = '!oidc'` is the
+// marker for "managed by Authentik", and the first SSO login binds to it by
+// email. It is not a password account, so there is nothing to sign in with
+// locally until one is registered or Authentik is configured.
+const FAX_OWNER_EMAIL = "denovo-credit-corporation@innotel.us";
+const FAX_OWNER_NAME = "Denovo Credit Corporation";
+
+const existingOwner = db
+  .prepare("SELECT id FROM users WHERE email = ?")
+  .get(FAX_OWNER_EMAIL);
+let ownerId = existingOwner?.id;
+if (!ownerId) {
+  ownerId = randomUUID();
+  db.prepare(
+    // Columns are the base schema's own: the seed runs against `schema.sql`,
+    // before the app's migrations add `role` and the rest. Naming a column the
+    // migrations own would make a first boot fail on its very first insert.
+    "INSERT INTO users (id, email, name, password_hash, plan, plan_status, country, created_at, updated_at) VALUES (?, ?, ?, '!oidc', 'business', 'active', 'US', datetime('now'), datetime('now'))",
+  ).run(ownerId, FAX_OWNER_EMAIL, FAX_OWNER_NAME);
 }
 
-db.prepare(
-  "INSERT INTO users (id, email, name, password_hash, phone, plan) VALUES (?, ?, ?, ?, ?, ?)"
-).run(userId, "demo@zeus.innotel.us", "Demo User", passwordHash, "+1 555 100 2000", "business");
-
-// ── Seed demo phone numbers ──
-const numId1 = randomUUID();
-const numId2 = randomUUID();
-db.prepare(
-  "INSERT INTO phone_numbers (id, user_id, did, area_code, location, sms_enabled, fax_enabled, status) VALUES (?, ?, ?, ?, ?, 1, 1, 'active')"
-).run(numId1, userId, "13025551001", "302", "Wilmington, DE");
-db.prepare(
-  "INSERT INTO phone_numbers (id, user_id, did, area_code, location, sms_enabled, fax_enabled, status) VALUES (?, ?, ?, ?, ?, 1, 0, 'active')"
-).run(numId2, userId, "13025551002", "302", "Wilmington, DE");
-
-// ── Seed the extensions ──
-// The fax service lines below are the whole of them — there is deliberately no
-// "Demo Extension 1001". That row named a phone no PBX had, so a fresh install
-// paid for an extension that could only ever read "No contact", and the demo
-// voicemail is better attached to a line the estate really runs.
-// The four HylaFAX virtual modems (`ttyIAX1`–`ttyIAX4`, started by
-// docker-entrypoint-full.sh). Two names are in play and neither is a typo:
+// ── The fax service lines ─────────────────────────────────────────
+// Two names are in play, and neither is a typo:
 //
 //   * `iaxmodem1`–`iaxmodem4` are the *Asterisk peers*. `/etc/iaxmodem/ttyIAX1`
 //     sets `peername iaxmodem1`, so the bridge only comes up under that name —
-//     renaming the peer breaks the modem rather than the extension.
-//   * `3291`–`3294` are the *extensions* the estate reaches those lines on, and
-//     this is where they belong: a fresh database has the fax lines the PBX
-//     actually runs, instead of a numbers page that knows nothing about them.
+//     renaming the peer breaks the modem, not the extension.
+//   * `3291`–`3294` are the *extensions* the estate reaches those lines on. They
+//     are IAX2, not PJSIP, so no phone ever registers against them — which is
+//     why the health panel judges extensions by the PBX's own endpoint list
+//     rather than assuming every row in this table is a phone.
 //
 // The secret is the modems' own (`secret 329fax` in `/etc/iaxmodem/ttyIAX<N>`
 // and in `iax_fax_custom.conf`), so the portal and the PBX agree. No voicemail:
@@ -77,66 +74,25 @@ const FAX_LINES = [
   ["3293", "Fax 3"],
   ["3294", "Fax 4"],
 ];
+
 const insertFaxLine = db.prepare(
-  "INSERT INTO freepbx_extensions (id, user_id, extension_id, extension_name, extension_secret, voicemail_enabled, voicemail_pin, status) VALUES (?, ?, ?, ?, ?, 0, NULL, 'active')"
+  "INSERT INTO freepbx_extensions (id, user_id, extension_id, extension_name, extension_secret, voicemail_enabled, voicemail_pin, status) VALUES (?, ?, ?, ?, '329fax', 0, NULL, 'active')",
 );
+
+let created = 0;
 for (const [extensionId, extensionName] of FAX_LINES) {
-  insertFaxLine.run(randomUUID(), userId, extensionId, extensionName, "329fax");
+  // Idempotent: the entrypoint runs this only on a first boot, but `npm run
+  // seed` is a manual entry point too.
+  const present = db
+    .prepare("SELECT 1 FROM freepbx_extensions WHERE extension_id = ?")
+    .get(extensionId);
+  if (present) continue;
+  insertFaxLine.run(randomUUID(), ownerId, extensionId, extensionName);
+  created += 1;
 }
 
-// ── Seed demo contacts ──
-db.prepare(
-  "INSERT INTO contacts (id, user_id, name, phone, email) VALUES (?, ?, ?, ?, ?)"
-).run(randomUUID(), userId, "Alice Johnson", "+1 555 300 4000", "alice@example.com");
-db.prepare(
-  "INSERT INTO contacts (id, user_id, name, phone, email) VALUES (?, ?, ?, ?, ?)"
-).run(randomUUID(), userId, "Bob Smith", "+1 555 700 8000", "bob@acmecorp.com");
-db.prepare(
-  "INSERT INTO contacts (id, user_id, name, phone, email, notes) VALUES (?, ?, ?, ?, ?, ?)"
-).run(randomUUID(), userId, "Carol Williams", "+1 555 900 0000", "carol@example.com", "Client since 2024");
-db.prepare(
-  "INSERT INTO contacts (id, user_id, name, phone) VALUES (?, ?, ?, ?)"
-).run(randomUUID(), userId, "Dave Martinez", "+1 555 500 6000");
-
-// ── Seed demo SMS conversation ──
-const convId = randomUUID();
-db.prepare(
-  "INSERT INTO sms_conversations (id, user_id, phone_number_id, contact_phone, contact_name, last_message_text, last_message_at, unread_count) VALUES (?, ?, ?, ?, ?, ?, datetime('now'), 1)"
-).run(convId, userId, numId1, "+1 555 300 4000", "Alice Johnson", "Hey, are you available for a call tomorrow?");
-
-db.prepare(
-  "INSERT INTO sms_messages (id, conversation_id, user_id, direction, from_number, to_number, body, status) VALUES (?, ?, ?, 'inbound', ?, ?, ?, 'delivered')"
-).run(randomUUID(), convId, userId, "+1 555 300 4000", "13025551001", "Hey, are you available for a call tomorrow?");
-
-db.prepare(
-  "INSERT INTO sms_messages (id, conversation_id, user_id, direction, from_number, to_number, body, status) VALUES (?, ?, ?, 'outbound', ?, ?, ?, 'delivered')"
-).run(randomUUID(), convId, userId, "13025551001", "+1 555 300 4000", "Sure! How about 2pm?");
-
-// ── Seed demo fax ──
-db.prepare(
-  "INSERT INTO faxes (id, user_id, direction, status, to_number, pages, subject, created_at, completed_at) VALUES (?, ?, 'outbound', 'completed', ?, 2, ?, datetime('now', '-2 days'), datetime('now', '-2 days'))"
-).run(randomUUID(), userId, "+1 555 500 6000", "Invoice #2024-001");
-
-// ── Seed demo voicemail ──
-// On 3291, the demo user's first line: the dataset has no other extension to
-// hang it on, and a voicemail an operator can open beats an empty page.
-db.prepare(
-  "INSERT INTO voicemails (id, user_id, extension_id, caller_id, caller_name, duration_seconds, transcript, listened, created_at) VALUES (?, ?, '3291', '+1 555 700 8000', 'Bob Smith', 42, 'Hi, this is Bob from Acme Corp. Please call me back at your earliest convenience regarding the proposal.', 0, datetime('now', '-1 hour'))"
-).run(randomUUID(), userId);
-
-// ── Seed demo call history ──
-db.prepare(
-  "INSERT INTO call_history (id, user_id, extension_id, direction, caller_number, callee_number, caller_name, duration_seconds, status, created_at) VALUES (?, ?, '3291', 'inbound', '+1 555 700 8000', '3291', 'Bob Smith', 180, 'completed', datetime('now', '-1 hour'))"
-).run(randomUUID(), userId);
-db.prepare(
-  "INSERT INTO call_history (id, user_id, extension_id, direction, caller_number, callee_number, duration_seconds, status, created_at) VALUES (?, ?, '3291', 'outbound', '3291', '+1 555 900 0000', 45, 'completed', datetime('now', '-3 hours'))"
-).run(randomUUID(), userId);
-
-console.log("✅ Seed complete!");
-console.log("   Email:    demo@zeus.innotel.us");
-console.log("   Password: 8dpWR8wl4eYncm5v");
-console.log("   Plan:     Business");
-console.log("   Numbers:  13025551001, 13025551002");
-console.log("   Fax:      3291, 3292, 3293, 3294");
+console.log("✅ Seed complete — fax service lines only, no demo data.");
+console.log(`   Fax lines: 3291, 3292, 3293, 3294 (${created} created)`);
+console.log(`   Owner:     ${FAX_OWNER_EMAIL}`);
 
 db.close();

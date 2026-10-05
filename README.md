@@ -163,21 +163,23 @@ plan list lives at `subscribe.innotel.us`; `MAGNATE_SUBSCRIBE_URL` points at it.
 ```bash
 npm install
 cp .env.example .env   # fill in your credentials
-npm run seed           # creates demo@zeus.innotel.us / 8dpWR8wl4eYncm5v
+npm run seed           # seeds the fax service lines (no demo data)
 npm run dev            # runs on http://localhost:3000
 ```
 
-> Without Authentik configured, the portal falls back to the local password login (the seeded demo account works). Once `AUTHENTIK_ISSUER_URL`/`AUTHENTIK_CLIENT_ID`/`AUTHENTIK_CLIENT_SECRET` are set, password login is disabled and every sign-in goes through Authentik.
+> Without Authentik configured, the portal falls back to the local password login. **No account is seeded**, so register one at `/signup` first. Once `AUTHENTIK_ISSUER_URL`/`AUTHENTIK_CLIENT_ID`/`AUTHENTIK_CLIENT_SECRET` are set, password login is disabled and every sign-in goes through Authentik.
 
-### Demo account (dev only)
+### What a fresh database contains
 
-| Field    | Value              |
-|----------|--------------------|
-| Email    | demo@zeus.innotel.us |
-| Password | 8dpWR8wl4eYncm5v   |
-| Plan     | Phone              |
-| Numbers  | 13025551001, 13025551002 |
-| Ext      | 1001               |
+`npm run seed` seeds the estate's own infrastructure and nothing else: the four
+fax service lines (`3291`–`3294`, the HylaFAX modems, whose Asterisk peers are
+`iaxmodem1`–`iaxmodem4`), owned by the tenant account that owns them in
+production. It writes the account with `password_hash = '!oidc'`, the marker for
+"managed by Authentik", so the first SSO login binds to it by email.
+
+There is deliberately **no demo dataset** — no demo user, number, contact, SMS,
+fax, voicemail or call history — so register an account or configure Authentik
+to sign in.
 
 ---
 

@@ -21,7 +21,7 @@ fi
 if [ ! -f "$DB_PATH" ]; then
   echo ">>> First run detected — seeding database..."
   su-exec nextjs:nodejs node scripts/seed.mjs
-  echo ">>> Database ready. Demo login: demo@zeus.innotel.us / 8dpWR8wl4eYncm5v"
+  echo ">>> Database ready. Seeded the fax service lines; there is no demo account — register one, or sign in through Authentik."
 else
   echo ">>> Database exists — skipping seed."
 fi

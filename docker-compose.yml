@@ -8,7 +8,8 @@
 #   cp .env.docker.example .env   # then fill in your values
 #   docker compose up -d
 #
-# Demo login: demo@zeus.innotel.us / 8dpWR8wl4eYncm5v
+# No demo account is seeded. Register one at /signup, or configure Authentik
+# (AUTH_MODE defaults to whoever is set up — see the AUTH_MODE block below).
 # ═══════════════════════════════════════════════════════════════
 
 # Project name is pinned so container/volume names never depend on where this

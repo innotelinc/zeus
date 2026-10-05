@@ -216,7 +216,7 @@ echo "╔═══════════════════════�
 echo "║  ZEUS VOIP PORTAL — INSTALLATION COMPLETE              ║"
 echo "╠══════════════════════════════════════════════════════════╣"
 echo "║  PBX Portal   : https://${HOSTNAME}:3000                  ║"
-echo "║  Demo login   : demo@zeus.innotel.us / 8dpWR8wl4eYncm5v   ║"
+echo "║  Sign in      : register one, or use Authentik          ║"
 echo "║  FreePBX      : https://${HOSTNAME}/admin                 ║"
 echo "╠══════════════════════════════════════════════════════════╣"
 echo "║  Portal logs  : journalctl -u zeus-portal -f             ║"
