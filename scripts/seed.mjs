@@ -53,12 +53,11 @@ db.prepare(
   "INSERT INTO phone_numbers (id, user_id, did, area_code, location, sms_enabled, fax_enabled, status) VALUES (?, ?, ?, ?, ?, 1, 0, 'active')"
 ).run(numId2, userId, "13025551002", "302", "Wilmington, DE");
 
-// ── Seed demo extension ──
-db.prepare(
-  "INSERT INTO freepbx_extensions (id, user_id, extension_id, extension_name, extension_secret, voicemail_enabled, voicemail_pin, status) VALUES (?, ?, ?, ?, ?, 1, ?, 'active')"
-).run(randomUUID(), userId, "1001", "Demo Extension", "accbacb7495dfd426d5607a7aa42c17b", "1234");
-
-// ── Seed the fax service lines ──
+// ── Seed the extensions ──
+// The fax service lines below are the whole of them — there is deliberately no
+// "Demo Extension 1001". That row named a phone no PBX had, so a fresh install
+// paid for an extension that could only ever read "No contact", and the demo
+// voicemail is better attached to a line the estate really runs.
 // The four HylaFAX virtual modems (`ttyIAX1`–`ttyIAX4`, started by
 // docker-entrypoint-full.sh). Two names are in play and neither is a typo:
 //
@@ -119,16 +118,18 @@ db.prepare(
 ).run(randomUUID(), userId, "+1 555 500 6000", "Invoice #2024-001");
 
 // ── Seed demo voicemail ──
+// On 3291, the demo user's first line: the dataset has no other extension to
+// hang it on, and a voicemail an operator can open beats an empty page.
 db.prepare(
-  "INSERT INTO voicemails (id, user_id, extension_id, caller_id, caller_name, duration_seconds, transcript, listened, created_at) VALUES (?, ?, '1001', '+1 555 700 8000', 'Bob Smith', 42, 'Hi, this is Bob from Acme Corp. Please call me back at your earliest convenience regarding the proposal.', 0, datetime('now', '-1 hour'))"
+  "INSERT INTO voicemails (id, user_id, extension_id, caller_id, caller_name, duration_seconds, transcript, listened, created_at) VALUES (?, ?, '3291', '+1 555 700 8000', 'Bob Smith', 42, 'Hi, this is Bob from Acme Corp. Please call me back at your earliest convenience regarding the proposal.', 0, datetime('now', '-1 hour'))"
 ).run(randomUUID(), userId);
 
 // ── Seed demo call history ──
 db.prepare(
-  "INSERT INTO call_history (id, user_id, extension_id, direction, caller_number, callee_number, caller_name, duration_seconds, status, created_at) VALUES (?, ?, '1001', 'inbound', '+1 555 700 8000', '1001', 'Bob Smith', 180, 'completed', datetime('now', '-1 hour'))"
+  "INSERT INTO call_history (id, user_id, extension_id, direction, caller_number, callee_number, caller_name, duration_seconds, status, created_at) VALUES (?, ?, '3291', 'inbound', '+1 555 700 8000', '3291', 'Bob Smith', 180, 'completed', datetime('now', '-1 hour'))"
 ).run(randomUUID(), userId);
 db.prepare(
-  "INSERT INTO call_history (id, user_id, extension_id, direction, caller_number, callee_number, duration_seconds, status, created_at) VALUES (?, ?, '1001', 'outbound', '1001', '+1 555 900 0000', 45, 'completed', datetime('now', '-3 hours'))"
+  "INSERT INTO call_history (id, user_id, extension_id, direction, caller_number, callee_number, duration_seconds, status, created_at) VALUES (?, ?, '3291', 'outbound', '3291', '+1 555 900 0000', 45, 'completed', datetime('now', '-3 hours'))"
 ).run(randomUUID(), userId);
 
 console.log("✅ Seed complete!");
@@ -136,7 +137,6 @@ console.log("   Email:    demo@zeus.innotel.us");
 console.log("   Password: 8dpWR8wl4eYncm5v");
 console.log("   Plan:     Business");
 console.log("   Numbers:  13025551001, 13025551002");
-console.log("   Ext:      1001");
 console.log("   Fax:      3291, 3292, 3293, 3294");
 
 db.close();
