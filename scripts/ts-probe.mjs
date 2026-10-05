@@ -24,8 +24,18 @@ export const REPO = dirname(HERE);
 const require = createRequire(import.meta.url);
 const ts = require("typescript");
 
-/** Transpile one or more repo-relative modules into a temp dir; returns it. */
-export function transpile(sources, outDir) {
+/**
+ * Transpile one or more repo-relative modules into a temp dir; returns it.
+ *
+ * `aliases` maps a bare/aliased specifier to a location inside the temp dir
+ * (`{"@/lib/auth": "./auth.mjs"}`). A module that reaches for the app's own
+ * modules — a route handler, which imports `@/lib/*` and `next/server` — cannot
+ * be imported as-is: node has no `@/` alias and bare `next/server` does not
+ * resolve outside the Next runtime. Rewriting the specifier lets the caller drop
+ * a stub with the same name beside the transpiled copy, so the module under test
+ * runs for real against controlled collaborators.
+ */
+export function transpile(sources, outDir, aliases = {}) {
   const dir = outDir ?? mkdtempSync(join(tmpdir(), "zeus-ts-probe-"));
   // A bare specifier (`better-sqlite3`) resolves from the module's own URL, and
   // the module now lives in /tmp — so give the temp dir the repo's packages.
@@ -51,8 +61,12 @@ export function transpile(sources, outDir) {
       // wants the file name, and every module here is transpiled into the same
       // flat directory.
       .replace(/(from\s+")\.\/([^".]+)"/g, "$1./$2.mjs\"");
+    let aliased = js;
+    for (const [from, to] of Object.entries(aliases)) {
+      aliased = aliased.replaceAll(`"${from}"`, `"${to}"`);
+    }
     const name = source.split("/").pop().replace(/\.ts$/, ".mjs");
-    writeFileSync(join(dir, name), js);
+    writeFileSync(join(dir, name), aliased);
   }
   return dir;
 }

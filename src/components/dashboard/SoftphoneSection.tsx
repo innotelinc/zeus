@@ -308,35 +308,84 @@ export default function SoftphoneSection({ extensions, phoneNumbers }: Props) {
       await userAgent.start();
 
       const registerer = new Registerer(userAgent);
+      // The agent is owned by this panel from the moment it exists, not from the
+      // moment it registers: a refused attempt must not leave a socket behind,
+      // and a retry has to be able to unregister the attempt it replaces.
+      userAgentRef.current = userAgent;
+      registererRef.current = registerer;
       registerer.stateChange.addListener((state) => {
         if (state === RegistererState.Registered) setRegistration("registered");
         else if (state === RegistererState.Unregistered || state === RegistererState.Terminated) {
           setRegistration((prev) => (prev === "failed" ? prev : "none"));
         } else setRegistration("registering");
       });
-      await registerer.register({
-        // A refused REGISTER arrives here with the status code that explains
-        // it; the promise's own rejection is only a summary.
-        requestDelegate: {
-          onReject: (response) => {
-            registrationErrorRef.current = describeRejection(response);
-          },
-        },
+
+      // Wait for the registerer to actually reach `Registered`. It is tempting
+      // to read `registerer.state` right after `register()`, and this panel used
+      // to — but `register()` resolves the moment the request has been *sent*
+      // (SIP.js hands back the `RegisterUserAgentClient`, not the registrar's
+      // answer), so that state was `Initial` on every single attempt. The PBX
+      // accepted the registration while the browser reported "did not
+      // register", which is precisely the mismatch users saw: a live contact in
+      // the PBX and an error in the panel. Only `Registered` means reachable;
+      // `Unregistered`/`Terminated` mean the registrar refused us, and a silent
+      // socket means it never answered at all.
+      let settleRegistration!: (error?: Error) => void;
+      const registration = new Promise<void>((resolve, reject) => {
+        let settled = false;
+        const finish = (error?: Error) => {
+          if (settled) return;
+          settled = true;
+          clearTimeout(timeout);
+          registerer.stateChange.removeListener(onStateChange);
+          if (error) reject(error);
+          else resolve();
+        };
+        settleRegistration = (error) => finish(error);
+        const onStateChange = (state: RegistererState) => {
+          if (state === RegistererState.Registered) {
+            finish();
+          } else if (
+            state === RegistererState.Unregistered ||
+            state === RegistererState.Terminated
+          ) {
+            finish(
+              new Error(
+                registrationErrorRef.current || "The PBX did not accept the registration",
+              ),
+            );
+          }
+        };
+        registerer.stateChange.addListener(onStateChange);
+        const timeout = setTimeout(
+          () =>
+            finish(
+              new Error(
+                "The PBX did not answer the registration in time — check the WebSocket address in Settings → Softphone.",
+              ),
+            ),
+          15_000,
+        );
       });
 
-      // The panel used to call itself connected purely because a REGISTER had
-      // been sent. Until the PBX answers 200 the extension is unreachable: it
-      // shows Offline in FreePBX, inbound calls never ring here, and the
-      // outbound originate (which dials this extension back) fails. So the
-      // state is the registerer's, not the fact that we asked.
-      if (registerer.state !== RegistererState.Registered) {
-        throw new Error(
-          registrationErrorRef.current || "The PBX did not accept the registration",
+      try {
+        await registerer.register({
+          // A refused REGISTER arrives here with the status code that explains
+          // it; the request's own rejection only says it could not be sent.
+          requestDelegate: {
+            onReject: (response) => {
+              registrationErrorRef.current = describeRejection(response);
+            },
+          },
+        });
+      } catch (e) {
+        settleRegistration(
+          e instanceof Error ? e : new Error("The registration request could not be sent"),
         );
       }
 
-      userAgentRef.current = userAgent;
-      registererRef.current = registerer;
+      await registration;
+
       setCallState("idle");
       // Notify PhoneSection to refresh device states immediately
       window.dispatchEvent(new CustomEvent("pbx:extension-state-changed"));
@@ -348,6 +397,17 @@ export default function SoftphoneSection({ extensions, phoneNumbers }: Props) {
       );
       setRegistration("failed");
       setCallState("disconnected");
+      // The panel has disowned this attempt, so nothing may keep using it: close
+      // the socket rather than leave an unmanaged registration (and the phantom
+      // contact it would hold) behind.
+      try {
+        registererRef.current?.unregister().catch(() => {});
+        userAgentRef.current?.stop();
+      } catch {
+        // A socket we cannot reach is one we can only drop a reference to.
+      }
+      userAgentRef.current = null;
+      registererRef.current = null;
     }
   }
 

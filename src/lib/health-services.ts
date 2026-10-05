@@ -33,6 +33,7 @@ export const SERVICE_KEYS = [
   "extension_preflight",
   "softphone_media",
   "dograh_voice",
+  "outbound_trunks",
 ] as const;
 
 export type ServiceKey = (typeof SERVICE_KEYS)[number];
@@ -119,6 +120,12 @@ export const SERVICE_META: Record<ServiceKey, ServiceMeta> = {
     desc: "Which STT, TTS and LLM the agents actually run on",
     icon: "🎚️",
     product: "dograh",
+  },
+  outbound_trunks: {
+    label: "Outbound trunks",
+    desc: "The provider registrations calls leave through",
+    icon: "📤",
+    product: "asterisk",
   },
 };
 

@@ -254,6 +254,68 @@ export class AmiClient {
     });
   }
 
+  /**
+   * Collect the events one list-style action answers with.
+   *
+   * Asterisk's "show" actions are a burst: `EventList: start`, one event per
+   * object (`ContactList`, `OutboundRegistrationDetail`, …), then a `…Complete`
+   * event. `sendAction` resolves on the first response, which for a list is only
+   * the "what follows" note — so the objects have to be gathered from the event
+   * stream, and the completion event is the "stop waiting" a fixed timer cannot
+   * be (too short truncates the list, too long stalls every caller).
+   */
+  private collectActionEvents(
+    action: string,
+    matchEvent: string,
+    completeEvent: string,
+  ): Promise<Array<Record<string, string>>> {
+    return new Promise((resolve, reject) => {
+      const collected: Array<Record<string, string>> = [];
+      let complete = false;
+      const unsubscribe = this.onEvent((event) => {
+        if (event.Event === matchEvent) collected.push({ ...event });
+        if (event.Event === completeEvent) {
+          complete = true;
+          unsubscribe();
+          resolve(collected);
+        }
+      });
+      this.sendAction({ Action: action }).catch((err) => {
+        if (!complete) { unsubscribe(); reject(err); }
+      });
+      setTimeout(() => {
+        if (!complete) { unsubscribe(); resolve(collected); }
+      }, 5_000);
+    });
+  }
+
+  /**
+   * Live contacts, one per registered phone. Raw events: shape them with
+   * `summarizeContacts` in `pbx-health.ts`, which is where the field names and
+   * the "an extension with no contact" judgement are pinned and tested.
+   */
+  listContacts(): Promise<Array<Record<string, string>>> {
+    return this.collectActionEvents(
+      "PJSIPShowContacts",
+      "ContactList",
+      "ContactListComplete",
+    );
+  }
+
+  /**
+   * Outbound registrations (the trunks the estate dials out through). Raw
+   * events: shape them with `summarizeTrunks`, which drops the `AuthDetail`
+   * events this action interleaves — those carry the trunk's clear-text
+   * password.
+   */
+  listOutboundRegistrations(): Promise<Array<Record<string, string>>> {
+    return this.collectActionEvents(
+      "PJSIPShowRegistrationsOutbound",
+      "OutboundRegistrationDetail",
+      "OutboundRegistrationDetailComplete",
+    );
+  }
+
   /** Disconnect and stop reconnecting. */
   disconnect(): void {
     this.shouldReconnect = false;

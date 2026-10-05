@@ -10,6 +10,7 @@ import {
 } from "@/lib/dograh";
 import { preflightReadiness, preflightReadinessError } from "@/lib/extension-preflight-live";
 import { softphoneMediaReadiness } from "@/lib/softphone-media-live";
+import { readTrunkHealth, trunkHealthError } from "@/lib/pbx-health-server";
 
 export const dynamic = "force-dynamic";
 
@@ -159,6 +160,36 @@ function probeSoftphoneMedia(): ProbeResult {
   }
   return { status: "degraded", latency_ms: 0, error: readiness.error };
 }
+/**
+ * Are the trunks the estate dials *out* through actually registered?
+ *
+ * Every extension can be green and outbound calling still be dead: the PBX
+ * holds a contact per phone, but the provider registration is a separate thing
+ * (`PJSIPShowRegistrationsOutbound`), and a `Rejected` one is invisible on any
+ * extension row — it shows up only as calls that will not leave. `asterisk_ami`
+ * above says the portal can *reach* Asterisk; this says what Asterisk is doing
+ * with the registration. Both are needed, so a failed read here is `degraded`
+ * (unverifiable), not `down`: the phone system still answers calls.
+ */
+async function probeTrunkRegistrations(): Promise<ProbeResult> {
+  const t0 = Date.now();
+  const health = await readTrunkHealth();
+  const latency_ms = Date.now() - t0;
+  if (health.failing.length > 0) {
+    return { status: "degraded", latency_ms, error: trunkHealthError(health) };
+  }
+  if (health.trunks === null) {
+    return { status: "degraded", latency_ms, error: trunkHealthError(health) };
+  }
+  return {
+    status: "ok",
+    latency_ms,
+    detail:
+      health.trunks.length === 0
+        ? "no outbound registrations configured"
+        : `${health.trunks.length} registered`,
+  };
+}
 
 
 
@@ -191,6 +222,7 @@ interface HealthResponse {
     extension_preflight: ProbeResult;
     softphone_media: ProbeResult;
     dograh_voice: ProbeResult;
+    outbound_trunks: ProbeResult;
   };
 }
 
@@ -357,6 +389,10 @@ export async function GET() {
   // Config check, not a network probe (like VoIP.ms above): the create path
   // writes this address, and it writes nothing when none is configured.
   const softphoneMediaResult: ProbeResult = probeSoftphoneMedia();
+  // ── The outbound trunks ─────────────────────────────────
+  // A network read, so it is awaited here rather than in the positional array
+  // above (which is destructured by index — see the note there).
+  const trunkResult = await probeTrunkRegistrations();
 
   const voipmsResult: ProbeResult = voipmsConfigured
     ? { status: "ok", latency_ms: 0 }
@@ -381,6 +417,7 @@ export async function GET() {
     extension_preflight: preflightResult,
     softphone_media: softphoneMediaResult,
     dograh_voice: voiceSettingsResult,
+    outbound_trunks: trunkResult,
   };
 
   const downCount = Object.values(services).filter((s) => s.status === "down").length;

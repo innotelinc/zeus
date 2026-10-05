@@ -6,17 +6,20 @@ import type { PhoneNumber, FreePBXExtension } from "@/lib/types";
 import { useToast } from "@/components/ToastProvider";
 import { PlusIcon, RefreshIcon, CheckCircleIcon, SearchIcon, PhoneIcon, XIcon, TrashIcon, AlertCircleIcon } from "@/components/icons";
 import { EmptyState, PageHeader } from "@/components/ui";
+import PbxHealthPanel from "@/components/dashboard/PbxHealthPanel";
 import { mediaAddressLabel, readinessLabel } from "@/lib/extension-readiness";
 
 interface Props {
   numbers: PhoneNumber[];
   extensions: FreePBXExtension[];
   plan: string;
+  /** Estate admins may reload/restart the PBX; a reload is PBX-wide, not per-account. */
+  isAdmin?: boolean;
 }
 
 const POLL_MS = 5000;
 
-export default function PhoneSection({ numbers: initialNumbers, extensions: initialExtensions, plan }: Props) {
+export default function PhoneSection({ numbers: initialNumbers, extensions: initialExtensions, plan, isAdmin = false }: Props) {
   const { toast } = useToast();
   const [numbers, setNumbers] = useState(initialNumbers);
   const [extensions, setExtensions] = useState(initialExtensions);
@@ -38,6 +41,15 @@ export default function PhoneSection({ numbers: initialNumbers, extensions: init
   const [deletingExt, setDeletingExt] = useState<string | null>(null);
   const [confirmDeleteExt, setConfirmDeleteExt] = useState<string | null>(null);
   const [repairing, setRepairing] = useState<string | null>(null);
+  // A PBX-wide action, in flight. Named by mode so the button being pressed is
+  // the one that reads as busy.
+  const [pbxBusy, setPbxBusy] = useState<"reload" | "restart" | null>(null);
+  const [confirmRestart, setConfirmRestart] = useState(false);
+  // The extensions the PBX reports *no* contact for — a live read, not the
+  // cached `device_state`. Empty and `contactsKnown: false` when the PBX could
+  // not be asked: "unknown" must not be drawn as "no phone registered".
+  const [noContact, setNoContact] = useState<string[]>([]);
+  const [contactsKnown, setContactsKnown] = useState(false);
 
   const maxNumbers = plan === "business" ? 5 : 1;
 
@@ -51,7 +63,9 @@ export default function PhoneSection({ numbers: initialNumbers, extensions: init
       try {
         const data = await api<{
           extensions: Array<{ extension_id: string; device_state: string }>;
-        }>("/api/ami/status");
+          contacts_known?: boolean;
+          unregistered?: string[];
+        }>("/api/ami/status?contacts=1");
         if (data.extensions) {
           setExtensions((prev) =>
             prev.map((ext) => {
@@ -64,6 +78,18 @@ export default function PhoneSection({ numbers: initialNumbers, extensions: init
             }),
           );
         }
+        // The live half of the row's state: which extensions have no contact
+        // on the PBX at all. Cleared when the PBX could not be asked, so a
+        // dropped AMI link leaves the last cache rather than a false "no
+        // contact" on every row.
+        const known = data.contacts_known === true;
+        setContactsKnown(known);
+        const next = known ? [...(data.unregistered ?? [])].sort() : [];
+        setNoContact((prev) =>
+          prev.length === next.length && prev.every((id, i) => id === next[i])
+            ? prev
+            : next,
+        );
       } catch {
         /* polling is best-effort */
       }
@@ -187,6 +213,32 @@ export default function PhoneSection({ numbers: initialNumbers, extensions: init
     }
   }
 
+  /**
+   * The PBX-side remedy for an extension that will not register.
+   *
+   * Repair fixes a row; this fixes the box. `reload` re-reads the PJSIP
+   * endpoints (live calls survive), `restart` is the entrypoint's own
+   * `core restart now` and drops every call — which is why it is confirmed.
+   */
+  async function reloadOrRestartPbx(mode: "reload" | "restart") {
+    setPbxBusy(mode);
+    try {
+      const res = await api<{ success: boolean; mode: string; message?: string }>(
+        "/api/pbx/restart",
+        { method: "POST", body: JSON.stringify({ mode }) },
+      );
+      toast.success(res.message ?? (mode === "reload" ? "PJSIP reloaded." : "PBX restarting."));
+      setConfirmRestart(false);
+      // Device states will flip as Asterisk comes back; re-read shortly so the
+      // list is not left showing the pre-restart state.
+      setTimeout(refresh, mode === "restart" ? 12_000 : 1_500);
+    } catch (e) {
+      toast.error(apiErrorMessage(e, "PBX action failed"));
+    } finally {
+      setPbxBusy(null);
+    }
+  }
+
   async function deleteExtension(extDbId: string, extNumber: string) {
     setDeletingExt(extDbId);
     try {
@@ -252,6 +304,25 @@ export default function PhoneSection({ numbers: initialNumbers, extensions: init
               {releasing === confirmRelease ? "Releasing..." : "Yes, release it"}
             </button>
             <button type="button" onClick={() => setConfirmRelease(null)} className="btn-ghost px-6 py-2 text-sm">Cancel</button>
+          </div>
+        </div>
+      )}
+
+      {/* Restart PBX confirm */}
+      {confirmRestart && (
+        <div className="rounded-2xl border border-rose-500/20 bg-rose-500/5 p-6 text-center">
+          <div className="flex justify-center mb-3"><AlertCircleIcon size={28} className="text-rose-400" /></div>
+          <p className="font-medium text-white">Restart the PBX?</p>
+          <p className="mt-1 text-sm text-white/40">
+            Asterisk restarts now. Every active call drops and extensions cannot register for a few seconds.
+            Use <span className="font-medium text-white/60">Reload PJSIP</span> if only the softphone endpoints need re-reading.
+          </p>
+          <div className="mt-4 flex justify-center gap-3">
+            <button type="button" onClick={() => void reloadOrRestartPbx("restart")} disabled={pbxBusy === "restart"}
+              className="rounded-xl bg-rose-500 px-6 py-2 text-sm font-medium text-white transition hover:bg-rose-600 disabled:opacity-50">
+              {pbxBusy === "restart" ? "Restarting…" : "Yes, restart the PBX"}
+            </button>
+            <button type="button" onClick={() => setConfirmRestart(false)} className="btn-ghost px-6 py-2 text-sm">Cancel</button>
           </div>
         </div>
       )}
@@ -340,6 +411,12 @@ export default function PhoneSection({ numbers: initialNumbers, extensions: init
         )}
       </div>
 
+      {/* The live PBX picture, before the cards it explains: an operator
+          looking at an extension that will not register needs the trunk and
+          contact state, which no extension row can show. Admin-only, like the
+          reload/restart controls in the card below. */}
+      {isAdmin && <PbxHealthPanel />}
+
       {/* Extensions card */}
       <div className="rounded-2xl border border-white/[0.06] bg-white/[0.02] p-6">
         <div className="flex items-center justify-between mb-6">
@@ -347,9 +424,37 @@ export default function PhoneSection({ numbers: initialNumbers, extensions: init
             <h2 className="text-lg font-semibold text-white">FreePBX Extensions</h2>
             <p className="text-sm text-white/40">SIP extensions for your devices</p>
           </div>
-          <button type="button" onClick={() => setProvisionMode(true)} className="btn-primary px-4 py-2 text-sm flex items-center gap-2">
-            <PlusIcon size={14} /> Add extension
-          </button>
+          <div className="flex items-center gap-2">
+            {/* Shown only to admins, and only here: this page is where an
+                extension that will not register is named, so it is where the
+                remedy belongs. A tenant cannot see it — a reload is
+                estate-wide. */}
+            {isAdmin && (
+              <>
+                <button
+                  type="button"
+                  onClick={() => void reloadOrRestartPbx("reload")}
+                  disabled={pbxBusy !== null}
+                  className="rounded-lg px-2.5 py-1.5 text-xs font-medium text-[var(--text-secondary)] transition hover:bg-white/[0.06] hover:text-[var(--foreground)] disabled:opacity-50"
+                  title="Re-read the PJSIP endpoints from disk. Live calls survive."
+                >
+                  {pbxBusy === "reload" ? "Reloading…" : "Reload PJSIP"}
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setConfirmRestart(true)}
+                  disabled={pbxBusy !== null}
+                  className="rounded-lg px-2.5 py-1.5 text-xs font-medium text-[var(--text-secondary)] transition hover:bg-rose-500/10 hover:text-rose-400 disabled:opacity-50"
+                  title="Restart Asterisk. Every call drops and the PBX is unreachable for a few seconds."
+                >
+                  {pbxBusy === "restart" ? "Restarting…" : "Restart PBX"}
+                </button>
+              </>
+            )}
+            <button type="button" onClick={() => setProvisionMode(true)} className="btn-primary px-4 py-2 text-sm flex items-center gap-2">
+              <PlusIcon size={14} /> Add extension
+            </button>
+          </div>
         </div>
 
         {extensions.length === 0 ? (
@@ -413,6 +518,18 @@ export default function PhoneSection({ numbers: initialNumbers, extensions: init
                     </div>
                   </div>
                   <div className="flex items-center gap-2">
+                    {/* The cached row says "Offline"; this says *why* one of
+                        those is different — the PBX holds no contact for it, so
+                        nothing has ever registered. Live, so it is absent when
+                        the PBX could not be asked rather than guessed at. */}
+                    {contactsKnown && noContact.includes(ext.extension_id) && (
+                      <span
+                        className="rounded-full border border-rose-500/20 bg-rose-500/10 px-2.5 py-0.5 text-[11px] font-medium text-rose-300"
+                        title="The PBX reports no contact for this extension — no phone or softphone is registered against it."
+                      >
+                        No contact
+                      </span>
+                    )}
                     <span className={`rounded-full px-2.5 py-0.5 text-[11px] font-medium ${st.bg}`}>{st.label}</span>
                     {ext.softphone && ext.softphone.state !== "ready" && (
                       <button type="button" onClick={() => void repairExtension(ext)}

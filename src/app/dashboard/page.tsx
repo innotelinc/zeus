@@ -4,6 +4,7 @@ import { getUserDashboard } from "@/lib/dashboard";
 import { addonStatuses } from "@/lib/addons";
 import { listVoiceCalls } from "@/lib/voice-calls";
 import { describePath } from "@/lib/voice-labels";
+import { readTrunkHealth, trunkHealthError } from "@/lib/pbx-health-server";
 import { fmtDate, fmtDuration, fmtTime, planLabel } from "@/lib/client-api";
 import {
   PhoneIcon,
@@ -48,6 +49,13 @@ export default async function TodayPage() {
   // voice screens read, so the overview and the module cannot disagree.
   const calls = listVoiceCalls(50, user.id);
   const liveCalls = calls.filter((call) => !call.ended_at);
+
+  // Whether the trunks calls *leave* through are registered. An extension can
+  // be green while outbound calling is dead, and this is the only panel on the
+  // home screen that can say so before someone reports a call that will not go
+  // out. Unreadable is reported as unverifiable, never as healthy.
+  const trunks = await readTrunkHealth();
+  const failingTrunks = trunks.failing;
   const recentCalls = dash.recent_calls.slice(0, RECENT);
   const recentVoicemails = dash.voicemails.slice(0, 3);
   const recentThreads = dash.conversations.slice(0, 3);
@@ -261,6 +269,31 @@ export default async function TodayPage() {
                 <Badge tone="muted">off</Badge>
               )}
             </li>
+            {/* Outbound calling, which no extension stat can show: every phone
+                can be online and calls still not leave the estate. */}
+            <li className="flex items-center justify-between gap-3 text-sm">
+              <span className="text-white/60">Outbound trunks</span>
+              {trunks.trunks === null ? (
+                <Badge tone="warning" title={trunkHealthError(trunks)}>
+                  could not verify
+                </Badge>
+              ) : failingTrunks.length > 0 ? (
+                <Badge tone="danger" title={trunkHealthError(trunks)}>
+                  {failingTrunks.length} not registered
+                </Badge>
+              ) : trunks.trunks.length === 0 ? (
+                <Badge tone="muted">none configured</Badge>
+              ) : (
+                <Badge tone="success">
+                  {trunks.trunks.length} registered
+                </Badge>
+              )}
+            </li>
+            {failingTrunks.length > 0 ? (
+              <li className="text-xs text-rose-300">
+                {trunkHealthError(trunks)}.
+              </li>
+            ) : null}
             <li className="flex items-center justify-between gap-3 text-sm">
               <span className="text-white/60">Last call</span>
               <span className="text-xs text-white/40">

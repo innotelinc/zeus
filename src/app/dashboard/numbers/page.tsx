@@ -23,6 +23,7 @@ export default async function NumbersPage() {
       numbers={dash.phone_numbers}
       extensions={dash.extensions}
       plan={user.plan}
+      isAdmin={user.role === "admin"}
     />
   );
 }
