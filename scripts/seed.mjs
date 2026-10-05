@@ -58,6 +58,33 @@ db.prepare(
   "INSERT INTO freepbx_extensions (id, user_id, extension_id, extension_name, extension_secret, voicemail_enabled, voicemail_pin, status) VALUES (?, ?, ?, ?, ?, 1, ?, 'active')"
 ).run(randomUUID(), userId, "1001", "Demo Extension", "accbacb7495dfd426d5607a7aa42c17b", "1234");
 
+// ── Seed the fax service lines ──
+// The four HylaFAX virtual modems (`ttyIAX1`–`ttyIAX4`, started by
+// docker-entrypoint-full.sh). Two names are in play and neither is a typo:
+//
+//   * `iaxmodem1`–`iaxmodem4` are the *Asterisk peers*. `/etc/iaxmodem/ttyIAX1`
+//     sets `peername iaxmodem1`, so the bridge only comes up under that name —
+//     renaming the peer breaks the modem rather than the extension.
+//   * `3291`–`3294` are the *extensions* the estate reaches those lines on, and
+//     this is where they belong: a fresh database has the fax lines the PBX
+//     actually runs, instead of a numbers page that knows nothing about them.
+//
+// The secret is the modems' own (`secret 329fax` in `/etc/iaxmodem/ttyIAX<N>`
+// and in `iax_fax_custom.conf`), so the portal and the PBX agree. No voicemail:
+// a fax modem has no mailbox to leave one in.
+const FAX_LINES = [
+  ["3291", "Fax 1"],
+  ["3292", "Fax 2"],
+  ["3293", "Fax 3"],
+  ["3294", "Fax 4"],
+];
+const insertFaxLine = db.prepare(
+  "INSERT INTO freepbx_extensions (id, user_id, extension_id, extension_name, extension_secret, voicemail_enabled, voicemail_pin, status) VALUES (?, ?, ?, ?, ?, 0, NULL, 'active')"
+);
+for (const [extensionId, extensionName] of FAX_LINES) {
+  insertFaxLine.run(randomUUID(), userId, extensionId, extensionName, "329fax");
+}
+
 // ── Seed demo contacts ──
 db.prepare(
   "INSERT INTO contacts (id, user_id, name, phone, email) VALUES (?, ?, ?, ?, ?)"
@@ -110,5 +137,6 @@ console.log("   Password: 8dpWR8wl4eYncm5v");
 console.log("   Plan:     Business");
 console.log("   Numbers:  13025551001, 13025551002");
 console.log("   Ext:      1001");
+console.log("   Fax:      3291, 3292, 3293, 3294");
 
 db.close();

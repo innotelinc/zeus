@@ -20,10 +20,12 @@ bolted on here.
 
 **One direction only, and that is the point.** A portal row with no FreePBX user
 is *not* drift: the mirror also carries things the PBX does not own as users — the
-AvantFax service lines (`3291`–`3294`), a demo softphone (`1001`) — and reporting
-those would be a permanent false positive, which is how an operator learns to
-ignore a report. The judgement is about a phone the portal cannot manage, never
-about a row the PBX does not have.
+fax service lines (`3291`–`3294`, which `scripts/seed.mjs` writes for a fresh
+database; their Asterisk peers are `iaxmodem1`–`iaxmodem4`, named by
+`/etc/iaxmodem/ttyIAX<N>`'s own `peername`), a demo softphone (`1001`) — and
+reporting those would be a permanent false positive, which is how an operator
+learns to ignore a report. The judgement is about a phone the portal cannot
+manage, never about a row the PBX does not have.
 
 **Read-only.** Adding the mirror row belongs to the portal — its create path for
 an extension that does not exist yet, or `scripts/legacy_portal_merge.py adopt`
