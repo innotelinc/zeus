@@ -316,6 +316,23 @@ export class AmiClient {
     );
   }
 
+  /**
+   * The endpoints the PBX defines — the extensions a phone could register
+   * against at all. Raw events: shape them with `summarizeEndpoints`.
+   *
+   * This is the join that keeps a service line out of the "no registration"
+   * report: the fax modems' rows are mirror rows the PBX has no PJSIP endpoint
+   * for, so no contact will ever exist for them and judging them as phones named
+   * them as broken on every load.
+   */
+  listEndpoints(): Promise<Array<Record<string, string>>> {
+    return this.collectActionEvents(
+      "PJSIPShowEndpoints",
+      "EndpointList",
+      "EndpointListComplete",
+    );
+  }
+
   /** Disconnect and stop reconnecting. */
   disconnect(): void {
     this.shouldReconnect = false;

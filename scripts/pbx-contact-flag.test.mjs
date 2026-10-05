@@ -17,6 +17,11 @@
  *   2. **The read is opt-in.** The shell polls this endpoint every 15s for the
  *      AMI light alone; a list action on every poll would spend the PBX's time
  *      on a fact only the extensions screen shows.
+ *   3. **Only phones are judged.** A mirror row is not necessarily a phone: the
+ *      fax service lines are IAX2 modems, so no contact will ever exist for them
+ *      and judging them as extensions reported them as broken on every load.
+ *      The PBX's own endpoint list (`PJSIPShowEndpoints`) is the join that tells
+ *      a phone that has not registered from a line that never could.
  *
  * The route imports `@/lib/*` and `next/server`, so `transpile` rewrites those
  * and this file drops stubs beside the transpiled copy. `@/lib/pbx-health` is
@@ -74,14 +79,24 @@ export default db;
 `;
 
 /** An AMI client that records whether the contact list was read at all. */
-function fakeAmi({ connected = true, contacts = [], throwOnContacts = false } = {}) {
+function fakeAmi({
+  connected = true,
+  contacts = [],
+  endpoints = [],
+  throwOnContacts = false,
+} = {}) {
   return {
     isConnected: connected,
     contactReads: 0,
+    endpointReads: 0,
     async listContacts() {
       this.contactReads += 1;
       if (throwOnContacts) throw new Error("AMI action PJSIPShowContacts timed out");
       return contacts;
+    },
+    async listEndpoints() {
+      this.endpointReads += 1;
+      return endpoints;
     },
   };
 }
@@ -94,6 +109,11 @@ function contactEvent(endpoint) {
     Uri: `sip:${endpoint}@192.168.1.71:53678`,
     Status: "Reachable",
   };
+}
+
+/** One endpoint the PBX defines — something a phone can register against. */
+function endpointEvent(name) {
+  return { Event: "EndpointList", ObjectType: "endpoint", ObjectName: name };
 }
 
 function configure({ session, ami, extensions }) {
@@ -137,6 +157,7 @@ describe("GET /api/ami/status — the live contact flag", () => {
   it("names the extensions the PBX holds no contact for", async () => {
     const ami = fakeAmi({
       contacts: [contactEvent("15000"), contactEvent("4132951200")],
+      endpoints: [endpointEvent("15000"), endpointEvent("4132951200"), endpointEvent("12000")],
     });
     configure({
       session: { user: { id: "u1" }, error: null },
@@ -152,6 +173,34 @@ describe("GET /api/ami/status — the live contact flag", () => {
     assert.equal(body.contacts_known, true);
     assert.deepEqual(body.unregistered, ["12000"]);
     assert.equal(ami.contactReads, 1);
+    assert.equal(ami.endpointReads, 1);
+  });
+
+  it("never reports a line that is not a phone — the fax modems have no contact by construction", async () => {
+    // 3291–3294 are IAX2 modems: the PBX defines no endpoint for them, so no
+    // contact can ever exist. Judged as extensions they were named as
+    // unregistered on every load, which is how an operator learns to ignore the
+    // list. Only endpoints are judged, so they are absent.
+    const ami = fakeAmi({
+      contacts: [contactEvent("15000")],
+      endpoints: [endpointEvent("15000"), endpointEvent("12000")],
+    });
+    configure({
+      session: { user: { id: "u1" }, error: null },
+      ami,
+      extensions: [
+        { extension_id: "15000", device_state: "idle" },
+        { extension_id: "12000", device_state: "offline" },
+        { extension_id: "3291", device_state: "unknown" },
+        { extension_id: "3292", device_state: "unknown" },
+        { extension_id: "3293", device_state: "unknown" },
+        { extension_id: "3294", device_state: "unknown" },
+      ],
+    });
+
+    const body = await (await route.GET(request("?contacts=1"))).json();
+    assert.equal(body.contacts_known, true);
+    assert.deepEqual(body.unregistered, ["12000"]);
   });
 
   it("does not read the PBX unless asked — the shell polls this for the AMI light", async () => {

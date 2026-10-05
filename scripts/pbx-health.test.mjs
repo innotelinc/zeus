@@ -86,6 +86,35 @@ describe("summarizeContacts", () => {
   });
 });
 
+describe("summarizeEndpoints", () => {
+  it("keeps the endpoint names and nothing else", () => {
+    const names = health.summarizeEndpoints([
+      { Event: "EndpointList", ObjectType: "endpoint", ObjectName: "12000" },
+      { Event: "EndpointList", ObjectType: "endpoint", ObjectName: " 15000 " },
+      { Event: "EndpointListComplete" },
+      { Event: "SomethingElse", ObjectName: "not-an-endpoint" },
+      { Event: "EndpointList", ObjectType: "endpoint", ObjectName: "  " },
+    ]);
+    assert.deepEqual(names, ["12000", "15000"]);
+  });
+});
+
+describe("phoneExtensions", () => {
+  it("keeps only the mirror rows the PBX defines as endpoints", () => {
+    // 3291–3294 are the fax service lines: IAX2 modems the PBX has no endpoint
+    // for, so no contact can ever exist. They are not phones that failed to
+    // register, and must not be judged as such.
+    assert.deepEqual(
+      health.phoneExtensions(["15000", "3291", "3292", "12000"], ["15000", "12000"]),
+      ["15000", "12000"],
+    );
+  });
+
+  it("judges nothing when the box defines no endpoints", () => {
+    assert.deepEqual(health.phoneExtensions(["15000", "12000"], []), []);
+  });
+});
+
 describe("withoutContacts", () => {
   it("reports an extension only when no contact names it", () => {
     const contacts = [

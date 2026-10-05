@@ -99,6 +99,49 @@ export function summarizeContacts(
   return contacts;
 }
 
+/**
+ * The endpoints the PBX defines, from `PJSIPShowEndpoints`'s `EndpointList`
+ * events.
+ *
+ * Only the names matter: they are the join key against the portal's rows. An
+ * endpoint here is something a phone *can* register against — which is exactly
+ * what a mirror row is not guaranteed to be.
+ */
+export function summarizeEndpoints(
+  events: Array<Record<string, string>>,
+): string[] {
+  const names: string[] = [];
+  for (const event of events) {
+    if (event.Event !== "EndpointList") continue;
+    const name = (event.ObjectName ?? "").trim();
+    if (name) names.push(name);
+  }
+  return names;
+}
+
+/**
+ * The extensions a phone can register against — the ones the PBX has an endpoint
+ * for.
+ *
+ * Without this, every mirror row is judged as if it were a phone, and the rows
+ * that are not phones say so forever. The four fax service lines (`3291`–`3294`)
+ * are IAX2 modems: no contact will ever exist for them, so the panel named them
+ * under "no registration" on every single load — a permanent false positive,
+ * which is how an operator learns to ignore a report.
+ *
+ * A row the PBX has no endpoint for is not a phone that failed to register; it
+ * is not a phone. An extension that is *supposed* to have a phone but has no
+ * endpoint at all is a different fault, and one the PBX's own configuration
+ * already states.
+ */
+export function phoneExtensions(
+  extensionIds: string[],
+  endpoints: string[],
+): string[] {
+  const have = new Set(endpoints);
+  return extensionIds.filter((id) => have.has(id));
+}
+
 /** The registrations the PBX did not accept — the ones that cost a call. */
 export function failingTrunks(trunks: TrunkRegistration[]): TrunkRegistration[] {
   return trunks.filter((trunk) => trunk.failing);

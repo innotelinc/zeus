@@ -24,6 +24,9 @@ interface Health {
   contacts: Contact[];
   registered_extensions: string[];
   unregistered_extensions: string[];
+  /** Whether the PBX's endpoint list was readable — without it, "no
+   *  registration" cannot be told apart from "not a phone at all". */
+  endpoints_known: boolean;
 }
 
 const POLL_MS = 15000;
@@ -36,6 +39,11 @@ const POLL_MS = 15000;
  * row can: a trunk registration the PBX did not accept, and an extension no
  * phone has registered against at all. Admin-only, and rendered only for admins —
  * both facts are estate-wide.
+ *
+ * Only extensions the PBX defines as *endpoints* are judged, because a mirror
+ * row is not necessarily a phone: the fax service lines are IAX2 modems, and
+ * they have no contact by construction. Reading them as "no registration" was a
+ * permanent false positive on every load.
  */
 export default function PbxHealthPanel() {
   const [health, setHealth] = useState<Health | null>(null);
@@ -204,7 +212,15 @@ export default function PbxHealthPanel() {
             <div className="mb-2 text-xs font-medium uppercase tracking-wide text-[var(--text-muted)]">
               Extensions with no registration
             </div>
-            {unregistered.length === 0 ? (
+            {!health.endpoints_known ? (
+              <div className="flex items-start gap-2 text-sm text-sun-400">
+                <AlertCircleIcon size={15} className="mt-0.5 shrink-0" />
+                <span>
+                  Cannot tell — the portal could not read the PBX&apos;s endpoint list, so
+                  nothing is shown as unregistered rather than everything being fine.
+                </span>
+              </div>
+            ) : unregistered.length === 0 ? (
               <div className="flex items-center gap-2 text-sm text-mint-400">
                 <CheckCircleIcon size={15} className="shrink-0" />
                 Every extension has a registered contact.

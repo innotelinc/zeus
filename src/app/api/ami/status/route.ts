@@ -2,7 +2,12 @@ import { NextResponse } from "next/server";
 import { requireUser } from "@/lib/api-helpers";
 import { getAmiClient } from "@/lib/ami";
 import db from "@/lib/db";
-import { summarizeContacts, withoutContacts } from "@/lib/pbx-health";
+import {
+  phoneExtensions,
+  summarizeContacts,
+  summarizeEndpoints,
+  withoutContacts,
+} from "@/lib/pbx-health";
 
 export const dynamic = "force-dynamic";
 
@@ -13,11 +18,17 @@ export const dynamic = "force-dynamic";
  * itself (`PJSIPShowContacts`) which extensions have a live contact, and
  * answers `unregistered` — the rows where *no* phone is registered at all.
  *
+ * Two reads answer it, and both are needed. `PJSIPShowContacts` says which
+ * extensions have a phone on them; `PJSIPShowEndpoints` says which extensions
+ * are phones *at all*. Without the second, every mirror row is judged as one —
+ * and the fax service lines (`3291`–`3294`) are IAX2 modems, so they would be
+ * named as unregistered on every load, forever.
+ *
  * Opt-in rather than always: the shell polls this every 15s for the AMI light
- * alone, and a list action per poll would spend the PBX's time on a fact only
- * the extensions screen shows. `contacts_known: false` means the read failed
- * (AMI down, action timeout) — the caller must then show nothing rather than
- * "no contact", because unknown is not absent.
+ * alone, and list actions per poll would spend the PBX's time on a fact only
+ * the extensions screen shows. `contacts_known: false` means the judgement could
+ * not be made (AMI down, action timeout) — the caller must then show nothing
+ * rather than "no contact", because unknown is not absent.
  */
 export async function GET(request: Request) {
   const { user, error } = await requireUser();
@@ -53,16 +64,24 @@ export async function GET(request: Request) {
       .get(user.id) as { c: number }
   ).c;
 
-  // Judge only this user's own extensions: the PBX's contact list also names
-  // trunk aoRs and hand-built endpoints, which are not rows on this screen.
+  // Judge only this user's own extensions, and only the ones that are phones: the
+  // PBX's contact list also names trunk AoRs and hand-built endpoints, and its
+  // endpoint list is what separates a phone that has not registered from a line
+  // (the fax modems) that never could.
   let contactsKnown = false;
   let unregistered: string[] = [];
   if (wantsContacts && connected) {
     try {
-      const contacts = summarizeContacts(await client.listContacts());
+      const [contactEvents, endpointEvents] = await Promise.all([
+        client.listContacts(),
+        client.listEndpoints(),
+      ]);
       unregistered = withoutContacts(
-        extensions.map((ext) => ext.extension_id),
-        contacts,
+        phoneExtensions(
+          extensions.map((ext) => ext.extension_id),
+          summarizeEndpoints(endpointEvents),
+        ),
+        summarizeContacts(contactEvents),
       );
       contactsKnown = true;
     } catch {

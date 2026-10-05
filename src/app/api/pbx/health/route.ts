@@ -4,7 +4,9 @@ import { getAmiClient } from "@/lib/ami";
 import db from "@/lib/db";
 import {
   failingTrunks,
+  phoneExtensions,
   summarizeContacts,
+  summarizeEndpoints,
   summarizeTrunks,
   withoutContacts,
 } from "@/lib/pbx-health";
@@ -22,6 +24,14 @@ export const dynamic = "force-dynamic";
  * route asks the PBX directly (`PJSIPShowContacts`,
  * `PJSIPShowRegistrationsOutbound`) and answers with the two facts the cache
  * cannot: which trunks are not registered, and which extensions have no contact.
+ *
+ * The extensions judged are the portal's rows *that are phones*, which is a join
+ * against the PBX's own endpoint list (`PJSIPShowEndpoints`). A mirror row the
+ * PBX has no endpoint for is not a phone that failed to register — the four fax
+ * service lines (`3291`–`3294`) are IAX2 modems, and judging them as phones
+ * named them as unregistered on every load. When the endpoint list cannot be
+ * read, `endpoints_known: false` says so and no extension is reported: an empty
+ * list would read as "every phone is fine".
  *
  * Admin-only, like the reload/restart beside it: a trunk outage is estate-wide.
  * AMI being down is reported as `ami_connected: false` with empty lists rather
@@ -49,18 +59,24 @@ export async function GET() {
       contacts: [],
       registered_extensions: [],
       unregistered_extensions: [],
+      endpoints_known: false,
     });
   }
 
-  // Both reads are best-effort and independent: a box that answers one and not
-  // the other still has something worth showing, so neither failure blanks the
-  // other. An empty answer is "nothing to report", not "the read failed".
-  const [contactEvents, trunkEvents] = await Promise.all([
+  // Three reads, best-effort and independent: a box that answers two and not the
+  // third still has something worth showing, so no failure blanks another. The
+  // endpoint read is the one whose *absence* must stay distinguishable — an
+  // empty list would say "no phone anywhere" — so it fails to `null` rather than
+  // to `[]`, and `endpoints_known` carries that to the screen.
+  const [contactEvents, trunkEvents, endpointEvents] = await Promise.all([
     ami.listContacts().catch(() => []),
     ami.listOutboundRegistrations().catch(() => []),
+    ami.listEndpoints().catch(() => null),
   ]);
   const contacts = summarizeContacts(contactEvents);
   const trunks = summarizeTrunks(trunkEvents);
+  const endpointsKnown = endpointEvents !== null;
+  const endpoints = summarizeEndpoints(endpointEvents ?? []);
 
   // The extensions to judge are the portal's own rows, not every endpoint on the
   // box: a trunk's endpoint and a hand-built one are not extensions a tenant
@@ -81,6 +97,9 @@ export async function GET() {
     failing_trunks: failingTrunks(trunks),
     contacts,
     registered_extensions: registered,
-    unregistered_extensions: withoutContacts(extensionIds, contacts),
+    unregistered_extensions: endpointsKnown
+      ? withoutContacts(phoneExtensions(extensionIds, endpoints), contacts)
+      : [],
+    endpoints_known: endpointsKnown,
   });
 }
