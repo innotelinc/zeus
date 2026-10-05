@@ -283,7 +283,7 @@ export default function VoiceSection({
                     >
                     <div className="flex items-center justify-between gap-3">
                       <span className="text-white/70">
-                        {record.did ?? "unknown number"}
+                        {record.did ?? "Unknown number"}
                         {record.capstone_binding ? (
                           <span className="text-white/40"> · {record.capstone_binding}</span>
                         ) : null}

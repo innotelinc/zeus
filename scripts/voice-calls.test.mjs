@@ -18,6 +18,11 @@
  *  4. **The context classifier reads the dialplan's vocabulary.** `dograh-inbound`
  *     and `zeus-ai-return` are the two contexts D3 renders; a second copy of that
  *     list is how the two drift.
+ *  5. **One visit is one hop.** AMI emits a `Newexten` for every extension and
+ *     priority the channel walks through, so a single move into Capstone arrives
+ *     as several events within a few hundred milliseconds — measured at four on
+ *     live calls. Recording each one is how a path reads `Capstone → Capstone →
+ *     Capstone → Capstone`, which is a false count wherever the path is read.
  *
  * The database half runs against the project's real `scripts/schema.sql` and
  * migrations in a throwaway working directory (the portal's `db.ts` reads them
@@ -33,13 +38,19 @@ import { after, before, describe, it } from "node:test";
 import { REPO, load, transpile } from "./ts-probe.mjs";
 
 let calls;
+let labels;
 let db;
 let cwd;
 
 before(async () => {
-  const gen = transpile(["src/lib/db.ts", "src/lib/voice-calls.ts"]);
+  const gen = transpile([
+    "src/lib/db.ts",
+    "src/lib/voice-calls.ts",
+    "src/lib/voice-labels.ts",
+  ]);
   calls = await load(gen, "voice-calls");
   ({ default: db } = await load(gen, "db"));
+  labels = await load(gen, "voice-labels");
 
   cwd = mkdtempSync(join(tmpdir(), "zeus-voice-calls-"));
   mkdirSync(join(cwd, "scripts"));
@@ -135,6 +146,64 @@ describe("noteHandoff", () => {
     const row = calls.getVoiceCall("1758500000.9");
     assert.equal(row.disposition, "handed_off");
     assert.deepEqual(row.handoffs.map((hop) => hop.to), ["capstone"]);
+  });
+
+  it("collapses a repeat: one visit to a context is one hop", () => {
+    // The live shape: four `Newexten` events in ~200 ms, all naming the same
+    // context. Each is evidence the call is *in* Capstone — none of them is a
+    // second hand-off, and appending them made the screen count four.
+    calls.noteHandoff("1758500000.7", "capstone");
+    calls.noteHandoff("1758500000.7", "capstone");
+    calls.noteHandoff("1758500000.7", "capstone");
+    calls.noteHandoff("1758500000.7", "capstone");
+    const row = calls.getVoiceCall("1758500000.7");
+    assert.deepEqual(row.handoffs.map((hop) => hop.to), ["capstone"]);
+    assert.equal(row.disposition, "handed_off");
+  });
+
+  it("still records a departure and a return after a collapsed visit", () => {
+    // Only *consecutive* repeats collapse. Leaving and coming back is two
+    // visits, which is the reason the path is an ordered list at all.
+    calls.noteHandoff("1758500000.7", "ava");
+    calls.noteHandoff("1758500000.7", "capstone");
+    calls.noteHandoff("1758500000.7", "capstone");
+    const row = calls.getVoiceCall("1758500000.7");
+    assert.deepEqual(
+      row.handoffs.map((hop) => hop.to),
+      ["capstone", "ava", "capstone"],
+    );
+    assert.equal(row.disposition, "handed_off");
+  });
+});
+
+describe("describePath", () => {
+  it("names the path in the operator's words", () => {
+    assert.equal(labels.describePath([]), "no hand-off");
+    assert.equal(
+      labels.describePath([{ to: "capstone" }]),
+      "agent → Capstone interview",
+    );
+  });
+
+  it("collapses the repeats already written into older rows", () => {
+    // The fix is at the writer, but the rows it was not there for still carry
+    // four hops; the screen must not print four legs for one visit.
+    assert.equal(
+      labels.describePath([
+        { to: "capstone" },
+        { to: "capstone" },
+        { to: "capstone" },
+        { to: "capstone" },
+      ]),
+      "agent → Capstone interview",
+    );
+  });
+
+  it("keeps a departure and a return as two separate legs", () => {
+    assert.equal(
+      labels.describePath([{ to: "capstone" }, { to: "ava" }, { to: "capstone" }]),
+      "agent → Capstone interview → Dograh → Capstone interview",
+    );
   });
 });
 

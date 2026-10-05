@@ -131,6 +131,39 @@ export function noteHandoff(callId: string, to: HandoffTarget): void {
   if (!id) return;
 
   const disposition: Disposition = to === "capstone" ? "handed_off" : "returned";
+
+  // One visit to a context is one hop, and AMI does not say it once. The switch
+  // emits a `Newexten` for every extension and priority the channel walks
+  // through, so a single move into `dograh-inbound` arrives as *four* events
+  // within a few hundred milliseconds — measured on live calls. Appending each
+  // one turned "the call went to Capstone" into a path reading
+  // `Capstone → Capstone → Capstone → Capstone`, which is noise on the screen
+  // and a false count everywhere the path is read. Only a move to a *different*
+  // leg is a new hop; the disposition is set either way, because a repeat is
+  // still evidence of where the call is.
+  const previous = db
+    .prepare("SELECT handoffs FROM voice_calls WHERE call_id = ?")
+    .get(id) as { handoffs: string } | undefined;
+  let last: string | null = null;
+  try {
+    const parsed = JSON.parse(previous?.handoffs || "[]");
+    if (Array.isArray(parsed) && parsed.length > 0) {
+      const tail = parsed[parsed.length - 1] as { to?: string } | null;
+      last = tail?.to ?? null;
+    }
+  } catch {
+    // An unreadable path is treated as "nothing recorded": a hop we cannot
+    // compare against is one we must not drop.
+    last = null;
+  }
+
+  if (last === to) {
+    db.prepare(
+      "UPDATE voice_calls SET disposition = ?, updated_at = datetime('now') WHERE call_id = ?",
+    ).run(disposition, id);
+    return;
+  }
+
   // `$[#]` is "one past the last element", so every hop is appended in order and
   // none is replaced. The column's `'[]'` default is load-bearing: appending to
   // NULL would drop the event rather than fail.

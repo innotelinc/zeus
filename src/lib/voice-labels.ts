@@ -104,8 +104,26 @@ export function describeTurn(turn: TurnConfigLike | null): string {
   return parts.join(" · ");
 }
 
-/** The path a call took, in the operator's words: `agent → Capstone interview`. */
+/**
+ * The path a call took, in the operator's words: `agent → Capstone interview`.
+ *
+ * A run of the same leg is collapsed to one, because arriving somewhere is one
+ * move however many events the switch emits for it. `noteHandoff` now drops the
+ * repeats at the source (AMI fires a `Newexten` per extension and priority, so a
+ * single hand-off arrives as four), but the rows written before it did still
+ * carry them — and "Capstone interview → Capstone interview → Capstone
+ * interview" reads as a path that went nowhere four times.
+ *
+ * Only *consecutive* repeats collapse: a call that left and came back
+ * (`agent → Capstone → Dograh → Capstone`) is two different visits and stays
+ * two, which is the whole reason the hand-offs are an ordered list.
+ */
 export function describePath(handoffs: Array<{ to: string }>): string {
   if (handoffs.length === 0) return "no hand-off";
-  return ["agent", ...handoffs.map((hop) => describeHandoffTarget(hop.to))].join(" → ");
+  const steps: string[] = [];
+  for (const hop of handoffs) {
+    const name = describeHandoffTarget(hop.to);
+    if (steps[steps.length - 1] !== name) steps.push(name);
+  }
+  return ["agent", ...steps].join(" → ");
 }
