@@ -11,6 +11,13 @@
 #               restart (services.softphone_media; the create path writes
 #               nothing without one, so a phone added between boots is deaf in
 #               one direction until the next boot converges it)
+#             • PBX health panel (the numbers page): the running portal reports
+#               outbound-trunk registration (services.outbound_trunks) and
+#               still serves /api/pbx/health, which feeds the numbers page's
+#               live panel — the trunks, the contacts each extension is
+#               registered from, and the extensions nothing registered against
+#               (a rejected trunk appears on no extension row, only as calls
+#               that will not leave)
 #   Edge      • scripts/npm-proxy-hosts.py --check (proxy hosts + wildcard
 #               cert in sync with NPM)
 #   PBX       • FreePBX reachable (FREEPBX_URL)
@@ -154,6 +161,50 @@ sys.exit(1)
     3) fail "portal /api/health did not return JSON — cannot tell what media address a softphone created now would be handed" ;;
     4) fail "the portal does not report the media address it hands a new softphone (services.softphone_media absent) — the running image predates the check; rebuild and redeploy it" ;;
     *) fail "could not read the portal's softphone media address from /api/health" ;;
+  esac
+
+  # ── The outbound-trunk alert and the numbers page's live PBX panel ──
+  # An extension row can be green while outbound calling is dead: the phones'
+  # contacts and the provider registrations are separate facts, and a rejected
+  # trunk appears on no extension row — only as calls that will not leave. The
+  # numbers page reads both live, and `/api/health` carries the trunk half as a
+  # service so a monitor sees it without a session. A running image that
+  # predates the work answers *neither*: the service is absent from the payload
+  # and the panel's route is a 404 — the same shape as a healthy portal, which
+  # is why both are asked here rather than left to a person to notice.
+  trunk_msg="$(curl -s --max-time 10 "$PORTAL_URL/api/health" 2>/dev/null | python3 -c '
+import json, sys
+try:
+    data = json.load(sys.stdin)
+except Exception:
+    sys.exit(3)
+svc = (data.get("services") or {}).get("outbound_trunks")
+if svc is None:
+    sys.exit(4)
+if svc.get("status") == "ok":
+    print(svc.get("detail") or "outbound trunks are registered")
+    sys.exit(0)
+print(svc.get("error") or svc.get("detail") or "outbound trunks are not registered")
+sys.exit(1)
+' 2>/dev/null)"
+  trunk_rc=$?
+  case "$trunk_rc" in
+    0) pass "outbound trunks registered — $trunk_msg" ;;
+    1) fail "an outbound trunk is not registered, so outbound calls through it will fail — $trunk_msg" ;;
+    3) fail "portal /api/health did not return JSON — cannot tell whether the trunks are registered" ;;
+    4) fail "the portal does not report outbound trunk state (services.outbound_trunks absent) — the running image predates the check; rebuild and redeploy it" ;;
+    *) fail "could not read the portal's outbound trunk state from /api/health" ;;
+  esac
+
+  # `/api/pbx/health` feeds the panel. Unauthenticated it must refuse — 401/403,
+  # not 404: a 404 is the running image not having the route at all, which is
+  # the one answer that reads like a healthy portal.
+  pbx_code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 10 "$PORTAL_URL/api/pbx/health" 2>/dev/null) || pbx_code=000
+  case "$pbx_code" in
+    401|403) pass "portal /api/pbx/health serves the numbers-page PBX panel (refuses an unauthenticated read, HTTP $pbx_code)" ;;
+    404) fail "portal /api/pbx/health is absent (HTTP 404) — the running image predates the numbers-page PBX panel; rebuild and redeploy it" ;;
+    000) fail "portal /api/pbx/health unreachable at $PORTAL_URL" ;;
+    *) fail "portal /api/pbx/health answered HTTP $pbx_code — expected 401/403 unauthenticated" ;;
   esac
 fi
 
