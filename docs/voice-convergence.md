@@ -1400,7 +1400,12 @@ preference.
    as FreePBX's endpoint, so it uses FreePBX's device secret, and
    `src/lib/pjsip-secret.ts` reads that back out of `pjsip.auth.conf` (the same
    read `pbx/legacy_voice_migrate.py` already uses to verify a migration), which
-   `POST /api/phone/extensions` stores on the row.
+   `POST /api/phone/extensions` stores on the row. A row that holds none — an
+   extension `scripts/legacy_portal_merge.py` adopted, which never invents a
+   credential — cannot register until `Repair` adopts the rendered one;
+   `src/lib/extension-readiness.ts` names it, and `pbx/extension_secret.py`
+   (`pbx/README.md`, “The secret a softphone registers with”) is the fleet-wide
+   verdict.
 
    The rejected alternative — a portal-owned endpoint under an id FreePBX will
    not generate (`<ext>-webrtc`) — is recorded with its reasoning in

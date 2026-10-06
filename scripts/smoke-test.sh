@@ -39,6 +39,10 @@
 #               has a row for (pbx/extension_mirror.py; a user the mirror does
 #               not name is a phone no portal screen can manage, and nothing
 #               says so — the line just rings)
+#             • Extension secrets: every extension the portal holds carries the
+#               SIP secret the PBX renders for it (pbx/extension_secret.py; a row
+#               with none, or with a different one, is refused on every
+#               REGISTER and the phone simply never comes up)
 #             • Media address: every extension's phone is told an address it can
 #               actually reach, not the PBX container's own (a phone that sends
 #               its RTP into the docker bridge loses its audio and every DTMF
@@ -408,6 +412,35 @@ if [ "$SCOPE" = all ] || [ "$SCOPE" = pbx ]; then
         0) pass "every FreePBX extension is in the portal's mirror" ;;
         2) fail "the extension mirror could not be judged — the PBX or the portal database was unreadable (see above); this is not a pass" ;;
         *) fail "a FreePBX extension is not in the portal's mirror (see above) — a phone the portal cannot manage; add it in the portal, or remove it from the PBX" ;;
+      esac
+    fi
+
+    # ── The secret each extension's softphone must register with ─
+    # A green extension row and a registered trunk still leave a phone that
+    # cannot come up. The softphone registers as the endpoint FreePBX owns, so
+    # the credential it needs is the one FreePBX rendered into `pjsip.auth.conf`
+    # (`src/lib/pjsip-secret.ts`), and a portal row holding none — or a different
+    # one — is refused on every REGISTER. Nothing else here can see it: the
+    # endpoint exists, the mailbox resolves, the media address is set, and the
+    # only symptom is a phone that never registers. Measured on this estate:
+    # `4132912045` ("Wendel") was adopted by the legacy merge with no secret and
+    # read as unregistered in the numbers-page panel until Repair adopted the
+    # PBX's (docs/operations.md). One direction only, like the mirror above: the
+    # fax service lines render no auth section, so they are not judged.
+    if [ ! -f pbx/extension_secret.py ]; then
+      skip "extension secrets (pbx/extension_secret.py not present)"
+    elif [ ! -f "$DID_DB" ]; then
+      skip "extension secrets (portal database not found at $DID_DB)"
+    else
+      secret_args=(--db "$DID_DB" --check)
+      [ -n "${D7_PBX:-}" ] && secret_args+=(--container "$D7_PBX")
+      secret_out="$(python3 pbx/extension_secret.py "${secret_args[@]}" 2>&1)"
+      secret_rc=$?
+      printf '%s\n' "$secret_out" | sed 's/^/       /'
+      case "$secret_rc" in
+        0) pass "every extension holds the SIP secret the PBX renders" ;;
+        2) fail "the extension secrets could not be judged — the PBX or the portal database was unreadable (see above); this is not a pass" ;;
+        *) fail "an extension's stored SIP secret is missing or is not the one the PBX renders (see above) — its softphone cannot register; run Repair in the portal so it adopts the PBX's secret" ;;
       esac
     fi
 

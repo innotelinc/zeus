@@ -18,6 +18,7 @@ operational shape.
 | `asterisk_converge.py` | Per-section merge for the **shared** `extensions_custom.conf` / `ari.conf` (ownership markers) |
 | `dograh_routes.py` | Judge whether every DID the portal sells reaches a `dograh-inbound,<workflow>,1` row in FreePBX's own `incoming` table — see [One ingress](#one-ingress-every-platform-did-names-a-workflow). **Read-only, deliberately:** which workflow a DID should reach is a portal decision and the row is FreePBX's, so the tool names the disagreement instead of inventing a route. A DID the portal marks `fax_enabled` is excused the fax service's own destination, and `--incoming-tsv` judges a route table dumped by `p0-snapshot.sh` with no PBX reachable. Exit 1 = a DID is off the workflow or unrouted, 2 = cannot tell |
 | `extension_mirror.py` | Judge whether every FreePBX user is an extension the portal's `freepbx_extensions` mirror names — **one direction only** (the mirror also carries rows the PBX does not own as users: the fax service lines, a demo softphone), read-only, `--users-tsv` judges a user table dumped by `p0-snapshot.sh` with no PBX reachable. Exit 1 = a phone nothing in the portal can manage, 2 = cannot tell — see [The portal's extension mirror](#the-portals-extension-mirror) |
+| `extension_secret.py` | Judge whether every extension the portal holds carries the SIP secret the PBX renders for it — the credential a softphone must register with, since FreePBX owns the endpoint. **One direction only** (the fax service lines render no auth section, so they are not judged), read-only, `--auth-conf` judges a dumped `pjsip.auth.conf` with no PBX reachable. Exit 1 = a softphone that cannot register until `Repair` adopts the PBX's secret, 2 = cannot tell — see [The secret a softphone registers with](#the-secret-a-softphone-registers-with) |
 | `media_address.py` | Keep the address Asterisk advertises to a LAN phone (`media_address` on each sip/pjsip endpoint) — **entrypoint-owned**, re-derived every boot by `docker-entrypoint-full.sh` / `scripts/setup.sh` and reconciled by the `zeus-pbx-sync` timer (`scripts/zeus-pbx-sync.sh`) so an image rebuild cannot lose it. Writes its own file `pjsip_media_custom.conf` and one `#include` in the portal-shared `pjsip.endpoint_custom_post.conf`; refuses a docker/loopback address. `--check` / `--apply`, `--devices-tsv` judges off-host. Exit 1 = an apply converges it, 2 = cannot tell — see [The media address Asterisk advertises](#the-media-address-asterisk-advertises-container--lan-phones) |
 | `outbound_route.py` | Keep the route that normalises a dialled number — the one that gives a ten-digit call the `1` VoIP.ms terminates on. **Entrypoint-owned**, converged on boot by `docker-entrypoint-full.sh` / `scripts/setup.sh` and reconciled every tick by `scripts/zeus-pbx-sync.sh`. Creates the route (`PSTN` by default, `PBX_OUTBOUND_ROUTE` to rename) if missing, requires the two normalisation rules (ten-digit -> `1`, seven-digit -> `1413`) — preserving any extra patterns an existing route already has — attaches the VoIP.ms trunk first, and lifts the route above anything ahead of it that would take the same calls — a catch-all like `X.`, or a duplicate route pointed at another trunk. FreePBX evaluates routes in sequence order, so a route ahead swallows the call before the named route and its normalisation are reached. Refuses (exit 2) when there is no trunk row to attach. `--check` / `--apply`, `--local` for the in-container / bare-metal MySQL, and `--drop-route NAME` to remove a duplicate route an operator names (never automatic). Exit 1 = an apply converges it — see [The outbound route](#the-outbound-route-a-dialled-number-reaches-the-carrier) |
 | `rtp_settings_guard.py` | Keep the two `rtp_additional.conf` rows FreePBX rewrites wrong: `stunaddr` and the TURN credential. **Entrypoint-owned** — `docker-entrypoint-full.sh` runs it after the post-reload RTP write, because `fwconsole reload` regenerates the file from `kvstore_Sipsettings` every time. Two silent failures, both verified live on zeus (FreePBX 17.0.33 / Asterisk 22.11): `Sipsettings::genConfig()` runs every RTP value through `strtolower()` — a TURN password is case-sensitive, so coturn answered `credentials are incorrect (check_stun_auth)` once per call and the WebRTC relay candidates were dead — and `stunaddr` pointed at that same coturn, which is RFC 5389 and silently drops the cookie-less RFC 3489 request Asterisk's `main/stun.c` sends, costing 3x3s of retries on *every* call. STUN and TURN are therefore different servers here. `--rtp-conf`, `--stun-addr` (default `$PJSIP_STUN_ADDR`, else `stun.l.google.com:19302`; `''` disables discovery), `--turn-username`/`--turn-password` (default `$TURN_USERNAME`/`$TURN_CREDENTIAL`), `--check` / `--apply`. Exit 1 = an apply converges it, 2 = cannot tell — see [The RTP rows FreePBX rewrites](#the-rtp-rows-freepbx-rewrites) |
@@ -1180,6 +1181,76 @@ Three things about it are deliberate:
 `zeus-pbx-sync.sh`: that wrapper's rule is that the timer never goes red over work
 only a person can do (the DID ingress is reported there and never fails the unit),
 and a mirror row is the same kind of work.
+
+## The secret a softphone registers with
+
+A softphone registers as the PJSIP endpoint **FreePBX owns** (see [Who owns a
+PJSIP endpoint](#who-owns-a-pjsip-endpoint)), so the credential that endpoint
+accepts is the one FreePBX generated into `pjsip.auth.conf` — not a value the
+portal invented. `src/lib/pjsip-secret.ts` reads that rendered value per row and
+`src/lib/extension-readiness.ts` turns it into the sentence an operator needs;
+this section is the same judgement as a fleet-wide verdict.
+
+Two states cost a line its phone, and neither has a witness on any screen: the
+endpoint exists, the mailbox resolves, the media address is set, the trunk is
+registered, and the only symptom is a softphone that never comes up.
+
+| State | How it is produced | The repair |
+| --- | --- | --- |
+| The row holds no secret | `scripts/legacy_portal_merge.py` deliberately stores no invented credential when it `adopt`s an extension FreePBX already owns — a made-up secret authenticates nothing — or a FreePBX-created extension was just mirrored | `Repair` — it adopts the secret FreePBX renders |
+| The row holds a secret FreePBX does not render | A portal-issued value, or a credential FreePBX has since regenerated | `Repair` — the same adoption |
+
+### Measured on this estate
+
+`4132912045` (“Wendel”) is the same line the [extension
+mirror](#the-portals-extension-mirror) records, one layer deeper. It was adopted
+on 2026-09-26 with `extension_secret` NULL — by design, per the row above.
+FreePBX renders one (`[4132912045-auth]` in `pjsip.auth.conf`), so while the row
+held none it read as **unregistered** in the numbers page's live panel even
+though the `users`/`devices` pair was real: the portal could not offer it a
+softphone, and the panel was right to say so.
+
+A `Repair` on 2026-10-06 adopted the rendered secret, appended
+`[4132912045](+)` with the WebRTC media settings to
+`pjsip.endpoint_custom_post.conf`, and rewrote the media line the boot owner had
+already converged (the file is a fixed point, so the rewrite changed nothing).
+Verified live: the stored secret equals the rendered one and `pjsip show
+endpoint 4132912045` reports `media_encryption=dtls` / `ice_support=true` /
+`rtcp_mux=true`. The endpoint still reads `Unavailable` — correctly, because no
+phone has registered against it yet. The repair made the line *usable*; a
+registration still needs a device.
+
+`pbx/extension_secret.py` is that read, as a verdict:
+
+```bash
+python3 pbx/extension_secret.py --db /var/lib/docker/volumes/zeus-portal-data/_data/pbx.db --check
+python3 pbx/extension_secret.py --db … --auth-conf pjsip.auth.conf --check   # off-host
+```
+
+| status | meaning | what the caller does |
+| --- | --- | --- |
+| `0` | every extension holds the secret the PBX renders | nothing |
+| `1` | a stored secret is missing, or is not the one the PBX renders | run `Repair` for the extension in the portal; if FreePBX renders none either, create the credential in FreePBX first |
+| `2` | no portal database, no PBX, an unread table, an empty portal, or a PBX that renders no credential at all | nothing — a host running part of the group is not a drifted host |
+
+Three things about it are deliberate:
+
+- **One direction only, like the mirror.** Only the extensions the PBX renders a
+  credential for are compared. The fax service lines (`3291`–`3294`) are IAX2
+  modems with no `[<ext>-auth]` section, so a portal secret they alone hold is
+  the right one and is not reported.
+- **The rendered file is authoritative.** A hand-written `pjsip_custom.conf` may
+  carry a credential FreePBX does not render; where both do, it is the generated
+  `pjsip.auth.conf` the PBX will accept. The files are read in the same order
+  `src/lib/pjsip-secret.ts` uses, because that is what the portal adopts from.
+- **It never writes.** Adopting the PBX's secret is the portal's
+  `POST /api/phone/extensions/repair`; a tool that wrote one would be inventing
+  the credential the readiness row exists to report.
+
+`./scripts/smoke-test.sh pbx` fails on it. Deliberately **not** wired into
+`zeus-pbx-sync.sh`, for the same reason as the mirror: a stored secret is
+converged by a person pressing `Repair`, so a red timer would report work the
+timer cannot do.
 
 ## Voice plane gates and D7 assertions
 
