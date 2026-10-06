@@ -169,6 +169,34 @@ if docker exec "$PBX_CONTAINER" test -f /opt/zeus/pbx/outbound_route.py >/dev/nu
   fi
 fi
 
+# ── Voicemail mailboxes: judged, and converged on drift ─────────
+# `*97` needs the four facts the tool judges to line up, and the one a rebuilt
+# box loses is the caller-id gate: `macro-user-callerid` re-derives the
+# extension from AstDB's `DEVICE/<callerid>/user` and `AMPUSER/<ext>/cidname`,
+# and it is FreePBX's own create path — not this repo's direct writes — that
+# used to write them (see `pbx/README.md`, "The mailbox behind `*97`"). The
+# portal's own `freepbx_extensions` is the intent (`voicemail_enabled` plus
+# `voicemail_pin`), so unlike a DID route this is derivable and the tool is
+# idempotent: the timer judges it and applies on drift, which is what re-derives
+# a caller-id pair a rebuild dropped rather than leaving `*97` dead until
+# somebody runs the tool by hand.
+vm_say() { printf '%s\n' "$1" | sed 's/^/  /' >&2; }
+
+if [ -f "${REPO_ROOT}/pbx/voicemail_mailbox.py" ] && [ -f "$PORTAL_DB" ]; then
+  vm_rc=0
+  vm_out="$(python3 "${REPO_ROOT}/pbx/voicemail_mailbox.py" plan --db "$PORTAL_DB" 2>&1)" || vm_rc=$?
+  [ -n "$vm_out" ] && vm_say "$vm_out"
+  if [ "$vm_rc" = 1 ]; then
+    vm_rc=0
+    vm_out="$(python3 "${REPO_ROOT}/pbx/voicemail_mailbox.py" apply --db "$PORTAL_DB" 2>&1)" || vm_rc=$?
+    [ -n "$vm_out" ] && vm_say "$vm_out"
+    [ "$vm_rc" = 0 ] && echo "zeus-pbx-sync: voicemail mailboxes re-converged (pbx/voicemail_mailbox.py)" >&2
+  fi
+  if [ "$vm_rc" != 0 ]; then
+    echo "zeus-pbx-sync: voicemail mailboxes could not be judged (voicemail-mailbox exit $vm_rc) — check the portal database and the PBX" >&2
+  fi
+fi
+
 if "$BOOTSTRAP" --check >/dev/null 2>&1; then
   echo "zeus-pbx-sync: in sync"
   exit 0

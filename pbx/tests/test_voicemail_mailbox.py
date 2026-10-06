@@ -34,7 +34,9 @@ Run:  python3 -m unittest discover -s pbx/tests -v
 from __future__ import annotations
 
 import os
+import sqlite3
 import sys
+import tempfile
 import unittest
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -151,6 +153,72 @@ class Intents(unittest.TestCase):
         self.assertEqual(vm.unpinned(rows, fallback="1111"), {})
         self.assertEqual(vm.pin_for(rows[0], "1111"), "1111")
         self.assertEqual(vm.pin_for(rows[1], "1111"), "9999")
+
+
+class PortalIntent(unittest.TestCase):
+    """The portal's own record as an intent source — the one a timer can read.
+
+    The migration snapshot lives on one host and carries rows that intend no
+    mailbox; the portal's `freepbx_extensions` is on the box that serves, says
+    which extensions *do*, and holds the PIN. Both go through the same
+    `parse_intents`, so a portal row and a snapshot row cannot be judged to two
+    different rules.
+    """
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        self.db = os.path.join(self._tmp.name, "pbx.db")
+
+    def _portal(self, rows):
+        con = sqlite3.connect(self.db)
+        con.execute(
+            "CREATE TABLE freepbx_extensions ("
+            "extension_id TEXT, extension_name TEXT, "
+            "voicemail_enabled INTEGER, voicemail_pin TEXT)"
+        )
+        con.executemany("INSERT INTO freepbx_extensions VALUES (?, ?, ?, ?)", rows)
+        con.commit()
+        con.close()
+
+    def test_only_the_enabled_rows_are_an_intent(self):
+        """A fax line with no mailbox enabled is not a mailbox that is missing."""
+        self._portal(
+            [
+                ("1001", "Ada", 1, "4321"),
+                ("3291", "Fax 1", 0, None),
+                ("1003", "Alan", 1, "9999"),
+                ("1002", "Grace", 0, ""),
+            ]
+        )
+        self.assertEqual(
+            vm.portal_intents(self.db),
+            [vm.Intent("1001", "Ada", "", "4321"), vm.Intent("1003", "Alan", "", "9999")],
+        )
+
+    def test_an_enabled_row_with_no_pin_is_refused_like_any_other(self):
+        """The same rule as the snapshot: a box nobody can open is a refusal."""
+        self._portal([("1001", "Ada", 1, None)])
+        rows = vm.portal_intents(self.db)
+        self.assertEqual(rows, [vm.Intent("1001", "Ada", "", "")])
+        self.assertIn("no PIN", vm.unpinned(rows, fallback="")["1001"])
+
+    def test_an_empty_plan_is_refused_rather_than_called_healthy(self):
+        """A read that returned nothing must not read as "every box resolves"."""
+        self._portal([])
+        with self.assertRaises(vm.IntentError) as raised:
+            vm.portal_intents(self.db)
+        self.assertIn("no extensions", str(raised.exception))
+
+    def test_a_portal_without_the_table_is_an_error_not_an_empty_plan(self):
+        sqlite3.connect(self.db).close()  # a database, but no mirror table
+        with self.assertRaises(sqlite3.Error):
+            vm.portal_intents(self.db)
+
+    def test_the_tool_asks_for_exactly_one_source(self):
+        """Neither, or both, is a caller mistake — say so instead of guessing."""
+        self.assertEqual(vm.main(["plan"]), 2)
+        self.assertEqual(vm.main(["plan", "--intent", self.db, "--db", self.db]), 2)
 
 
 class Readings(unittest.TestCase):

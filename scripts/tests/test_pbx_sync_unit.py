@@ -149,6 +149,19 @@ class WrapperGatesBeforeItApplies(unittest.TestCase):
         self.assertIn("extension-secret: ", self.text)
         self.assertNotIn("extension_secret.py --apply", self.text)
 
+    def test_it_converges_the_mailboxes_every_tick(self):
+        """The caller-id pair behind `*97`, checked and applied on drift.
+
+        The portal's own `freepbx_extensions` is the intent, so unlike a DID
+        route this is derivable and the tool is idempotent: the timer judges it
+        and applies on drift, which is what re-derives a caller-id pair a
+        rebuild dropped rather than leaving `*97` dead until someone runs the
+        tool by hand.
+        """
+        self.assertIn("voicemail_mailbox.py", self.text)
+        self.assertIn('plan --db "$PORTAL_DB"', self.text)
+        self.assertIn('apply --db "$PORTAL_DB"', self.text)
+
     def test_an_unreachable_pbx_is_not_a_failed_run(self):
         """A slow PBX boot after a reboot must not fail the timer's unit."""
         tail = [line for line in self.text.splitlines() if line.strip()]

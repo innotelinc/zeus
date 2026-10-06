@@ -1325,6 +1325,9 @@ user row, a device row, a technology row, AstDB state — and a mailbox):
 ```bash
 python3 pbx/voicemail_mailbox.py plan  --intent mailboxes.json   # also the verify
 python3 pbx/voicemail_mailbox.py apply --intent mailboxes.json
+
+# or read the intent from the portal's own record — the source a timer can use
+python3 pbx/voicemail_mailbox.py plan  --db /var/lib/docker/volumes/zeus-portal-data/_data/pbx.db
 ```
 
 It creates the box through FreePBX's own `Voicemail::addMailbox`, re-points the
@@ -1333,6 +1336,15 @@ the result back out of **what Asterisk loaded** (`voicemail show users`), so a
 `plan` run after an `apply` is the verification. The intent carries a PIN
 (`vm.pin` in the migration snapshot, `voicemail_pin` in the portal), and a row
 without one is refused by name rather than given a generated one.
+
+`--db` is the same judgement against the one intent source a timer can read:
+the portal's `freepbx_extensions` says which extensions have a mailbox
+(`voicemail_enabled`) and with which PIN, so `zeus-pbx-sync.sh` judges it every
+tick and applies on drift. The caller-id half is derivable from the PBX's own
+rows, so — unlike the extension secret, which only a person's `Repair` writes —
+this is one the timer converges itself. That is what re-derives the pair a
+rebuilt box drops rather than leaving `*97` dead until somebody runs the tool by
+hand.
 
 The gate *before* the mailbox is judged first, because it is the one a
 box-shaped check cannot see. `macro-user-callerid` does not trust the caller id

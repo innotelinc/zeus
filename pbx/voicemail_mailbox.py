@@ -76,6 +76,18 @@ or `vm.pin`). `pbx/legacy_voice_migrate.py`'s snapshot is one of those documents
 `vm.pin` — so it can be passed as-is. The PIN goes into `voicemail.conf`, so this
 tool's output carries credentials. A row with no PIN is refused by name rather
 than given a generated one: a box nobody can open is not a repair.
+
+`--db` is the other source, and the one a timer can use: the portal's own
+`freepbx_extensions` is where an extension is said to have a mailbox
+(`voicemail_enabled`) and with which PIN (`voicemail_pin`), so `plan`/`apply`
+against it converge the estate's mailboxes without an operator's snapshot. It is
+the same judgement either way — one source of intents, one verdict — and the
+caller-id half is derivable rather than stated, so a box that regressed (or a
+pair this repo's own create path never wrote) is repaired on the next tick.
+
+    # the portal's own record, read-only, no snapshot file to keep in step
+    python3 pbx/voicemail_mailbox.py plan  --db /var/lib/docker/volumes/zeus-portal-data/_data/pbx.db
+    python3 pbx/voicemail_mailbox.py apply --db /var/lib/docker/volumes/zeus-portal-data/_data/pbx.db
 """
 from __future__ import annotations
 
@@ -83,6 +95,7 @@ import argparse
 import json
 import os
 import re
+import sqlite3
 import subprocess
 import sys
 from dataclasses import dataclass
@@ -113,6 +126,15 @@ NO_MAILBOX = frozenset({"novm", "disabled", ""})
 # narrower range than that would refuse the mailboxes this tool exists to create.
 EXT_RE = re.compile(r"^[0-9]{2,15}$")
 PIN_RE = re.compile(r"^[0-9]{4,8}$")
+
+# The portal's own record of an intended mailbox: the extension it enabled
+# voicemail for, and the PIN it told the customer. This is the intent a timer can
+# read — the snapshot lives on one host, this lives on the box that serves.
+PORTAL_QUERY = (
+    "SELECT extension_id, extension_name, voicemail_pin "
+    "FROM freepbx_extensions WHERE voicemail_enabled = 1 "
+    "ORDER BY extension_id"
+)
 
 
 class IntentError(RuntimeError):
@@ -207,6 +229,37 @@ def parse_intents(text: str) -> list[Intent]:
             )
         )
     return intents
+
+
+def portal_intents(db_path: str) -> list[Intent]:
+    """The mailboxes the portal intends, from its own record.
+
+    Read-only, and run through the same `parse_intents` a hand-written document
+    is: the portal's rows are validated by the one reader that decides what an
+    intent is, so a portal row and a snapshot row cannot be judged to different
+    rules. An empty result raises there (a broken read reads the same as an
+    estate with no mailboxes), and a missing table raises `sqlite3.Error` —
+    neither is reported as "every mailbox resolves".
+    """
+    con = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
+    try:
+        rows = con.execute(PORTAL_QUERY).fetchall()
+    finally:
+        con.close()
+    return parse_intents(
+        json.dumps(
+            {
+                "extensions": [
+                    {
+                        "extension": str(extension),
+                        "name": str(name or ""),
+                        "pin": str(pin or ""),
+                    }
+                    for extension, name, pin in rows
+                ]
+            }
+        )
+    )
 
 
 def unpinned(intents: list[Intent], fallback: str) -> dict[str, str]:
@@ -589,17 +642,29 @@ def main(argv: list[str] | None = None) -> int:
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
     )
     parser.add_argument("mode", choices=("plan", "apply"))
-    parser.add_argument("--intent", required=True)
+    parser.add_argument("--intent", help="a JSON intent document (a list, or the migration snapshot)")
+    parser.add_argument("--db", help="the portal's SQLite database (pbx.db): read the intent from its own record")
     parser.add_argument("--pbx", default=CONTAINER)
     parser.add_argument("--pin", default="", help="PIN for rows that carry none")
     parser.add_argument("--json", action="store_true")
     args = parser.parse_args(argv)
     CONTAINER = args.pbx
 
+    if bool(args.intent) == bool(args.db):
+        print(
+            "voicemail_mailbox: give exactly one of --intent or --db — "
+            "there is no mailbox plan to judge",
+            file=sys.stderr,
+        )
+        return 2
+
     try:
-        with open(args.intent) as handle:
-            intents = parse_intents(handle.read())
-    except (OSError, IntentError) as err:
+        if args.intent:
+            with open(args.intent) as handle:
+                intents = parse_intents(handle.read())
+        else:
+            intents = portal_intents(args.db)
+    except (OSError, sqlite3.Error, IntentError) as err:
         print(f"voicemail_mailbox: {err}", file=sys.stderr)
         return 2
 
