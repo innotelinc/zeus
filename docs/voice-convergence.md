@@ -33,7 +33,7 @@ the effective dialplan it generates (`dialplan show ext-did-0002`):
 ```
 voipms_pjsip (context=from-trunk) → from-pstn → ext-did → ext-did-0002
   3025551002 → dograh-inbound,8003,1 → Stasis(dograh_72e590ef66eb)
-  4132643964 → dograh-inbound,8000,1 → Stasis(dograh_72e590ef66eb)
+  4132643964 → dograh-inbound,8003,1 → Stasis(dograh_72e590ef66eb)
   4132951200 → dograh-inbound,8003,1 → Stasis(dograh_72e590ef66eb)
   4135612020 → dograh-inbound,8003,1 → Stasis(dograh_72e590ef66eb)
   8579901777 → dograh-inbound,8003,1 → Stasis(dograh_72e590ef66eb)
@@ -45,6 +45,14 @@ voipms_pjsip (context=from-trunk) → from-pstn → ext-did → ext-did-0002
 `8000`–`8008` are rows in the same table — every workflow is also dialable as an
 extension — and `4138808180 → from-did-direct,4132912045,1` is a FreePBX-only
 route that no portal account holds.
+
+`4132643964` reaches `8003` because that is what its portal binding names: the
+account's `voice_bindings.capstone_binding` is `4` — the Dograh workflow **id**
+the Voice screen stores (`value: String(agent.id)`) — and workflow 4 is
+*Business Receptionist*, the entry `8003` runs. It dialled `8000` (*IT Help
+Desk*, the earlier pilot's target) while the binding said otherwise; the two
+were reconciled 2026-10-06 by repointing the route, since which workflow a DID
+reaches is a portal decision and the row is FreePBX's.
 
 So Capstone is the front door, every platform DID names a workflow, and the
 `[zeus-ai-*]` contexts are **not** in the live dialplan. `zeus-pbx-sync.timer`

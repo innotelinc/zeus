@@ -93,7 +93,10 @@ Dograh ARI connects to Zeus/FreePBX):**
    customer call or return transcript is claimed. The next step is one real call
    to `4132643964`, then verify the same call id in `voice_calls`, the return
    outcome, and both transcripts before considering fleet cutover. The old
-   `7745057135` / `8005` / *Job Interview* mismatch remains unreconciled.
+   `7745057135` / `8005` / *Job Interview* mismatch was reconciled 2026-10-06
+   (the line answers `dograh-inbound,8005,1`), as was `4132643964`, which now
+   dials `8003` (*Business Receptionist*) to match its portal binding rather
+   than the pilot's `8000`.
 
    **Roadmap item completed in the same pass:** `pbx/pjsip_owner_check.py`
    no longer reports WebRTC down merely because FreePBX 17 names the live WSS
