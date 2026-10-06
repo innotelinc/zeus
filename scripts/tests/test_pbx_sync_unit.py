@@ -162,6 +162,19 @@ class WrapperGatesBeforeItApplies(unittest.TestCase):
         self.assertIn('plan --db "$PORTAL_DB"', self.text)
         self.assertIn('apply --db "$PORTAL_DB"', self.text)
 
+    def test_it_converges_the_bound_dids_every_tick(self):
+        """A binding change has to reach the PBX, not just the portal.
+
+        `voice_bindings` is the operator's decision and the `incoming` row is
+        FreePBX's, so before this the two agreed only by luck: the portal said
+        one workflow and the calls went to whatever the row already named. Unlike
+        a DID route the target is derivable — the engine's own number for the
+        workflow the binding names — so the timer checks and applies it.
+        """
+        self.assertIn("pbx/dograh_bindings.py", self.text)
+        self.assertIn('dograh_bindings.py" --db "$PORTAL_DB" --check', self.text)
+        self.assertIn('dograh_bindings.py" --db "$PORTAL_DB" --apply', self.text)
+
     def test_an_unreachable_pbx_is_not_a_failed_run(self):
         """A slow PBX boot after a reboot must not fail the timer's unit."""
         tail = [line for line in self.text.splitlines() if line.strip()]

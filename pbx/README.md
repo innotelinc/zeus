@@ -17,6 +17,7 @@ operational shape.
 | `bootstrap-zeus-pbx.sh` | Render + apply the fragments idempotently; `--check` drift mode |
 | `asterisk_converge.py` | Per-section merge for the **shared** `extensions_custom.conf` / `ari.conf` (ownership markers) |
 | `dograh_routes.py` | Judge whether every DID the portal sells reaches a `dograh-inbound,<workflow>,1` row in FreePBX's own `incoming` table — see [One ingress](#one-ingress-every-platform-did-names-a-workflow). **Read-only, deliberately:** which workflow a DID should reach is a portal decision and the row is FreePBX's, so the tool names the disagreement instead of inventing a route. A DID the portal marks `fax_enabled` is excused the fax service's own destination, and `--incoming-tsv` judges a route table dumped by `p0-snapshot.sh` with no PBX reachable. Exit 1 = a DID is off the workflow or unrouted, 2 = cannot tell |
+| `dograh_bindings.py` | **Write** the `incoming` row when the portal has said which workflow a DID reaches — the other half of `dograh_routes.py`, so a binding change stops being a portal-only fact. Resolves the binding (a workflow id or name) through the **engine's own** workflow → number mapping (`telephony_phone_numbers`), never arithmetic (`8008` is workflow 10), and refuses a binding it cannot place **by name** rather than guessing — a wrong guess re-points a customer's number at another customer's agent. Repoints rows that exist; a DID with no route at all stays a person's job. `--check` / `--apply`, `--numbers-tsv` + `--incoming-tsv` rehearse off-host. Exit 1 = an apply converges it, 2 = cannot tell — see [One ingress](#one-ingress-every-platform-did-names-a-workflow) |
 | `extension_mirror.py` | Judge whether every FreePBX user is an extension the portal's `freepbx_extensions` mirror names — **one direction only** (the mirror also carries rows the PBX does not own as users: the fax service lines, a demo softphone), read-only, `--users-tsv` judges a user table dumped by `p0-snapshot.sh` with no PBX reachable. Exit 1 = a phone nothing in the portal can manage, 2 = cannot tell — see [The portal's extension mirror](#the-portals-extension-mirror) |
 | `extension_secret.py` | Judge whether every extension the portal holds carries the SIP secret the PBX renders for it — the credential a softphone must register with, since FreePBX owns the endpoint. **One direction only** (the fax service lines render no auth section, so they are not judged), read-only, `--auth-conf` judges a dumped `pjsip.auth.conf` with no PBX reachable. Exit 1 = a softphone that cannot register until `Repair` adopts the PBX's secret, 2 = cannot tell — see [The secret a softphone registers with](#the-secret-a-softphone-registers-with) |
 | `media_address.py` | Keep the address Asterisk advertises to a LAN phone (`media_address` on each sip/pjsip endpoint) — **entrypoint-owned**, re-derived every boot by `docker-entrypoint-full.sh` / `scripts/setup.sh` and reconciled by the `zeus-pbx-sync` timer (`scripts/zeus-pbx-sync.sh`) so an image rebuild cannot lose it. Writes its own file `pjsip_media_custom.conf` and one `#include` in the portal-shared `pjsip.endpoint_custom_post.conf`; refuses a docker/loopback address. `--check` / `--apply`, `--devices-tsv` judges off-host. Exit 1 = an apply converges it, 2 = cannot tell — see [The media address Asterisk advertises](#the-media-address-asterisk-advertises-container--lan-phones) |
@@ -1066,8 +1067,11 @@ DID unwired while both products believed the numbers were routed.
 
 **Which workflow a DID should reach is a portal decision** (`voice_bindings`, and
 the account → agent view at `GET /api/admin/voice-routing`), and the row itself
-belongs to FreePBX's own create path. So nothing in this repo writes one: the
-judgement is `pbx/dograh_routes.py`, and it is deliberately read-only.
+belongs to FreePBX's. Two tools split that: `pbx/dograh_routes.py` judges the
+whole ingress and is deliberately read-only, and `pbx/dograh_bindings.py` writes
+the rows the portal has actually **bound** — resolving the binding through the
+engine's own workflow → number mapping, so a binding change reaches the PBX
+instead of stopping at the portal.
 
 ```bash
 # the live PBX, read-only: the portal's DID list against the live route table
@@ -1096,16 +1100,19 @@ this estate, the Denovo interview line is fax-enabled **and** reaches
 `scripts/zeus-pbx-sync.sh` runs the judgement on **every** tick, including the
 ones where the fragments are already in sync, and puts it in the journal without
 failing the unit: a DID route is a row a person adds in FreePBX, and a timer that
-went red over it would be red forever. `./scripts/smoke-test.sh pbx` runs the same
-judgement and *does* fail on it, because the smoke test is the run an operator
-actually reads.
+went red over it would be red forever. It then converges the **bound** DIDs
+(`pbx/dograh_bindings.py`, check → apply on drift), because that half is
+derivable: the target is the engine's own number for the workflow the portal
+named. `./scripts/smoke-test.sh pbx` runs the judgement and *does* fail on it,
+because the smoke test is the run an operator actually reads.
 
 What the tool will not do, deliberately:
 
-- **It never writes a route.** A hand-written `incoming` row means guessing its
-  other fifteen columns, and a half-written row on a live phone system is worse
-  than a named gap: the row is FreePBX's own create path's to make, and which
-  workflow it should name is the portal's to decide.
+- **It never writes a route.** (`pbx/dograh_bindings.py` is the writer, and even
+  it only repoints a row that already exists.) A hand-written `incoming` row
+  means guessing its other fifteen columns, and a half-written row on a live
+  phone system is worse than a named gap: the row is FreePBX's own create path's
+  to make, and which workflow it should name is the portal's to decide.
 - **It judges no DID the plan does not name.** A ring group, a partner's number
   and a pattern route like `_2XX` are somebody else's phone service, and this
   check says nothing about them.

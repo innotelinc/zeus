@@ -36,6 +36,29 @@ if [ -f "${REPO_ROOT}/pbx/dograh_routes.py" ] && [ -f "$PORTAL_DB" ]; then
   fi
 fi
 
+# ── Bound DIDs: written from the portal's own decision ───────────
+# The judgement above says which DIDs are off the workflow; this is what puts the
+# ones the portal has *bound* onto one. `voice_bindings` is the operator's
+# decision and the `incoming` row is FreePBX's, so a binding change used to reach
+# nothing: the portal agreed and the calls did not. Unlike a DID route the target
+# is not a guess — `pbx/dograh_bindings.py` reads the engine's own workflow ->
+# number mapping — so the timer applies it, and only repoints rows that already
+# exist (a DID with no route at all stays a person's to add).
+if [ -f "${REPO_ROOT}/pbx/dograh_bindings.py" ] && [ -f "$PORTAL_DB" ]; then
+  bind_rc=0
+  bind_out="$(python3 "${REPO_ROOT}/pbx/dograh_bindings.py" --db "$PORTAL_DB" --check 2>&1)" || bind_rc=$?
+  [ -n "$bind_out" ] && printf '%s\n' "$bind_out" | sed 's/^dograh-bindings: /  dograh-bindings: /' >&2
+  if [ "$bind_rc" = 1 ]; then
+    bind_rc=0
+    bind_out="$(python3 "${REPO_ROOT}/pbx/dograh_bindings.py" --db "$PORTAL_DB" --apply 2>&1)" || bind_rc=$?
+    [ -n "$bind_out" ] && printf '%s\n' "$bind_out" | sed 's/^dograh-bindings: /  dograh-bindings: /' >&2
+    [ "$bind_rc" = 0 ] && echo "zeus-pbx-sync: bound DID routes re-converged (pbx/dograh_bindings.py)" >&2
+  fi
+  if [ "$bind_rc" != 0 ]; then
+    echo "zeus-pbx-sync: bound DID routes could not be judged (dograh-bindings exit $bind_rc) — check the portal database, the engine's database and the PBX" >&2
+  fi
+fi
+
 # ── Extension secrets: judged on every tick, never written ────────
 # A softphone registers as the PJSIP endpoint FreePBX itself owns, so the
 # credential that endpoint accepts is the one FreePBX rendered into

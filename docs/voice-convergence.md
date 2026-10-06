@@ -57,9 +57,12 @@ reaches is a portal decision and the row is FreePBX's.
 So Capstone is the front door, every platform DID names a workflow, and the
 `[zeus-ai-*]` contexts are **not** in the live dialplan. `zeus-pbx-sync.timer`
 is **enabled**, and every tick judges this ingress with `pbx/dograh_routes.py`
-before it considers the fragments: read-only, because which workflow a DID
-should reach is a portal decision and the row is FreePBX's, so the timer reports
-the rows a person has to fix rather than writing them (`pbx/README.md`).
+before it considers the fragments. The judgement is read-only — a DID off the
+workflow with no binding is a person's to fix — and the **bound** ones are then
+converged by `pbx/dograh_bindings.py`, which resolves each `voice_bindings` row
+through the engine's own workflow → number mapping (`telephony_phone_numbers`)
+and repoints the `incoming` row. That is what makes a binding change in the
+portal reach the PBX instead of stopping at the portal (`pbx/README.md`).
 
 ---
 
