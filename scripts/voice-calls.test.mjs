@@ -30,7 +30,7 @@
  * `json_insert` depends on — are the ones that ship.
  */
 import assert from "node:assert/strict";
-import { cpSync, mkdirSync, mkdtempSync, rmSync } from "node:fs";
+import { cpSync, mkdirSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, before, describe, it } from "node:test";
@@ -203,6 +203,59 @@ describe("describePath", () => {
     assert.equal(
       labels.describePath([{ to: "capstone" }, { to: "ava" }, { to: "capstone" }]),
       "agent → Capstone interview → Dograh → Capstone interview",
+    );
+  });
+});
+
+describe("the stored-path cleanup", () => {
+  it("collapses a run of the same leg in the rows written before the writer did", () => {
+    // The migration is what fixes history: the writer only stops *new* repeats.
+    // A row with four `capstone` hops must read as one leg everywhere the array
+    // is counted — the call-detail screen reads `.length` directly.
+    const hop = (to) => ({ to, at: "2026-01-01T00:00:00Z" });
+    db.prepare("INSERT INTO voice_calls (call_id, handoffs) VALUES (?, ?)").run(
+      "1758500000.dupes",
+      JSON.stringify([
+        hop("capstone"),
+        hop("capstone"),
+        hop("capstone"),
+        hop("capstone"),
+        hop("ava"),
+        hop("ava"),
+        hop("capstone"),
+      ]),
+    );
+
+    const sql = readFileSync(join(REPO, "scripts", "migrations", "013_dedupe_voice_call_handoffs.sql"), "utf8");
+    db.exec(sql);
+
+    const row = calls.getVoiceCall("1758500000.dupes");
+    // A run collapses to one leg; leaving and returning stays two visits.
+    assert.deepEqual(
+      row.handoffs.map((h) => h.to),
+      ["capstone", "ava", "capstone"],
+    );
+    for (const h of row.handoffs) assert.equal(h.at, "2026-01-01T00:00:00Z");
+
+    // Re-running is a no-op: the migration runner replays every file on startup.
+    db.exec(sql);
+    assert.deepEqual(
+      calls.getVoiceCall("1758500000.dupes").handoffs.map((h) => h.to),
+      ["capstone", "ava", "capstone"],
+    );
+  });
+
+  it("leaves an unreadable path alone rather than rewriting it to nothing", () => {
+    db.prepare("INSERT INTO voice_calls (call_id, handoffs) VALUES (?, ?)").run(
+      "1758500000.broken",
+      "not json",
+    );
+    db.exec(
+      readFileSync(join(REPO, "scripts", "migrations", "013_dedupe_voice_call_handoffs.sql"), "utf8"),
+    );
+    assert.equal(
+      db.prepare("SELECT handoffs FROM voice_calls WHERE call_id = ?").get("1758500000.broken").handoffs,
+      "not json",
     );
   });
 });
