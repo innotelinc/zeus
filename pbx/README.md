@@ -1247,10 +1247,12 @@ Three things about it are deliberate:
   `POST /api/phone/extensions/repair`; a tool that wrote one would be inventing
   the credential the readiness row exists to report.
 
-`./scripts/smoke-test.sh pbx` fails on it. Deliberately **not** wired into
-`zeus-pbx-sync.sh`, for the same reason as the mirror: a stored secret is
-converged by a person pressing `Repair`, so a red timer would report work the
-timer cannot do.
+`./scripts/smoke-test.sh pbx` fails on it. The `zeus-pbx-sync` timer also
+**reports** it every tick (`scripts/zeus-pbx-sync.sh`) — like the DID ingress,
+and unlike the media address: a stored secret is converged by a person pressing
+`Repair`, so the timer only says so and never goes red over it. A red unit would
+report work the timer cannot do, and a silent one would leave the drift
+invisible until a phone failed to register.
 
 ## Voice plane gates and D7 assertions
 
@@ -1268,7 +1270,7 @@ both are gone with the engine. What survives is the shape: the timer runs
 `scripts/zeus-pbx-sync.sh` rather than `pbx/bootstrap-zeus-pbx.sh` directly, so a
 judgement can sit in front of the apply without the unit having to know about it,
 and `scripts/tests/test_pbx_sync_unit.py` pins that wiring — the wrapper now uses
-it for the DID ingress above.
+it for the DID ingress and the extension secrets above.
 
 ### `d7_assert.py` — the three claims, asserted rather than assumed
 

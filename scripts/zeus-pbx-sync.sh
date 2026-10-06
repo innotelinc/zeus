@@ -36,6 +36,29 @@ if [ -f "${REPO_ROOT}/pbx/dograh_routes.py" ] && [ -f "$PORTAL_DB" ]; then
   fi
 fi
 
+# ── Extension secrets: judged on every tick, never written ────────
+# A softphone registers as the PJSIP endpoint FreePBX itself owns, so the
+# credential that endpoint accepts is the one FreePBX rendered into
+# `pjsip.auth.conf` (`src/lib/pjsip-secret.ts`) — not a value the portal keeps.
+# A portal row holding none (a legacy-adopted extension, which
+# `scripts/legacy_portal_merge.py` deliberately gives no invented credential) or
+# a different one is refused on every REGISTER, and nothing else here can see
+# it: the endpoint exists, the mailbox resolves, the media address is set, and
+# the only symptom is a phone that never comes up. Reported on the in-sync path
+# too, and never a failure, for the same reason the DID route is: adopting the
+# PBX's secret is the portal's Repair button, and a tool that wrote one would be
+# inventing the credential the readiness row exists to report.
+if [ -f "${REPO_ROOT}/pbx/extension_secret.py" ] && [ -f "$PORTAL_DB" ]; then
+  secret_rc=0
+  secret_out="$(python3 "${REPO_ROOT}/pbx/extension_secret.py" --db "$PORTAL_DB" --check 2>&1)" || secret_rc=$?
+  if [ -n "$secret_out" ]; then
+    printf '%s\n' "$secret_out" | sed 's/^extension-secret: /  extension-secret: /' >&2
+  fi
+  if [ "$secret_rc" != 0 ]; then
+    echo "zeus-pbx-sync: an extension's stored SIP secret is missing or is not the one the PBX renders (extension-secret exit $secret_rc) — its softphone cannot register; run Repair for it in the portal" >&2
+  fi
+fi
+
 # ── Media address: judged, and converged on drift ────────────────
 # (The portal's write access to the file it appends to is re-asserted below.)
 # The boot entrypoint `docker-entrypoint-full.sh` converges the address Asterisk

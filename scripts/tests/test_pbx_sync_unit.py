@@ -131,6 +131,24 @@ class WrapperGatesBeforeItApplies(unittest.TestCase):
         self.assertIn("--check --local", self.text)
         self.assertIn("--apply --local", self.text)
 
+    def test_it_reports_the_extension_secrets_every_tick(self):
+        """The credential a softphone registers with, reported and never written.
+
+        A softphone registers as the PJSIP endpoint FreePBX owns, so the
+        credential it needs is the one FreePBX rendered into `pjsip.auth.conf`
+        (`src/lib/pjsip-secret.ts`), and a portal row holding none — or a
+        different one — is refused on every REGISTER while every other check
+        stays green. Unlike the media address this value is not derivable:
+        adopting the PBX's secret is the portal's Repair button, so the timer
+        only reports (the same rule it applies to a DID route), and never a
+        failure — a timer that wrote one would be inventing the credential the
+        readiness row exists to report.
+        """
+        self.assertIn("pbx/extension_secret.py", self.text)
+        self.assertIn('--db "$PORTAL_DB" --check', self.text)
+        self.assertIn("extension-secret: ", self.text)
+        self.assertNotIn("extension_secret.py --apply", self.text)
+
     def test_an_unreachable_pbx_is_not_a_failed_run(self):
         """A slow PBX boot after a reboot must not fail the timer's unit."""
         tail = [line for line in self.text.splitlines() if line.strip()]
