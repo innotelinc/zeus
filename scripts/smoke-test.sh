@@ -748,7 +748,12 @@ fi
 if [ "$SCOPE" = all ] || [ "$SCOPE" = sms ]; then
   SMS_TRUNK="${VOIPMS_TRUNK_NAME:-voipms_pjsip}"
   SMS_CTX="${SMS_OUT_CONTEXT:-sms-out}"
-  AMI_USER="${ASTERISK_AMI_USERNAME:-pbxportal}"
+  # The AMI user the *portal* sends with — read from the same variable the
+  # compose file hands it (`ASTERISK_AMI_USERNAME: ${FREEPBX_AMI_USER}`), not a
+  # bare default: `pbxportal` is FreePBX's own UCP user, which this repo does not
+  # render and which has no classes, so probing it reported a working portal as
+  # unable to send SMS (pbx/asterisk/manager_custom.conf).
+  AMI_USER="${ASTERISK_AMI_USERNAME:-${FREEPBX_AMI_USER:-pbxportal}}"
 
   FBX_SMS=$(docker ps -aq --filter "label=com.docker.compose.service=freepbx" 2>/dev/null | while read -r c; do
     [ "$(docker inspect -f '{{.State.Status}}' "$c" 2>/dev/null)" = "running" ] && { echo "$c"; break; }
