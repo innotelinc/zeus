@@ -218,6 +218,75 @@ class VerdictGatewayTest(unittest.TestCase):
         self.assertTrue(findings[0].ok, findings)
 
 
+class UnresolvedSchemeTest(unittest.TestCase):
+    """A `vault://` value is a pointer, not a credential.
+
+    `scripts/compose-vault.sh` resolves it into the container env at deploy; a
+    plain host shell has the literal reference. The gateway probe sent one as a
+    bearer token, got 401, and reported the *gateway* as unusable — the probe
+    blaming its own environment, which is the same false report the SMS scope's
+    AMI-user check had.
+    """
+
+    def test_a_vault_reference_is_recognised(self):
+        self.assertEqual(
+            d7.unresolved_scheme("vault://cerulean/zeus#OMNIROUTE_API_KEY"), "vault://"
+        )
+
+    def test_infisical_and_case_are_recognised(self):
+        self.assertEqual(d7.unresolved_scheme("Infisical://ws/env#KEY"), "infisical://")
+        self.assertEqual(d7.unresolved_scheme("  vault://m/p#k  "), "vault://")
+
+    def test_a_real_secret_is_not_a_reference(self):
+        # A short, prefix-less token must not be mistaken for one: that would
+        # turn a genuinely broken gateway into a skip.
+        self.assertEqual(d7.unresolved_scheme("sk-live-abc123"), "")
+        self.assertEqual(d7.unresolved_scheme(""), "")
+
+
+class CheckGatewayTest(unittest.TestCase):
+    """The refusal path: who gets blamed for a 401."""
+
+    def _probe(self, status, payload=None):
+        import unittest.mock
+
+        return unittest.mock.patch.object(d7, "probe_gateway", return_value=(status, payload))
+
+    def test_401_with_an_unresolved_token_is_cannot_tell(self):
+        with self._probe(401):
+            findings = d7.check_gateway(
+                "http://gw/v1", "vault://cerulean/zeus#OMNIROUTE_API_KEY", unresolved="vault://"
+            )
+        self.assertIsNone(findings[0].ok)
+        self.assertIn(d7.GATEWAY_TOKEN_KEY, findings[0].detail)
+        self.assertIn("unresolved", findings[0].detail)
+
+    def test_401_with_no_reference_still_fails(self):
+        # A resolved-but-rejected token is the gateway's answer, and it stands.
+        with self._probe(401):
+            findings = d7.check_gateway("http://gw/v1", "sk-live-wrong")
+        self.assertFalse(findings[0].ok)
+        self.assertIn("401", findings[0].detail)
+
+    def test_an_open_door_is_reported_whatever_the_token_looks_like(self):
+        catalogue = {"object": "list", "data": [{"id": "auto/best"}]}
+        with self._probe(200, catalogue):
+            findings = d7.check_gateway(
+                "http://gw/v1", "vault://cerulean/zeus#OMNIROUTE_API_KEY", unresolved="vault://"
+            )
+        self.assertTrue(findings[0].ok, findings)
+
+    def test_a_gateway_fault_is_still_a_failure(self):
+        # 502 is the gateway's own fault and the missing credential says nothing
+        # about it — a "cannot tell" here would hide a real outage.
+        with self._probe(502):
+            findings = d7.check_gateway(
+                "http://gw/v1", "vault://cerulean/zeus#OMNIROUTE_API_KEY", unresolved="vault://"
+            )
+        self.assertFalse(findings[0].ok)
+        self.assertIn("502", findings[0].detail)
+
+
 class ContainerChoiceTest(unittest.TestCase):
     def test_an_explicit_name_is_used_verbatim(self):
         # A typo must not fall through to autodetection: that would check a

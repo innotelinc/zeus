@@ -92,6 +92,22 @@ GATEWAY_SUMMARY_MODEL_KEY = "VOICEMAIL_SUMMARY_MODEL"
 # What a missing model costs. Named because "does not offer the configured
 # model" does not say which feature just went dark.
 SUMMARY_CONSEQUENCE = "voicemail summaries would stop answering"
+# A `.env` may hold `vault://<mount>/<path>#<key>` instead of the secret: that is
+# a *pointer*, resolved into the container env at deploy
+# (`scripts/compose-vault.sh`) and left unresolved in a plain host shell.
+# Sending one as a bearer token answers 401, and reporting the gateway as
+# broken for it is the probe blaming its own environment — the same false shape
+# the SMS scope's AMI-user probe had. Same rule as `scripts/secret-scan.py`.
+UNRESOLVED_SCHEMES = ("vault://", "infisical://")
+
+
+def unresolved_scheme(value: str) -> str:
+    """The store scheme when `value` is an unresolved reference, else ""."""
+    lowered = value.strip().lower()
+    for scheme in UNRESOLVED_SCHEMES:
+        if lowered.startswith(scheme):
+            return scheme
+    return ""
 
 CHECKS = ("ari", "cdr", "gateway")
 
@@ -444,8 +460,27 @@ def probe_gateway(url: str, token: str, timeout: float = 10.0) -> tuple[int, obj
         return status, None
 
 
-def check_gateway(url: str, token: str, summary_model: str = "") -> list[Finding]:
+def check_gateway(
+    url: str, token: str, summary_model: str = "", unresolved: str = ""
+) -> list[Finding]:
+    """`unresolved` names the store scheme when `token` is an unresolved
+    reference (`vault://…`). The door then answers 401 because this shell never
+    fetched the secret, and reporting that as a dead gateway is the probe
+    blaming its own environment — so it is a cannot-tell naming the key. A 200
+    (an open door) and a 502 (the gateway's own fault) are reported as found:
+    the missing credential only changes how a *refusal* reads.
+    """
     status, payload = probe_gateway(url, token)
+    if status in (401, 403) and unresolved:
+        return [
+            Finding(
+                None,
+                f"gateway: {GATEWAY_TOKEN_KEY} is an unresolved {unresolved} reference "
+                f"and {url}/models answered HTTP {status} — this shell has not fetched "
+                f"the secret (scripts/compose-vault.sh resolves it for the containers), "
+                f"so the model pin was not probed",
+            )
+        ]
     if status == 0:
         return [Finding(False, f"the gateway did not answer at {url}/models")]
     if status == 200 and payload is None:
@@ -532,7 +567,14 @@ def main(argv: list[str]) -> int:
             base = args.gateway_url or read_key(text, GATEWAY_BASE_KEY) or GATEWAY_BASE_DEFAULT
             token = read_key(text, GATEWAY_TOKEN_KEY) or ""
             summary_model = read_key(text, GATEWAY_SUMMARY_MODEL_KEY) or ""
-            findings.extend(check_gateway(base, token, summary_model=summary_model))
+            findings.extend(
+                check_gateway(
+                    base,
+                    token,
+                    summary_model=summary_model,
+                    unresolved=unresolved_scheme(token),
+                )
+            )
 
     for finding in findings:
         _emit(finding, args.quiet)
