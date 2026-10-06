@@ -189,69 +189,32 @@ export class AmiClient {
   }
 
   /**
-   * List all active channels via CoreShowChannels.
-   * Registers a temporary event listener, sends the action, collects
-   * CoreShowChannel events, and resolves when CoreShowChannelsComplete arrives.
+   * Live channels with their bridge membership, from `CoreShowChannels`.
+   *
+   * The name alone cannot act on a call: the portal can name its own leg, and
+   * the leg the other party is still connected to is its *bridged peer*. That
+   * peer is found through `BridgeId`, which the `CoreShowChannel` event carries
+   * and the AMI `Status` event does not — `Status` spells the field `BridgeID`,
+   * and only for a channel that is in a bridge. Reading the wrong spelling is
+   * what left a hold and a hang-up acting on the portal's own leg alone.
+   *
+   * `BridgeId` is always present (empty for a channel that is not bridged), so a
+   * caller can filter on it without a second action. The whole event is kept,
+   * because the join to the peer is what the caller needs.
    */
-  async listChannels(): Promise<string[]> {
-    return new Promise((resolve, reject) => {
-      const channels: string[] = [];
-      let complete = false;
-
-      const unsubscribe = this.onEvent((event) => {
-        if (event.Event === "CoreShowChannel") {
-          channels.push(event.Channel ?? "");
-        }
-        if (event.Event === "CoreShowChannelsComplete") {
-          complete = true;
-          unsubscribe();
-          resolve(channels);
-        }
-      });
-
-      this.sendAction({ Action: "CoreShowChannels" }).catch((err) => {
-        if (!complete) {
-          unsubscribe();
-          reject(err);
-        }
-      });
-
-      // Safety timeout: resolve with what we have after 5s
-      setTimeout(() => {
-        if (!complete) {
-          unsubscribe();
-          resolve(channels);
-        }
-      }, 5_000);
-    });
+  listChannelsDetailed(): Promise<Array<Record<string, string>>> {
+    return this.collectActionEvents(
+      "CoreShowChannels",
+      "CoreShowChannel",
+      "CoreShowChannelsComplete",
+    );
   }
 
-  /**
-   * Return live channel details from AMI Status.
-   *
-   * Private Hold needs the channel bridged to the user's PJSIP leg.  Acting on
-   * the user's own channel would send MOH back to the browser; acting on its
-   * bridged peer sends MOH only to the remote caller.
-   */
-  async listChannelDetails(): Promise<Array<Record<string, string>>> {
-    return new Promise((resolve, reject) => {
-      const channels: Array<Record<string, string>> = [];
-      let complete = false;
-      const unsubscribe = this.onEvent((event) => {
-        if (event.Event === "Status") channels.push({ ...event });
-        if (event.Event === "StatusComplete") {
-          complete = true;
-          unsubscribe();
-          resolve(channels);
-        }
-      });
-      this.sendAction({ Action: "Status" }).catch((err) => {
-        if (!complete) { unsubscribe(); reject(err); }
-      });
-      setTimeout(() => {
-        if (!complete) { unsubscribe(); resolve(channels); }
-      }, 5_000);
-    });
+  /** Live channel names, in the order the PBX reports them. */
+  async listChannels(): Promise<string[]> {
+    return (await this.listChannelsDetailed())
+      .map((row) => row.Channel ?? "")
+      .filter(Boolean);
   }
 
   /**

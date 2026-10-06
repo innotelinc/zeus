@@ -598,25 +598,37 @@ export default function SoftphoneSection({ extensions, phoneNumbers }: Props) {
     setMuted(muted);
   }
 
+  /**
+   * Hold the call so the *other* party hears music and the browser sends nothing.
+   *
+   * This is the PBX's own hold, signalled from this leg with a re-INVITE that
+   * offers `a=sendonly` (sip.js `hold`): Asterisk then plays the far end's music
+   * class (`moh_suggest`, `default` on this estate) to the caller and, since the
+   * offer is send-only, nothing this microphone picks up can reach them.
+   *
+   * It used to ask the PBX to act on its own, with an AMI `MusicOnHold` action on
+   * the bridged peer — an action this Asterisk (22) does not register, so every
+   * hold failed and the caller heard silence. The peer lookup behind it was dead
+   * for a second reason worth naming: it read `BridgedChannel`/`BridgeId` off an
+   * AMI `Status` event, whose field is `BridgeID` (see `src/lib/ami-channels.ts`).
+   */
   async function togglePrivateHold() {
     const call = activeCallRef.current;
-    if (!call || !selectedExt || privateHoldBusy || callState !== "in-call") return;
+    if (!call || privateHoldBusy || callState !== "in-call") return;
     const next = !privateHold;
     setPrivateHoldBusy(true);
 
-    // Gate the microphone before asking the PBX for MOH so no speech can leak
-    // during the network round-trip. On a failed enter we restore manual mute.
+    // Gate the microphone as well, so a browser that ignores the re-INVITE
+    // direction cannot leak speech. On a failed enter we restore manual mute.
     if (next) setMicEnabled(false);
     try {
-      await api("/api/ami/private-hold", {
-        method: "POST",
-        body: JSON.stringify({ extension_id: selectedExt.id, active: next }),
-      });
+      call.session.sessionDescriptionHandlerOptionsReInvite = { hold: next };
+      await call.session.invite();
       setPrivateHold(next);
       if (!next) setMicEnabled(!call.muted);
     } catch (e) {
       if (next) setMicEnabled(!call.muted);
-      toast.error(e instanceof Error ? e.message : "Private hold failed");
+      toast.error(e instanceof Error ? e.message : "Hold failed");
     } finally {
       setPrivateHoldBusy(false);
     }

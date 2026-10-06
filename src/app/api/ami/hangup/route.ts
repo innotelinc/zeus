@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { requireUser } from "@/lib/api-helpers";
 import { getAmiClient } from "@/lib/ami";
+import { callLegs } from "@/lib/ami-channels";
 import db from "@/lib/db";
 import { z } from "zod";
 
@@ -54,12 +55,15 @@ export async function POST(req: Request) {
   }
 
   try {
-    // Enumerate all active channels and filter for this extension
-    const allChannels = await client.listChannels();
-    const prefix = `PJSIP/${ext.extension_id}-`;
-    const matching = allChannels.filter((ch) => ch.startsWith(prefix));
+    // The extension's own legs, and the far ends they are bridged to. Hanging up
+    // only the local leg relies on the bridge tearing its peer down on the way —
+    // which is exactly what the caller reports *not* happening: they hang up and
+    // the other party stays connected. So the peer is named and hung up too.
+    const rows = await client.listChannelsDetailed();
+    const { local, remote } = callLegs(rows, ext.extension_id);
+    const channels = [...remote, ...local];
 
-    if (matching.length === 0) {
+    if (channels.length === 0) {
       return NextResponse.json({
         success: true,
         hung_up: 0,
@@ -67,19 +71,22 @@ export async function POST(req: Request) {
       });
     }
 
-    // Hang up each matching channel (fire-and-forget)
-    for (const channel of matching) {
+    // The far end first, then the extension's own leg (fire-and-forget):
+    // hanging the local leg up first can dissolve the bridge and race the
+    // peer's own Hangup out of existence.
+    for (const channel of channels) {
       client.sendActionAsync({ Action: "Hangup", Channel: channel });
     }
 
     console.log(
-      `AMI Hangup: ${ext.extension_id} — hung up ${matching.length} channel(s): ${matching.join(", ")} (user: ${user.id})`,
+      `AMI Hangup: ${ext.extension_id} — hung up ${channels.length} channel(s) ` +
+        `(${remote.length} far end): ${channels.join(", ")} (user: ${user.id})`,
     );
 
     return NextResponse.json({
       success: true,
-      hung_up: matching.length,
-      channels: matching,
+      hung_up: channels.length,
+      channels,
     });
   } catch (e) {
     console.error("AMI Hangup failed:", e);
