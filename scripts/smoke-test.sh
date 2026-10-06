@@ -53,7 +53,8 @@
 #               mode off (AvantFAX writes '' into DATE/TIMESTAMP columns, which
 #               strict mode rejects with error 1292 → HTTP 500 after login)
 #   SMS       • the PJSIP SMS trunk is Registered (VOIPMS_TRUNK_NAME)
-#             • the sms-out dialplan context is loaded (SMS_OUT_CONTEXT)
+#             • the trunk endpoint the portal addresses resolves (VOIPMS_TRUNK_NAME)
+#             • the sms-out context, where SMS_OUT_CONTEXT names one (bare metal)
 #             • the portal's AMI user carries the `message` class
 #             • the VoIP.ms inbound webhook answers its liveness GET
 #   Numbers   • VoIP.ms credentials configured (VOIPMS_API_USERNAME)
@@ -779,16 +780,41 @@ if [ "$SCOPE" = all ] || [ "$SCOPE" = sms ]; then
       pass "SMS trunk '$SMS_TRUNK' is registered"
     fi
 
-    # ── the dialplan the MESSAGE is built from ──────────────────
-    # The trunk can be up with nowhere to put a MESSAGE: `sms-out` is written by
-    # scripts/setup.sh on bare metal, and the full stack has to have applied it.
-    # An AMI MessageSend against a missing context is accepted and delivered to
-    # nothing, so this is the difference between "sent" and "sent somewhere".
-    sms_dp="$(docker exec "$FBX_SMS" asterisk -rx "dialplan show $SMS_CTX" 2>/dev/null || true)"
-    if grep -qE "^  '[^']" <<<"$sms_dp"; then
-      pass "the '$SMS_CTX' dialplan context is loaded"
+    # ── the endpoint the MESSAGE is addressed to ────────────────
+    # The portal builds the MESSAGE itself and names the endpoint in the address
+    # (`pjsip:<trunk>/sip:<n>@<server>`, src/lib/sms.ts), and res_pjsip resolves
+    # the id *before* the `/sip:` suffix. An endpoint named `<trunk>-endpoint`
+    # therefore makes every send fail with `Could not find endpoint
+    # '<trunk>/sip:…'` while the trunk stays registered and the Messages screen
+    # still says "sent" — the failure this scope exists to catch, and the one
+    # that actually happened on this estate (docs/ops-sms-trunk.md).
+    # Captured, then tested: `… | grep -q` reports the *writer* taking SIGPIPE
+    # when grep exits at the match, and `pipefail` turns that into a failed
+    # pipeline — a check that fails at random on a healthy trunk.
+    ep_out="$(docker exec "$FBX_SMS" asterisk -rx "pjsip show endpoint $SMS_TRUNK" 2>/dev/null || true)"
+    if grep -qE "^ *Endpoint: *$SMS_TRUNK(/| |$)" <<<"$ep_out"; then
+      pass "the trunk endpoint '$SMS_TRUNK' resolves (pjsip:$SMS_TRUNK/sip:… has somewhere to go)"
     else
-      fail "'$SMS_CTX' is not in the live dialplan — an outbound SMS has no MESSAGE to build (scripts/setup.sh writes it)"
+      fail "the trunk endpoint '$SMS_TRUNK' does not resolve — every send fails with 'Could not find endpoint' (VOIPMS_TRUNK_NAME must equal the endpoint id; docs/ops-sms-trunk.md)"
+    fi
+
+    # ── the bare-metal softphone dialplan, only where it is expected ────
+    # `sms-out` is written by scripts/setup.sh for the bare-metal estate, where
+    # a softphone hands its MESSAGE to Asterisk's dialplan. The portal does not
+    # route through it: its AMI `MessageSend` names the To/From URIs and no
+    # Context (src/lib/sms.ts), so a missing context cannot swallow a send the
+    # way a missing endpoint does. Asserted only when the operator has named
+    # one — otherwise a working portal reads as a broken one, which is exactly
+    # what the AMI-user probe above did before it read the portal's own variable.
+    if [ -n "${SMS_OUT_CONTEXT:-}" ]; then
+      sms_dp="$(docker exec "$FBX_SMS" asterisk -rx "dialplan show $SMS_CTX" 2>/dev/null || true)"
+      if grep -qE "^  '[^']" <<<"$sms_dp"; then
+        pass "the '$SMS_CTX' dialplan context is loaded"
+      else
+        fail "'$SMS_CTX' is not in the live dialplan but SMS_OUT_CONTEXT names it (scripts/setup.sh writes it on bare metal)"
+      fi
+    else
+      skip "'$SMS_CTX' context is bare-metal-only — the portal's AMI MessageSend names no context (set SMS_OUT_CONTEXT to assert it)"
     fi
 
     # ── the AMI class the portal sends with ─────────────────────

@@ -26,18 +26,25 @@ Inbound can arrive two ways:
 | `VOIPMS_IAX_USER` / `_PASS` | `235662_iax` + its password | IAX trunk (separate!) |
 | `VOIPMS_SIP_SERVER` | `newyork1.voip.ms` | trunk host |
 | `SMS_DIDS` | space-separated DIDs | per-DID SMS endpoints |
-| `VOIPMS_TRUNK_NAME` | `voipms_pjsip` (default) | must match setup.sh trunk |
+| `VOIPMS_TRUNK_NAME` | `voipms_pjsip` (default) | must equal the PJSIP **endpoint id** — res_pjsip resolves the id before the `/sip:` suffix (`sms-out` semantics, and the AMI sender) |
 | `SMS_TRUNK_FROM_USER` | unset (defaults to `VOIPMS_SIP_USER`) | From URI user; set to the DID if VoIP.ms requires the sender to be the DID |
 
 ## Voice-host verification (run on the group-2 host, after `setup.sh`)
 
-The first three checks below are automated — `./scripts/smoke-test.sh sms`
+The first checks below are automated — `./scripts/smoke-test.sh sms`
 (also part of a plain `./scripts/smoke-test.sh` run) asserts the trunk is
-`Registered`, that the `sms-out` context is in the live dialplan, that the
+`Registered`, that the endpoint the portal addresses resolves, that the
 portal's AMI user carries the `message` class, and that the inbound webhook
-answers its liveness `GET`. All four are read-only and none sends a message.
+answers its liveness `GET`. All are read-only and none sends a message.
 The steps here are what to run by hand when one of them fails, and the send /
 carrier-leg steps are the ones no check can make without spending money.
+
+The `sms-out` context is asserted only when `SMS_OUT_CONTEXT` names one. It is
+the **bare-metal** softphone path (`scripts/setup.sh`): the portal does not
+route through it, because its AMI `MessageSend` names the `To`/`From` URIs and
+no `Context` (`src/lib/sms.ts`), so a missing context cannot swallow a send the
+way a missing endpoint does. On the containerised estate the honest check is
+the endpoint id, which is asserted unconditionally.
 
 1. **Trunk registered**
 
@@ -143,9 +150,12 @@ Rules that matter (all bugs found live):
   section fail to load (silently — registration still succeeds because auth /
   registration are separate objects): `send_id_inbound`, `insecure`,
   `qualify_frequency`. Removed from `setup.sh`.
-- Portal env for the local stack: `ASTERISK_AMI_HOST=zeus-freepbx`,
-  `ASTERISK_AMI_USERNAME=pbxportal` (the image's baked AMI user),
-  `ASTERISK_AMI_SECRET` = the same value as `FREEPBX_AMI_SECRET`.
+- For the **local full stack** the portal's AMI user is the one `pbx/asterisk/manager_custom.conf`
+  renders: `ASTERISK_AMI_USERNAME=zeus-portal` (from `FREEPBX_AMI_USER`;
+  `docker-compose.full.yml` maps it) and `ASTERISK_AMI_SECRET` =
+  `FREEPBX_AMI_SECRET`. `pbxportal` is FreePBX's own UCP user — it carries no
+  classes and cannot send a MESSAGE, so a probe against it reports a working
+  portal as a broken one.
 - The FreePBX **GUI pjsip trunk editor is not installed in the image**
   (only `sipsettings`), so `fwconsole trunks --add` is a silent no-op —
   file-based trunk config is the supported path.

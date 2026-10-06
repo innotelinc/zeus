@@ -134,13 +134,19 @@ Dograh ARI connects to Zeus/FreePBX):**
       add the trunk check to `scripts/smoke-test.sh` so a dead trunk surfaces in
       the same pass as the portal and PBX checks.~~
       **Done (2026-09-23).** `./scripts/smoke-test.sh sms` (and a plain run)
-      asserts the four things that make a text leave the box — the PJSIP trunk is
-      `Registered`, the `sms-out` context is in the live dialplan, the portal's
-      AMI user carries the `message` class, and the VoIP.ms inbound webhook
-      answers its liveness `GET`. All four are read-only; nothing sends a message
-      or spends anything, so the carrier leg stays a manual step. Each failure
-      names its repair rather than its symptom, because every one of them looks
-      identical from the Messages screen: the row says "sent".
+      asserts what makes a text leave the box — the PJSIP trunk is `Registered`,
+      the endpoint the portal addresses resolves, the portal's AMI user carries
+      the `message` class, and the VoIP.ms inbound webhook answers its liveness
+      `GET`. All are read-only; nothing sends a message or spends anything, so
+      the carrier leg stays a manual step. Each failure names its repair rather
+      than its symptom, because every one of them looks identical from the
+      Messages screen: the row says "sent". **Revised (2026-10-06):** the
+      `sms-out` context assertion was replaced by the endpoint-resolution one.
+      The portal's AMI `MessageSend` names the To/From URIs and no Context
+      (`src/lib/sms.ts`), so it never consults `sms-out` — a missing context
+      could not swallow a send, while a missing *endpoint* does, which is the
+      failure that actually happened here. The context is still asserted when
+      `SMS_OUT_CONTEXT` names one (the bare-metal softphone path).
 
 
 ### Phase 1 parity (shipped)
