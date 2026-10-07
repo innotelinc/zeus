@@ -465,6 +465,46 @@ elif [ -z "$MEDIA_ADDRESS" ]; then
   echo ">>> WARNING: no LAN media address (set LAN_IP or PJSIP_MEDIA_ADDRESS); LAN phones may be handed the container's own address" >&2
 fi
 
+# ── Where a trunk's media address may be appended from ──────────────────────
+# The operator-owned `pjsip_trunk_media_custom.conf` is the trunk half of the
+# same fix: it appends `media_address` to the TRUNK endpoints, whose peers are
+# outside local_net and so need the WAN address rather than the LAN one above.
+# A `(+)` append is only honoured when its base section was defined *earlier in
+# the load tree* — and the non-FreePBX trunks are defined by the product files
+# (`pjsip_custom_voipms.conf`, `pjsip_custom_cloudonix.conf`), which are reached
+# from `pjsip_custom_post.conf`, the LAST include in `pjsip.conf`. So the join
+# belongs there too.
+#
+# Measured on `.30` 2026-10-07, it was not: the include sat in
+# `pjsip.endpoint_custom_post.conf`, which is read with the endpoints, long
+# before the trunks. Asterisk answered every load with `Category addition
+# requested, but category 'voipms-endpoint' does not exist` — 3819 lines in
+# /var/log/asterisk/full, and the append was discarded, so that trunk was handed
+# the container's own address for its media. The include moves; the appends stay
+# the operator's, and they carry the address the transport already advertises.
+#
+# Nothing is created: a box with no trunk media file skips this entirely. The
+# include is *appended* to a file two other products also write, exactly as they
+# do (`grep -q || printf >>`), so nothing another product put there is disturbed.
+TRUNK_MEDIA_CONF="${ASTERISK_ETC}/pjsip_trunk_media_custom.conf"
+TRUNK_MEDIA_INCLUDE="#include pjsip_trunk_media_custom.conf"
+if [ -f "$TRUNK_MEDIA_CONF" ]; then
+  TRUNK_MEDIA_HOST="${ASTERISK_ETC}/pjsip_custom_post.conf"
+  TRUNK_MEDIA_EARLY="${ASTERISK_ETC}/pjsip.endpoint_custom_post.conf"
+  if ! grep -qxF "$TRUNK_MEDIA_INCLUDE" "$TRUNK_MEDIA_HOST" 2>/dev/null; then
+    [ -f "$TRUNK_MEDIA_HOST" ] || touch "$TRUNK_MEDIA_HOST"
+    printf '%s\n' "$TRUNK_MEDIA_INCLUDE" >> "$TRUNK_MEDIA_HOST"
+    chown asterisk:asterisk "$TRUNK_MEDIA_HOST" 2>/dev/null || true
+    echo ">>> trunk media include added to pjsip_custom_post.conf (read after the trunk endpoints)"
+  fi
+  # A copy left in the early file is not harmless: it is read before the
+  # category exists, so it warns on every load and its append is thrown away.
+  if [ -f "$TRUNK_MEDIA_EARLY" ] && grep -qxF "$TRUNK_MEDIA_INCLUDE" "$TRUNK_MEDIA_EARLY"; then
+    sed -i "\\|^${TRUNK_MEDIA_INCLUDE}$|d" "$TRUNK_MEDIA_EARLY"
+    echo ">>> trunk media include removed from pjsip.endpoint_custom_post.conf (it was read before the trunks existed)"
+  fi
+fi
+
 # ── The outbound route that normalises what a phone dials ───────────────────
 # A phone dials ten digits (`4134210134`); VoIP.ms terminates a North American
 # call on eleven, `1` + area code + number. The route is where that `1` is

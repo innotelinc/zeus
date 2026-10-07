@@ -326,12 +326,30 @@ sending to `192.168.1.30:<port>` is DNAT'd to the container's socket; and
 the container's interface. A phone that sends to *the address in the SDP* is
 bypassing nothing — it is obeying the PBX.
 
-**The trunks deliberately get no such line**, and that is the whole reason this
-is per endpoint rather than one transport setting: they need the WAN address, so
-no single `external_media_address` can serve both halves. This is also why the
+**The trunks get no line in this file**, and that is the whole reason this is per
+endpoint rather than one transport setting: they need the WAN address, so no
+single `external_media_address` can serve both halves. This is also why the
 estate's other addressing rules (`PJSIP_LOCAL_NETS`, `stunaddr`, the published
 RTP block) do not cover it — each of them is about a peer Asterisk talks *to*,
 and this is about the address Asterisk hands *out*.
+
+**A box that needs the trunks to carry it too uses a second file, reached from a
+different include — and where that include goes is a rule, not a preference.**
+`pbx/media_address.py` owns only the LAN file and must not write the trunk one:
+the address is a different fact (the WAN address the transport already
+advertises) and those appends are the operator's, not this tool's. The box-local
+`pjsip_trunk_media_custom.conf` holds them. A `(+)` append is honoured only when
+its base section was defined **earlier in the load tree**, and the non-FreePBX
+trunks (`voipms-endpoint`, `cloudonix-endpoint`) come from the product files
+(`pjsip_custom_voipms.conf`, `pjsip_custom_cloudonix.conf`) reached by the *last*
+include in `pjsip.conf`, `pjsip_custom_post.conf`. An include sitting in
+`pjsip.endpoint_custom_post.conf` — read with the endpoints, long before those
+trunks exist — is therefore discarded with `Category addition requested, but
+category 'voipms-endpoint' does not exist` on **every** load (3800+ lines on
+`.30`), and that trunk is handed the container's own address for its media.
+`docker-entrypoint-full.sh` adds the include to the late file and removes the
+early copy on every boot; FreePBX's own trunk (`voipms_pjsip`) is defined with
+the endpoints, so its append works from either file.
 
 ```bash
 # apply, then confirm the advert rather than the file
@@ -370,6 +388,16 @@ never live in the portal-shared `pjsip.endpoint_custom_post.conf`: the portal
 cuts every `[<ext>](+)` in it, so a line written there is deleted the first time
 a softphone is provisioned — which is exactly how the box came to have its media
 addresses in the wrong file, re-added by hand.
+
+The **delete** path takes the line back (`removeMediaAddress`, same module,
+called by `DELETE /api/phone/extensions`), because an append outlives the
+endpoint it extends and an append whose `[<ext>]` is gone is not inert: Asterisk
+answers it on every configuration load with `Category addition requested, but
+category '<ext>' does not exist`, one line per reload, for a number the PBX no
+longer has — the section is keyed by an id that only exists while the endpoint
+does. Measured on `.30` (2026-10-07): one deleted probe's leftover section alone
+was 256 of those lines, and a second orphan 175. The route reports whether there
+was one to remove (`removed_media_address`) rather than implying a cleanup.
 
 ```bash
 # judge (0 in sync, 1 an apply converges it, 2 cannot tell), and converge by hand
