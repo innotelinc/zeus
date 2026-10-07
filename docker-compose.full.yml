@@ -45,6 +45,19 @@ services:
     image: ${ZEUS_PBX_IMAGE:-ghcr.io/innotelinc/zeus:latest-fullstack}
     container_name: zeus-freepbx
     restart: unless-stopped
+    # Asterisk signs its own SIP requests with this hostname. For a client
+    # inside `local_net` — a browser on the LAN, the case the softphone runs in
+    # when it is opened on-site — the external_signaling_* pair does not apply,
+    # so the local identity is what lands in the From and Contact headers of
+    # every INVITE/NOTIFY. Docker's default is the 12-hex-char container id,
+    # and a bare label that starts with a digit is not a hostname under
+    # SIP.js's ABNF (`toplabel` must begin with a letter): it logged
+    # "error parsing header 'Contact'" and dropped the INVITE, so the browser
+    # softphone could register but never receive a call. A valid, stable name
+    # is the whole fix; `external_signaling_hostname` cannot substitute, it is
+    # mutually exclusive with the external_signaling_address FreePBX already
+    # renders onto the transport.
+    hostname: zeus-pbx
     security_opt:
       - apparmor=unconfined
     ports:
