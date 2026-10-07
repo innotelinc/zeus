@@ -145,6 +145,65 @@ export async function deleteExtension(
   );
 }
 
+// ---- Apply Configuration ----
+//
+// Creating or deleting an extension writes rows. It does not write config:
+// FreePBX keeps a "reload needed" flag and regenerates `pjsip.*.conf` only when
+// something applies it. `addExtension` does not even set the flag, and the
+// `needreload()` in `deleteExtension` only lights the GUI's orange bar —
+// measured on `.30`, a created extension had no `[<ext>]` in
+// `pjsip.endpoint.conf` and no `[<ext>-auth]` in `pjsip.auth.conf`, and a
+// deleted one kept both, until a reload was run by hand.
+//
+// That is invisible for routing and fatal for a softphone. The credential the
+// browser must register with is the one FreePBX renders into `pjsip.auth.conf`
+// (src/lib/pjsip-secret.ts), so with no regeneration there is nothing to read:
+// `pbxSecretFor` returns "" and the row stores a portal-issued secret that
+// authenticates nothing. It also leaves a deleted extension registerable.
+//
+// `doreload` is the API module's own Apply Config. It spawns
+// `fwconsole api doreload <txnId>` in the background and returns the
+// transaction id immediately, so the waiting belongs to the caller — see
+// src/lib/freepbx-apply.ts, which owns that policy.
+
+export interface ApplyConfigurationResult {
+  status: boolean;
+  message: string;
+  transaction_id?: string;
+}
+
+/** Queue FreePBX's Apply Config. Returns as soon as it is queued, not applied. */
+export async function applyConfiguration(): Promise<ApplyConfigurationResult> {
+  const data = await gql<{ doreload: ApplyConfigurationResult }>(
+    `mutation { doreload(input: {}) { status message transaction_id } }`,
+  );
+  return data.doreload;
+}
+
+// The states `fwconsole api doreload` writes into the transaction
+// (`modules/api/Console/Api.class.php`): "Processing" while the reload runs,
+// then "Executed" or "Failed". Anything else is a status this portal does not
+// know, which is a reason to keep waiting rather than to guess.
+export type ApiTransactionState = "Processing" | "Executed" | "Failed" | string;
+
+export interface ApiTransactionStatus {
+  status: boolean;
+  message: ApiTransactionState;
+  details?: string;
+  event_output?: string;
+}
+
+/** One poll of a queued API transaction. */
+export async function fetchApiStatus(txnId: string): Promise<ApiTransactionStatus> {
+  const data = await gql<{ fetchApiStatus: ApiTransactionStatus }>(
+    `query($id: ID!) {
+      fetchApiStatus(txnId: $id) { status message details event_output }
+    }`,
+    { id: txnId },
+  );
+  return data.fetchApiStatus;
+}
+
 // ---- Extension list (Core module's `fetchAllExtensions`) ----
 
 /** One extension as the Core API returns it. */

@@ -15,6 +15,7 @@ import {
 } from "@/lib/pjsip-endpoint";
 import { pbxSecretFor } from "@/lib/pjsip-secret";
 import { reloadPjsipIfLive } from "@/lib/pjsip-reload";
+import { applyConfigAndWait } from "@/lib/freepbx-apply";
 import { judgeExtension, isValidExtension } from "@/lib/extension-preflight";
 import { withSoftphoneReadiness } from "@/lib/extension-readiness-server";
 import { readObservedExtensions } from "@/lib/extension-preflight-live";
@@ -115,6 +116,17 @@ export async function POST(req: Request) {
       );
     }
 
+    // ── Make the rows real ─────────────────────────────────
+    // `addExtension` writes a user and a device and returns success; it does
+    // not apply config. Until something does, this extension is only a row —
+    // no `[<ext>]` in pjsip.endpoint.conf, no `[<ext>-auth]` in
+    // pjsip.auth.conf — so it routes and holds a mailbox while no phone can
+    // register against it, and there is no rendered credential for the read
+    // below to find. The GUI hides this behind its Apply Config button; here
+    // the portal has to press it, because the next step depends on what it
+    // writes.
+    const apply = await applyConfigAndWait();
+
     // ── The credential ─────────────────────────────────────
     // FreePBX generates the device secret, and since the endpoint decision that
     // is the credential the softphone must use: the browser registers as the
@@ -124,6 +136,8 @@ export async function POST(req: Request) {
     // rendered config (§11.5's "read path of its own" — src/lib/pjsip-secret.ts)
     // and, failing that, a portal-issued one is stored and the readiness row
     // reports the mismatch rather than pretending the phone will register.
+    // That fallback is now the unavailable-apply path: it is reached when the
+    // reload above did not run, and `apply_config` below says so.
     const pbxSecret = pbxSecretFor(extensionId);
     const secret = pbxSecret || body.secret || randomUUID().replace(/-/g, "").slice(0, 16);
 
@@ -184,6 +198,11 @@ export async function POST(req: Request) {
         message: result.addExtension.message,
         softphone,
         media,
+        // Named rather than folded into `success`: the extension exists either
+        // way, and whether its config was applied is the difference between a
+        // phone that can register now and one that cannot until an operator
+        // runs Apply Config and then Repair.
+        apply_config: apply,
       },
       { status: 201 },
     );
@@ -231,6 +250,13 @@ export async function DELETE(req: Request) {
   // be found by `pjsip_owner_check.py` later.
   removeWebrtc(ext.extension_id);
   const removedLegacyFragment = removeLegacyFragment(ext.extension_id);
+  // The rows are gone by here; the rendered endpoint is not. FreePBX
+  // regenerates config only when something applies it, and `deleteExtension`
+  // merely sets the reload flag, so without this the extension keeps a live
+  // `[<ext>]` and `[<ext>-auth]` — and can still register — after being
+  // deleted. Measured: a deleted extension was still in pjsip.auth.conf until
+  // a reload was run by hand.
+  const apply = await applyConfigAndWait();
   await reloadPjsipIfLive(before);
 
   // Delete from local DB
@@ -242,5 +268,6 @@ export async function DELETE(req: Request) {
     // Named because a stale pjsip_ext_<ext>.conf is the one leftover that can
     // break the PBX for every *other* extension too.
     removed_leftover_endpoint_file: removedLegacyFragment,
+    apply_config: apply,
   });
 }

@@ -1411,9 +1411,19 @@ preference.
    as FreePBX's endpoint, so it uses FreePBX's device secret, and
    `src/lib/pjsip-secret.ts` reads that back out of `pjsip.auth.conf` (the same
    read `pbx/legacy_voice_migrate.py` already uses to verify a migration), which
-   `POST /api/phone/extensions` stores on the row. A row that holds none — an
-   extension `scripts/legacy_portal_merge.py` adopted, which never invents a
-   credential — cannot register until `Repair` adopts the rendered one;
+   `POST /api/phone/extensions` stores on the row. The create applies config
+   before it reads, because the read is only meaningful against a regeneration:
+   FreePBX's `addExtension` writes the rows and returns success *without*
+   regenerating `pjsip.*.conf`, so until an apply runs there is no
+   `[<ext>-auth]` to read and the row stores a portal-issued secret that
+   authenticates nothing. `src/lib/freepbx-apply.ts` queues that apply and waits
+   for the transaction (`doreload` + `fetchApiStatus`), and the delete path
+   applies for the same reason in reverse — without it a deleted extension keeps
+   a live `[<ext>]` and `[<ext>-auth]` and can still register.
+
+   A row that holds none — an extension `scripts/legacy_portal_merge.py`
+   adopted, which never invents a credential — cannot register until `Repair`
+   adopts the rendered one;
    `src/lib/extension-readiness.ts` names it, and `pbx/extension_secret.py`
    (`pbx/README.md`, “The secret a softphone registers with”) is the fleet-wide
    verdict.
