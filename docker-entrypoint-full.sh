@@ -1461,7 +1461,18 @@ WSSEOF
     fi
   fi
 
-  # Start Apache in background (web UI is now safe to trigger reloads)
+  # Start Apache in background (web UI is now safe to trigger reloads).
+  #
+  # Drop a stale pid file first. `/var/run` is in the container's writable
+  # layer, so `docker restart` keeps apache2.pid from the PREVIOUS boot — and
+  # `apache2ctl`'s own guard (`check_httpd`, "httpd (pid N) already running")
+  # only tests that /proc/N exists. On this image PID 2532 was reused by
+  # `asterisk -f`, so Apache refused to start, the FreePBX web UI and API stayed
+  # down, and every portal path that reads FreePBX (extension preflight, health,
+  # the softphone) degraded with nothing red on the Asterisk side. Verified
+  # live: removing the file and starting Apache restored :80 (302) and the
+  # portal's freepbx_api/extension_preflight checks in seconds.
+  rm -f /var/run/apache2/apache2.pid /var/run/apache2/httpd.pid
   apache2ctl -D FOREGROUND &
 
   # Start the Asterisk watchdog — it only matters once the web UI is
