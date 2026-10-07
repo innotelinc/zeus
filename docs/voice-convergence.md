@@ -1323,8 +1323,8 @@ and **check the caller-visible outcome**, not just the dialplan.
 
 One row per question this design could not settle by itself — the answer taken,
 why, and the alternative that was rejected. Item 5 was resolved the day it was
-asked; the rest on 2026-09-25, against the running estate rather than from
-preference.
+asked; items 1–4 on 2026-09-25, against the running estate rather than from
+preference; items 6–7 on 2026-10-07, the day each was measured on `.30`.
 
 1. **Hand-back semantics** — **DECIDED 2026-09-25: the caller returns to the
    *same* AVA agent, carrying the transcript summary. The human queue is the
@@ -1450,8 +1450,9 @@ preference.
    so the portal is "other" on it. Measured live, 2026-10-07: Repair on a
    root-owned leftover returned 200 with the fragment still on disk. The detailed
    form (`legacyFragmentRemoval`) carries the errno, and the repair route reports
-   it as `legacy_fragment_reason` beside `removed_leftover_endpoint_file`. Closing
-   it for real is a PBX-side ownership or removal decision, not a portal one.
+   it as `legacy_fragment_reason` beside `removed_leftover_endpoint_file`.
+   *Closed 2026-10-07 — decision 7:* it is a **directory** permission, not a file
+   one, and `pbx/portal_config_access.py` now converges the directory too.
 
 6. **How a wait is described** — **DECIDED 2026-10-07: a create names the wait it
    is actually in, because the wait is now 11–30s of Apply Config.**
@@ -1464,3 +1465,33 @@ preference.
    the phone cannot register) and the remedy (Repair). The clock lives in a pure
    module rather than in the JSX because the thresholds are measurements, and a
    measurement is worth pinning.
+7. **Who may remove a leftover endpoint fragment** — **DECIDED 2026-10-07: the
+   portal, and the config directory is made usable by its primary gid.** Item 5
+   left this open, and its first framing was wrong in a way worth recording: the
+   leftover only *looks* like a file-permission problem. `unlink(2)` resolves
+   against the parent directory, and the fragment's own mode, owner and group
+   never enter into the decision — so no grant to
+   `pjsip_ext_<ext>.conf` could ever have let Repair delete it, whatever the file
+   was chowned to. `pbx/portal_config_access.py` therefore converges the
+   directory as well as the two files: `/etc/asterisk` gets the portal's
+   **primary** gid, the one that survives the portal entrypoint's `su-exec`
+   (measured on `.30` against the `0775 asterisk:asterisk` directory —
+   `1001:1001` EACCES, `1001:1000` and `997:1000` fine; the same `su-exec`
+   finding as §11.5). The owner keeps its `rwx` (FreePBX and Apache's workers
+   run as `asterisk`), the `asterisk` group loses nothing it had (it is the
+   owner's own primary group, with no members), and the portal gains one
+   capability: creating, renaming and removing *entries* there. It gains nothing
+   on the entries themselves — a directory's group bits do not reach into a
+   file's mode, and everything else under `$ASTETCDIR` stays
+   `asterisk:asterisk`. Verified live, 2026-10-07, same probe both sides:
+   before → `200` with the fragment still on disk and
+   `softphone.state: duplicate-fragment`; after → `200`,
+   `removed_leftover_endpoint_file: true`, `legacy_fragment_reason: ""`,
+   `duplicateFragment: false`, `state: ready`.
+   *Rejected:* leaving the removal to the PBX-side sync tick — the button would
+   report a state it cannot reach until a timer fires, which is the same
+   silent-repair fault in a slower costume. The grant and the removal belong on
+   the same side, which is the PBX's, because the PBX is what owns the paths.
+   *Also rejected:* `group_add` on the compose service. It cannot work: `su-exec`
+   discards the supplementary group set before the Node server is exec'd (§11.5),
+   and the entrypoint would have to carry a grant that never arrives.

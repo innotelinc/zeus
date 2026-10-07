@@ -1375,21 +1375,28 @@ WSSEOF
   fi
   echo ">>> FreePBX modules refreshed"
 
-  # ── Let the portal write the files it owns ─────────────────
+  # ── Let the portal write the files it owns, and remove leftovers ───
   # `fwconsole chown` above just imposed its framework rule on everything in
   # $ASTETCDIR (Console/Chown.class.php's `systemSetRecursivePermissions`,
-  # 0775 with the execute bit stripped for files — so **0664**
+  # 0775 for directories, with the execute bit stripped for files — so **0664**
   # asterisk:asterisk). 0664 is owner+group, and the portal runs as `nextjs`
   # (uid 1001), which is neither — so the repair path's `writeFileSync` into
   # pjsip.endpoint_custom_post.conf throws EACCES, the route reports the
   # *state* it failed to change, and Repair silently does nothing.
   #
-  # Putting the portal in the `asterisk` group does NOT fix it: the portal's
-  # entrypoint drops privileges with `su-exec nextjs:nodejs`, which resets the
-  # supplementary group set, so a compose `group_add` grant never reaches the
-  # Node server (measured on .30). The files are therefore given the portal's
-  # PRIMARY gid, which survives `su-exec` — the portal keeps its owner (997) and
-  # only the group moves. See pbx/portal_config_access.py.
+  # Repair also *removes* a pre-decision `pjsip_ext_<ext>.conf`, and that is a
+  # different permission: unlink(2) resolves against the **directory**, not the
+  # file, so the 0775 asterisk:asterisk directory is what refuses it (the portal
+  # is "other" there — r-x, no write). The tool gives the directory the portal's
+  # group as well.
+  #
+  # Putting the portal in the `asterisk` group does NOT fix either one: the
+  # portal's entrypoint drops privileges with `su-exec nextjs:nodejs`, which
+  # resets the supplementary group set, so a compose `group_add` grant never
+  # reaches the Node server (measured on .30). The directory and the files are
+  # therefore given the portal's PRIMARY gid, which survives `su-exec` — the
+  # owner (asterisk, 997) keeps its own access and only the group moves. See
+  # pbx/portal_config_access.py.
   if [ -f /opt/zeus/pbx/portal_config_access.py ]; then
     set +e
     python3 /opt/zeus/pbx/portal_config_access.py \
@@ -1397,9 +1404,9 @@ WSSEOF
     access_rc=$?
     set -e
     if [ "$access_rc" = 0 ]; then
-      echo ">>> portal config access: the portal can write its pjsip files"
+      echo ">>> portal config access: the portal can write its pjsip files and remove a leftover endpoint fragment"
     else
-      echo ">>> WARNING: the portal may not be able to write its pjsip files (rc=${access_rc}); Repair will report the state instead of writing it (pbx/portal_config_access.py)" >&2
+      echo ">>> WARNING: the portal may not be able to write its pjsip files or remove a leftover endpoint fragment (rc=${access_rc}); Repair will report the state instead of writing it (pbx/portal_config_access.py)" >&2
     fi
   fi
 

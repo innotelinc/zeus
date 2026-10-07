@@ -129,18 +129,22 @@ if [ -n "$MEDIA_ADDRESS" ] \
   fi
 fi
 
-# ── The portal's write access to its own config files ───────────
+# ── The portal's access to its own config files, and to removal ──
 # The portal (uid 1001) writes pjsip.endpoint_custom_post.conf and
 # pjsip_media_custom.conf, but `fwconsole chown` on every boot leaves them
 # 0664 asterisk:asterisk — owner+group only — so the portal holds no write bit
 # and its Repair button silently does nothing (the route reports the state it
-# failed to change). A compose `group_add` cannot fix it either: the portal's
-# entrypoint drops privileges with `su-exec nextjs:nodejs`, which resets the
-# supplementary group set. The tool therefore gives the files the portal's
-# PRIMARY gid, which survives `su-exec`. The entrypoint does it after each
-# chown; this is what heals a box whose image predates that, or one an
-# operator's own chown reverted. Judged every tick and applied on drift, like
-# the media address: it is derivable and idempotent.
+# failed to change). The same chown leaves /etc/asterisk 0775
+# asterisk:asterisk, and Repair also *removes* a leftover pjsip_ext_<ext>.conf;
+# unlink(2) checks the directory rather than the file, so the portal cannot
+# remove that leftover either however the file is owned. A compose `group_add`
+# cannot fix either one: the portal's entrypoint drops privileges with `su-exec
+# nextjs:nodejs`, which resets the supplementary group set. The tool therefore
+# gives the directory and the files the portal's PRIMARY gid, which survives
+# `su-exec`. The entrypoint does it after each chown; this is what heals a box
+# whose image predates that, or one an operator's own chown reverted. Judged
+# every tick and applied on drift, like the media address: it is derivable and
+# idempotent.
 access_run() {
   docker exec "$PBX_CONTAINER" python3 /opt/zeus/pbx/portal_config_access.py \
     --asterisk-dir /etc/asterisk "$1" 2>&1
@@ -155,10 +159,10 @@ if docker exec "$PBX_CONTAINER" test -f /opt/zeus/pbx/portal_config_access.py >/
     access_rc=0
     access_out="$(access_run --apply)" || access_rc=$?
     [ -n "$access_out" ] && access_say "$access_out"
-    [ "$access_rc" = 0 ] && echo "zeus-pbx-sync: portal config write access re-asserted (pbx/portal_config_access.py)" >&2
+    [ "$access_rc" = 0 ] && echo "zeus-pbx-sync: portal config access re-asserted (write, and removal in /etc/asterisk — pbx/portal_config_access.py)" >&2
   fi
   if [ "$access_rc" != 0 ]; then
-    echo "zeus-pbx-sync: portal config write access could not be judged (portal-access exit $access_rc) — Repair will report state instead of writing" >&2
+    echo "zeus-pbx-sync: portal config access could not be judged (portal-access exit $access_rc) — Repair will report state instead of writing" >&2
   fi
 fi
 

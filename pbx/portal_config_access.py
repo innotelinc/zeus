@@ -64,16 +64,44 @@ So the files are given the portal's **primary** gid, which survives `su-exec`:
 portal (its primary group) gains write. Nothing else changes hands, and no
 container's group set has to be right for it to hold.
 
-The directory itself already works: FreePBX leaves `$ASTETCDIR` at 0775, so the
-group may create files. The files are the interesting case —
-`systemSetRecursivePermissions` strips the execute bit for files, so an `rdir`
-rule of 0775 lands as **0664**, already group-writable. What matters is *which*
-group, and `fwconsole chown` resets it to `asterisk` on every boot, which is why
-this runs on every boot right after that chown.
+The files are the interesting case — `systemSetRecursivePermissions` strips the
+execute bit for files, so an `rdir` rule of 0775 lands as **0664**, already
+group-writable. What matters is *which* group, and `fwconsole chown` resets it
+to `asterisk` on every boot, which is why this runs on every boot right after
+that chown.
 
 The alternative — chmod at the portal's write site — does not work: the portal
 can chmod a file only if it owns it, and after `fwconsole chown` it does not.
 The grant has to come from the side that does own the files, which is the PBX.
+
+## The directory, and why removing a leftover needs a third grant
+
+Repair also *removes* a pre-decision `pjsip_ext_<ext>.conf`, and none of the
+above makes that possible. `unlink(2)` checks the **directory**: the caller
+needs write *and* execute on the parent, and the mode, owner and group of the
+file itself do not enter into the decision at all. So a file-shaped grant cannot
+close this — a root-owned leftover stays unremovable however the file is owned.
+
+`fwconsole chown` leaves `$ASTETCDIR` at `0775 asterisk:asterisk`, so the
+directory *is* group-writable — for the `asterisk` group, which the portal is
+not in (`su-exec` again). Measured on `.30` against the directory itself:
+
+```
+1001:1001  ->  EACCES    # the portal as it really runs: "other" on the dir, r-x
+1001:1000  ->  OK        # in the asterisk group — the same grant su-exec drops
+997:1000   ->  OK        # asterisk, the owner
+0:0        ->  OK
+```
+
+So the directory is given the portal's **primary** gid as well, exactly as the
+two files are. Nothing that writes `$ASTETCDIR` today loses anything: FreePBX
+and Apache's workers run as `asterisk` (uid 997 — the owner, who keeps its own
+`rwx`), and the `asterisk` group has no members left to lose (`asterisk:x:1000:`
+is the owner's own primary group). What the portal gains is the ability to
+create, rename and remove **entries** in the config directory — which is the
+operation it cannot perform any other way. It gains no access to the entries
+themselves: a directory's group bits do not reach into a file's own mode, and
+everything else under `$ASTETCDIR` stays `asterisk:asterisk`.
 
 ## Judging the group membership
 
@@ -85,9 +113,10 @@ gid" is the whole finding above: that grant does not reach the server.
 
 ## What it deliberately does not touch
 
-Only the two files the portal writes are relaxed, named explicitly. Everything
-else in `$ASTETCDIR` stays 0775 asterisk:asterisk, because the portal has no
-business writing it and a broad `chmod -R g+w` would hand it the PBX.
+Only the directory and the two files the portal writes are touched, named
+explicitly. Everything else in `$ASTETCDIR` stays 0775 asterisk:asterisk,
+because the portal has no business writing it and a broad `chmod -R g+w` would
+hand it the PBX.
 
     # judge, write nothing (0 in sync, 1 an apply converges it, 2 cannot tell)
     python3 pbx/portal_config_access.py --check
@@ -129,6 +158,11 @@ PORTAL_FILES = (
 # directory is already group-writable, and widening it would change what the PBX
 # hands out rather than what the portal may change.
 PORTAL_FILE_MODE = 0o664
+
+# The leftover Repair removes, named in the directory message so an operator
+# can see which file the missing directory bit is about. Not a path this tool
+# opens: it is a name to recognise, and the portal owns the actual removal.
+LEGACY_FRAGMENT = "pjsip_ext_<ext>.conf"
 
 # The group Asterisk's own files are owned by, and the name this tool chgrps
 # away from. Not the group the portal needs — see the module docstring.
@@ -218,6 +252,17 @@ def judge_stat(info: os.stat_result, portal_uid: int, groups: Collection[int]) -
     )
 
 
+def judge_dir(path: str, portal_uid: int, groups: Collection[int]) -> tuple[bool, str]:
+    """`judge_removal_stat` for `path`, with the states a stat cannot report."""
+    try:
+        info = os.stat(path)
+    except OSError as exc:
+        return False, f"cannot stat {path}: {exc}"
+    if not stat.S_ISDIR(info.st_mode):
+        return False, f"{path} is not a directory, so nothing can be removed from it"
+    return judge_removal_stat(info, portal_uid, groups)
+
+
 def judge(path: str, portal_uid: int, groups: Collection[int]) -> tuple[bool, str]:
     """`judge_stat` for `path`, with the two states a stat cannot report."""
     try:
@@ -242,28 +287,76 @@ def plan(info: os.stat_result, want_gid: int) -> tuple[int, bool]:
     return want, want_gid != -1 and info.st_gid != want_gid
 
 
-def converge(path: str, want_gid: int) -> tuple[bool, str]:
-    """Make `path` group-writable **by the portal's primary gid**.
+def judge_removal_stat(info: os.stat_result, portal_uid: int,
+                       groups: Collection[int]) -> tuple[bool, str]:
+    """Whether a process as `portal_uid` in `groups` may unlink in this directory.
+
+    A different question from `judge_stat`, and not a wider version of it: the
+    kernel resolves `unlink(2)` against the **parent directory** with a
+    write+execute clause, and the entry being removed may be owned by root and
+    unreadable to the caller — that does not stop the removal. Judging a
+    directory with the file rule would therefore pass a mode the kernel refuses
+    (`0664` on a directory has the group write bit and no search bit: nothing
+    may be created in it, renamed in it, or removed from it) and refuse the one
+    that works. Both clauses are pinned by the tests.
+    """
+    mode = stat.S_IMODE(info.st_mode)
+    if info.st_uid == portal_uid and (mode & (stat.S_IWUSR | stat.S_IXUSR)) == (
+            stat.S_IWUSR | stat.S_IXUSR):
+        return True, f"owned by the portal (uid {portal_uid})"
+    if info.st_gid in groups and (mode & (stat.S_IWGRP | stat.S_IXGRP)) == (
+            stat.S_IWGRP | stat.S_IXGRP):
+        return True, f"group-writable and searchable, and the portal is in group {info.st_gid}"
+    if (mode & (stat.S_IWOTH | stat.S_IXOTH)) == (stat.S_IWOTH | stat.S_IXOTH):
+        return True, "world-writable"
+
+    owner = "root" if info.st_uid == 0 else f"uid {info.st_uid}"
+    # Same shape as `judge_stat`'s message, and for the same reason: the fault
+    # is the missing bit on the directory, and "Repair does nothing" is only the
+    # symptom of it.
+    return (
+        False,
+        f"{oct(mode)} {owner}:{info.st_gid} — the portal (uid {portal_uid}, "
+        f"groups {sorted(groups)}) holds no write bit on the directory, and "
+        f"unlinking a leftover {LEGACY_FRAGMENT} needs one there: the parent's "
+        f"permission is what `unlink(2)` checks, not the file's",
+    )
+
+
+def plan_dir(info: os.stat_result, want_gid: int) -> tuple[int, bool]:
+    """The mode a *directory* needs before the portal may create or remove in it.
+
+    `plan` plus the group search bit: unlink needs write **and** execute, and a
+    directory that keeps the write bit but lost the execute bit (an operator's
+    `chmod 664`, a copy that did not preserve the mode) is still one the portal
+    cannot use. Both bits are added; nothing else changes.
+    """
+    want, move_group = plan(info, want_gid)
+    return want | stat.S_IXGRP, move_group
+
+
+def apply_access(path: str, mode: int, move_group: bool, want_gid: int,
+                 unchanged: str) -> tuple[bool, str]:
+    """`chmod`/`chown` the pair `plan`/`plan_dir` decided, for a file or a directory.
 
     Returns (changed, detail). The group is moved to the portal's own gid rather
     than merely asserted to `asterisk`, because `su-exec` resets the server's
-    supplementary groups — a file owned `asterisk:asterisk` is unwritable no
-    matter what `group_add` says. Only the group-write bit is added; the rest of
-    the mode is preserved so a file an operator tightened (0600) is not silently
-    published.
-    """
-    try:
-        info = os.stat(path)
-    except FileNotFoundError:
-        return False, "not written yet"
-    except OSError as exc:
-        return False, f"cannot stat: {exc}"
+    supplementary groups — a path owned `asterisk:asterisk` is unusable no
+    matter what `group_add` says. Only the bits the plan asked for are added;
+    the rest of the mode is preserved so a file an operator tightened (0600) is
+    not silently published.
 
-    want, move_group = plan(info, want_gid)
+    `unchanged` is the sentence to answer with when neither call was needed,
+    because the two callers are making different claims — "already
+    group-writable" for a file, "already writable and searchable by the portal"
+    for the directory — and the operator reading them is diagnosing different
+    faults. The syscalls are shared so their failure reporting is one piece of
+    code rather than two that drift.
+    """
     changed = False
-    if want != stat.S_IMODE(info.st_mode):
+    if mode != stat.S_IMODE(os.stat(path).st_mode):
         try:
-            os.chmod(path, want)
+            os.chmod(path, mode)
             changed = True
         except OSError as exc:
             return False, f"chmod failed: {exc}"
@@ -274,11 +367,43 @@ def converge(path: str, want_gid: int) -> tuple[bool, str]:
             # The mode already landed, so this is still a change — reporting
             # `False` would send an operator looking for a tool that did
             # nothing, which is the bug this file exists to end.
-            return True, f"{oct(want)} but chgrp to gid {want_gid} failed: {exc}"
+            return True, f"{oct(mode)} but chgrp to gid {want_gid} failed: {exc}"
         changed = True
     if not changed:
-        return False, "already group-writable"
-    return True, f"{oct(want)} gid {want_gid}"
+        return False, unchanged
+    return True, f"{oct(mode)} gid {want_gid}"
+
+
+def converge(path: str, want_gid: int) -> tuple[bool, str]:
+    """Make the file `path` writable **by the portal's primary gid**."""
+    try:
+        info = os.stat(path)
+    except FileNotFoundError:
+        return False, "not written yet"
+    except OSError as exc:
+        return False, f"cannot stat: {exc}"
+
+    want, move_group = plan(info, want_gid)
+    return apply_access(path, want, move_group, want_gid, "already group-writable")
+
+
+def converge_dir(path: str, want_gid: int) -> tuple[bool, str]:
+    """Let the portal create and remove entries in the directory `path`.
+
+    The same grant as `converge`, with the group search bit included — see
+    `plan_dir`. It is what makes the repair path's removal of a leftover
+    `pjsip_ext_<ext>.conf` possible at all.
+    """
+    try:
+        info = os.stat(path)
+    except OSError as exc:
+        return False, f"cannot stat: {exc}"
+    if not stat.S_ISDIR(info.st_mode):
+        return False, "not a directory"
+
+    want, move_group = plan_dir(info, want_gid)
+    return apply_access(path, want, move_group, want_gid,
+                        "already writable and searchable by the portal")
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -298,9 +423,11 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--portal-groups",
                     default=os.environ.get("PORTAL_GROUPS"),
                     help="comma-separated gids the portal runs with "
-                         "(default: nextjs's groups plus the asterisk gid)")
+                         "(default: nextjs's own groups — what survives "
+                         "`su-exec`, and deliberately not plus the asterisk gid)")
     ap.add_argument("--apply", action="store_true",
-                    help="make the files group-writable (default: judge only)")
+                    help="make the directory and the files usable by the "
+                         "portal's primary gid (default: judge only)")
     ap.add_argument("--check", action="store_true",
                     help="judge and exit 0/1/2 (the default; this tool writes nothing)")
     args = ap.parse_args(argv)
@@ -326,32 +453,47 @@ def main(argv: list[str] | None = None) -> int:
         print("portal-access: no portal gid to grant — cannot tell", file=sys.stderr)
         return 2
 
-    out_of_sync: list[str] = []
-    for name in PORTAL_FILES:
-        path = os.path.join(args.asterisk_dir, name)
-        writable, detail = judge(path, portal_uid, groups)
+    # The directory first, because it grants a different capability from the two
+    # files: the repair path's *removal* of a leftover `pjsip_ext_<ext>.conf`.
+    # Its label is the trailing-slash form so a reader can tell which of these
+    # lines is about the directory and not one of the files in it.
+    dir_label = args.asterisk_dir.rstrip("/") + "/"
+    targets: list[tuple[str, str, bool]] = [
+        (dir_label, args.asterisk_dir, True),
+        *((name, os.path.join(args.asterisk_dir, name), False) for name in PORTAL_FILES),
+    ]
+
+    out_of_sync: list[tuple[str, str, bool]] = []
+    for label, path, is_dir in targets:
+        writable, detail = (judge_dir if is_dir else judge)(path, portal_uid, groups)
         if writable:
-            print(f"portal-access: {name} — the portal can write it ({detail})")
+            access = ("the portal can create and remove entries in it" if is_dir
+                      else "the portal can write it")
+            print(f"portal-access: {label} — {access} ({detail})")
         else:
-            out_of_sync.append(name)
-            print(f"portal-access: {name} — NOT writable by the portal: {detail}",
+            out_of_sync.append((label, path, is_dir))
+            print(f"portal-access: {label} — NOT writable by the portal: {detail}",
                   file=sys.stderr)
 
     if not out_of_sync:
-        print("portal-access: every portal-owned config file is writable by the portal")
+        print(
+            f"portal-access: the portal can write its config files and remove a "
+            f"leftover {LEGACY_FRAGMENT} from {dir_label}"
+        )
         return 0
 
     if args.check or not args.apply:
         print(
-            f"portal-access: {len(out_of_sync)} file(s) the portal cannot write — the "
-            f"repair path will report the state instead of writing it; re-run with --apply",
+            f"portal-access: {len(out_of_sync)} path(s) the portal cannot write — "
+            f"the repair path will report the state instead of writing it; "
+            f"re-run with --apply",
             file=sys.stderr,
         )
         return 1
 
-    for name in out_of_sync:
-        _, detail = converge(os.path.join(args.asterisk_dir, name), want_gid)
-        print(f"portal-access: {name} — {detail}", file=sys.stderr)
+    for label, path, is_dir in out_of_sync:
+        _, detail = (converge_dir if is_dir else converge)(path, want_gid)
+        print(f"portal-access: {label} — {detail}", file=sys.stderr)
     return 0
 
 

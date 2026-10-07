@@ -23,6 +23,15 @@ on `.30`:
   * an apply adds the group-write bit and re-asserts the group, and nothing
     else, so a file an operator tightened is not silently published.
 
+Repair also *removes* the leftover `pjsip_ext_<ext>.conf`, which no file grant
+covers: `unlink(2)` resolves against the **directory**, so the same suite pins
+the directory's clause as a separate rule. The case worth having is the one a
+file-shaped judge gets wrong in both directions — a directory at `0664` has the
+group write bit the file rule looks for and no search bit, so nothing may be
+created in it, renamed in it or removed from it; and `0775 asterisk:asterisk`
+is "no write bit" for the portal even though the group clause is satisfied in
+the abstract, because after `su-exec` that group is not one the portal has.
+
 ## Why most of these tests never touch the filesystem
 
 The judgement is a function of `(uid, gid, mode)` and nothing else, so it is
@@ -171,6 +180,69 @@ class JudgeMatrixTest(unittest.TestCase):
         self.assertFalse(self.judge(0o664, uid=PORTAL_UID + 1, groups=())[0])
 
 
+class RemovalMatrixTest(unittest.TestCase):
+    """`judge_removal_stat`: the kernel's rule for *unlink*, which is not a file rule.
+
+    No inode is created, for the same reason as `JudgeMatrixTest`: the clause is a
+    function of (uid, gid, mode), and the uid/gid pairs the live bug needs cannot
+    be created by an unprivileged test run.
+    """
+
+    def judge(self, mode, *, uid=0, gid=PBX_GID, portal_uid=PORTAL_UID,
+              groups=(PORTAL_GID,)):
+        return pca.judge_removal_stat(st(mode, uid, gid), portal_uid, set(groups))
+
+    def test_the_measured_directory_refuses_the_portal(self):
+        # `fwconsole chown`'s rule on $ASTETCDIR: 0775 asterisk:asterisk. The
+        # portal is "other" there — r-x, and unlink needs write.
+        writable, detail = self.judge(0o775)
+        self.assertFalse(writable)
+        self.assertIn("no write bit", detail)
+        self.assertIn("unlink(2)", detail)
+        self.assertIn(pca.LEGACY_FRAGMENT, detail)
+
+    def test_the_portals_own_gid_on_the_directory_is_what_makes_removal_possible(self):
+        # The fix: the directory carries the portal's PRIMARY gid, which is what
+        # survives the entrypoint's `su-exec nextjs:nodejs`.
+        writable, detail = self.judge(0o775, gid=PORTAL_GID)
+        self.assertTrue(writable, detail)
+        self.assertIn(f"group {PORTAL_GID}", detail)
+
+    def test_the_write_bit_without_the_search_bit_is_still_refused(self):
+        # The combination a file-shaped judgement passes and the kernel refuses:
+        # 0664 on a directory is group-writable and not searchable, so `unlink`
+        # fails with EACCES however the group is set.
+        writable, detail = self.judge(0o664, gid=PORTAL_GID)
+        self.assertFalse(writable, detail)
+        self.assertIn("no write bit", detail)
+
+    def test_the_supplementary_grant_is_only_as_good_as_the_groups_given(self):
+        # The same trap as for the files, on the directory: the asterisk-group
+        # clause is real, and the default never hands that group over.
+        self.assertTrue(self.judge(0o775, groups=(PBX_GID,))[0])
+        self.assertNotIn(PBX_GID, pca.portal_groups(None))
+
+    def test_the_owner_clause_needs_write_and_search_too(self):
+        # A directory the portal owns at 0700: owner w+x, so removal is allowed
+        # even with no group membership at all — and 0600 is not, because a
+        # directory without execute cannot be searched.
+        self.assertTrue(self.judge(0o700, uid=PORTAL_UID, groups=())[0])
+        self.assertFalse(self.judge(0o600, uid=PORTAL_UID, groups=())[0])
+
+    def test_world_writable_and_searchable_is_accepted_but_named(self):
+        writable, detail = self.judge(0o777)
+        self.assertTrue(writable, detail)
+        self.assertIn("world-writable", detail)
+
+    def test_the_detail_names_the_directory_not_the_file(self):
+        # "Repair does nothing" is the symptom; the parent's ownership triple is
+        # the fault, and the message has to say which path it is about or the
+        # operator looks at the fragment instead of the directory.
+        _, detail = self.judge(0o775)
+        self.assertIn("0o775", detail)
+        self.assertIn(f"uid {PORTAL_UID}", detail)
+
+
 class PlanTest(unittest.TestCase):
     """`plan`: the mode an apply wants, and whether the group moves with it."""
 
@@ -198,6 +270,23 @@ class PlanTest(unittest.TestCase):
         # every file to -1 and fail on all of them.
         _, move = pca.plan(st(0o664, gid=PBX_GID), -1)
         self.assertFalse(move)
+
+    def test_the_directory_plan_adds_the_search_bit_as_well(self):
+        # 0755 -> 0775: group write for the file rule's reason and group execute
+        # because `unlink(2)` needs the parent searchable.
+        want, move = pca.plan_dir(st(0o755, gid=PORTAL_GID), PORTAL_GID)
+        self.assertEqual(stat.S_IMODE(want), 0o775)
+        self.assertFalse(move)
+
+    def test_the_directory_plan_does_not_widen_anything_else(self):
+        # A directory an operator tightened to 0750: the group keeps what it
+        # had, plus exactly the two bits the removal needs.
+        want, _ = pca.plan_dir(st(0o750), PORTAL_GID)
+        self.assertEqual(stat.S_IMODE(want), 0o770)
+
+    def test_the_directory_plan_moves_the_group_when_it_is_not_the_portals(self):
+        _, move = pca.plan_dir(st(0o775, gid=PBX_GID), PORTAL_GID)
+        self.assertTrue(move)
 
 
 class PortalGroupsTest(unittest.TestCase):
@@ -308,16 +397,61 @@ class ConvergeTest(unittest.TestCase):
         self.assertEqual(os.stat(self.path).st_mode & 0o777, 0o664)
 
 
+class ConvergeDirTest(unittest.TestCase):
+    """`converge_dir`: the two bits, on a real directory.
+
+    The fixture directory belongs to whoever runs the suite, so the wanted gid
+    is the running user's own in the tests that need the chgrp to succeed.
+    """
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp(prefix="portal-access-dir-")
+        os.chmod(self.tmp, 0o755)
+        self.own_gid = os.getgid()
+
+    def test_it_adds_write_and_search_without_touching_the_rest(self):
+        changed, detail = pca.converge_dir(self.tmp, self.own_gid)
+        self.assertTrue(changed, detail)
+        self.assertEqual(os.stat(self.tmp).st_mode & 0o777, 0o775)
+
+    def test_a_directory_already_at_0775_is_a_no_op(self):
+        os.chmod(self.tmp, 0o775)
+        changed, detail = pca.converge_dir(self.tmp, self.own_gid)
+        self.assertFalse(changed, detail)
+        self.assertIn("already", detail)
+
+    def test_it_refuses_a_path_that_is_not_a_directory(self):
+        # The tool is pointed at a config dir; a file there would otherwise be
+        # chmod'ed +x, which is the wrong repair for the right symptom.
+        path = os.path.join(self.tmp, "not-a-dir")
+        with open(path, "w", encoding="utf-8") as fh:
+            fh.write("; x\n")
+        changed, detail = pca.converge_dir(path, self.own_gid)
+        self.assertFalse(changed)
+        self.assertIn("not a directory", detail)
+
+    @needs_root
+    def test_it_moves_the_group_to_the_portals_own(self):
+        changed, detail = pca.converge_dir(self.tmp, PORTAL_GID)
+        self.assertTrue(changed, detail)
+        self.assertEqual(os.stat(self.tmp).st_gid, PORTAL_GID)
+
+
 class MainTest(unittest.TestCase):
     """`main`: the exit codes the entrypoint and the sync tick branch on.
 
     The fixtures are owned by the running user and judged as a portal that user
     is not, so drift is real drift on any host. 0 in sync, 1 an apply converges
     it, 2 cannot tell.
+
+    The config *directory* is part of the judgement, so `setUp` gives it the
+    live shape (`0775`, the runner's own group) — that is what FreePBX's chown
+    leaves and what the tests below take away again to make it drift.
     """
 
     def setUp(self):
         self.tmp = tempfile.mkdtemp(prefix="portal-access-")
+        os.chmod(self.tmp, 0o775)
         for name in pca.PORTAL_FILES:
             path = os.path.join(self.tmp, name)
             with open(path, "w", encoding="utf-8") as fh:
@@ -350,7 +484,7 @@ class MainTest(unittest.TestCase):
         self.assertEqual(rc, 0, err)
         rc, out, err = self._run(*self._base("--portal-groups", str(self.portal_gid)))
         self.assertEqual(rc, 0, err)
-        self.assertIn("writable by the portal", out)
+        self.assertIn("can write its config files", out)
 
     def test_a_640_file_is_still_drift(self):
         # A file an operator tightened to 0640: the group write bit is gone, and
@@ -369,10 +503,50 @@ class MainTest(unittest.TestCase):
 
     def test_files_that_do_not_exist_yet_are_in_sync(self):
         empty = tempfile.mkdtemp(prefix="portal-access-empty-")
+        os.chmod(empty, 0o775)
         rc, out, _ = self._run("--asterisk-dir", empty, "--pbx-group", GROUP,
-                               "--portal-gid", str(self.portal_gid), "--check")
+                               "--portal-gid", str(self.portal_gid),
+                               "--portal-groups", str(self.portal_gid), "--check")
         self.assertEqual(rc, 0)
         self.assertIn("not written yet", out)
+
+    def test_a_directory_the_portal_cannot_use_is_drift_on_its_own(self):
+        # The files are exactly right — group-writable, in the portal's own gid
+        # — and the box is still broken: this is the *removal* half of Repair,
+        # which no file mode covers. 0755 is the live directory as the portal
+        # sees it before the fix (`0775 asterisk:asterisk`: its group is not
+        # ours, so it reads the group bits as "other" — r-x, no write).
+        for name in pca.PORTAL_FILES:
+            os.chmod(os.path.join(self.tmp, name), 0o664)
+        os.chmod(self.tmp, 0o755)
+
+        rc, out, err = self._run(*self._base("--check",
+                                             "--portal-groups", str(self.portal_gid)))
+        self.assertEqual(rc, 1, err)
+        self.assertIn("writable", out)
+        self.assertIn(self.tmp, err)
+        self.assertIn("unlink(2)", err)
+        self.assertNotIn(pca.PORTAL_FILES[0], err)
+
+    def test_a_directory_the_portal_may_not_search_is_drift(self):
+        # 0664: the group write bit a file-shaped judgement looks for, and no
+        # search bit — so nothing may be created in it or removed from it.
+        os.chmod(self.tmp, 0o664)
+        rc, _, err = self._run(*self._base("--check",
+                                           "--portal-groups", str(self.portal_gid)))
+        self.assertEqual(rc, 1, err)
+        self.assertIn("0o664", err)
+
+    def test_an_apply_makes_the_directory_usable_and_a_check_agrees(self):
+        os.chmod(self.tmp, 0o755)
+        rc, _, err = self._run(*self._base("--apply",
+                                           "--portal-groups", str(self.portal_gid)))
+        self.assertEqual(rc, 0, err)
+        self.assertEqual(os.stat(self.tmp).st_mode & 0o777, 0o775)
+        rc, out, err = self._run(*self._base("--check",
+                                             "--portal-groups", str(self.portal_gid)))
+        self.assertEqual(rc, 0, err)
+        self.assertIn("create and remove entries", out)
 
     def test_no_portal_gid_is_cannot_tell(self):
         # With no gid to grant there is nothing to judge against, so the tool
