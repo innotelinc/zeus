@@ -83,6 +83,38 @@ if [ -z "${AMI_PERMIT:-}" ]; then
 fi
 AMI_PERMIT_LINE="permit = ${AMI_PERMIT}"
 
+# ── trunk identity, from wherever this box keeps it ────────────────────
+# The sub-account and host the SMS fragment renders into its From/To URIs live
+# in the stack `.env` (docker-compose.full.yml hands them to the PBX) as well as,
+# on some boxes, `pbx.env`. A pbx.env that predates the SMS keys would otherwise
+# render nothing, so read the two keys from `.env` as a fallback rather than make
+# the operator duplicate an address that is not a secret. `.env` is NOT sourced:
+# its `vault://` tokens are for the container entrypoint to resolve, and this
+# shell must not carry them.
+STACK_ENV_FILE="${STACK_ENV_FILE:-${REPO_ROOT}/.env}"
+stack_env_value() {
+  [ -f "$STACK_ENV_FILE" ] || return 0
+  sed -nE "s/^[[:space:]]*(export[[:space:]]+)?${1}=(.*)$/\2/p" "$STACK_ENV_FILE" \
+    | tail -1 | sed -E 's/^"(.*)"$/\1/; s/^'\''(.*)'\''$/\1/'
+}
+
+# ── the SMS contexts (extensions_sms_custom.conf) ──────────────────────
+# `scripts/setup.sh` wrote these on bare metal and nowhere else, so a
+# containerised estate had the trunk up with no dialplan to put a MESSAGE on.
+# They are converged into the SAME extensions_custom.conf as the portal's
+# contexts — as a second `--source`, not as a file of their own — and only when
+# the trunk can actually build a sender: the From URI is the sub-account, so an
+# unset one would render a context that addresses nobody.
+SMS_IN_CONTEXT="${SMS_IN_CONTEXT:-sms-in}"
+SMS_OUT_CONTEXT="${SMS_OUT_CONTEXT:-sms-out}"
+VOIPMS_TRUNK_NAME="${VOIPMS_TRUNK_NAME:-voipms_pjsip}"
+VOIPMS_SIP_SERVER="${VOIPMS_SIP_SERVER:-$(stack_env_value VOIPMS_SIP_SERVER)}"
+VOIPMS_SIP_USER="${VOIPMS_SIP_USER:-$(stack_env_value VOIPMS_SIP_USER)}"
+SMS_FRAGMENT="extensions_sms_custom.conf"
+if [ -z "$VOIPMS_SIP_USER" ] || [ -z "$VOIPMS_SIP_SERVER" ]; then
+  SMS_FRAGMENT=""
+fi
+
 # Fragments the RUNTIME entrypoint owns — it derives them from .env on every
 # boot, so bootstrap must not stage, copy or drift-check them:
 #   rtp_custom.conf — docker-entrypoint-full.sh (Docker) and scripts/setup.sh
@@ -120,6 +152,12 @@ render_fragments() {
   mkdir -p "$STAGE_DIR"
   for frag in "$FRAG_DIR"/*.conf; do
     _is_entrypoint_owned "$(basename "$frag")" && continue
+    # Unconfigured SMS is not rendered at all (see SMS_FRAGMENT above): nothing
+    # consumes it, and a half-rendered sender is the kind of config that reads
+    # as working.
+    if [ "$(basename "$frag")" = "extensions_sms_custom.conf" ] && [ -z "$SMS_FRAGMENT" ]; then
+      continue
+    fi
     sed \
       -e "s/__AMI_USER__/${FREEPBX_AMI_USER}/g" \
       -e "s/__AMI_SECRET__/${FREEPBX_AMI_SECRET}/g" \
@@ -127,6 +165,11 @@ render_fragments() {
       -e "s/__ARI_SECRET__/${FREEPBX_ARI_SECRET}/g" \
       -e "s/__ARI_HTTP_PORT__/${ARI_HTTP_PORT}/g" \
       -e "s|__AMI_PERMIT__|${AMI_PERMIT_LINE}|g" \
+      -e "s/__SMS_IN_CONTEXT__/${SMS_IN_CONTEXT}/g" \
+      -e "s/__SMS_OUT_CONTEXT__/${SMS_OUT_CONTEXT}/g" \
+      -e "s/__VOIPMS_TRUNK_NAME__/${VOIPMS_TRUNK_NAME}/g" \
+      -e "s/__VOIPMS_SIP_SERVER__/${VOIPMS_SIP_SERVER}/g" \
+      -e "s/__VOIPMS_SIP_USER__/${VOIPMS_SIP_USER}/g" \
       "$frag" > "${STAGE_DIR}/$(basename "$frag")"
   done
 }
@@ -161,6 +204,26 @@ _is_converge_owned() {
   return 1
 }
 
+# A fragment that converge swallows as an extra --source instead of the PBX
+# reading it on its own. extensions_sms_custom.conf belongs in the SAME
+# extensions_custom.conf as the portal's contexts (both products share one
+# dialplan), so it rides that converge call and must never be copied to
+# /etc/asterisk under its own name.
+_is_converge_source() {
+  [ -n "$SMS_FRAGMENT" ] || return 1
+  [ "$1" = "$SMS_FRAGMENT" ]
+}
+
+# Fills CONVERGE_ARGS with the --source list for one converge-owned file.
+# extensions_custom.conf converges its extra SMS source beside the portal's own.
+CONVERGE_ARGS=()
+converge_sources_for() {
+  CONVERGE_ARGS=("--source" "${STAGE_DIR}/$1")
+  if [ "$1" = "extensions_custom.conf" ] && [ -n "$SMS_FRAGMENT" ]; then
+    CONVERGE_ARGS+=("--source" "${STAGE_DIR}/${SMS_FRAGMENT}")
+  fi
+}
+
 cleanup() {
   [ -n "${work:-}" ] && rm -rf "$work"
   return 0
@@ -171,13 +234,15 @@ apply_target() {
   dest="$(pbx_asterisk_dir)"
   if [ "$PBX_TARGET" = "container" ]; then
     for f in "$STAGE_DIR"/*.conf; do
-      _is_converge_owned "$(basename "$f")" && continue  # converge tool owns it
+      _is_converge_owned "$(basename "$f")" && continue    # converge tool owns it
+      _is_converge_source "$(basename "$f")" && continue   # rides that converge call
       docker compose -f "$REPO_ROOT/docker-compose.full.yml" cp \
         "$f" "freepbx:${dest}/$(basename "$f")"
     done
   else
     for f in "$STAGE_DIR"/*.conf; do
-      _is_converge_owned "$(basename "$f")" && continue  # converge tool owns it
+      _is_converge_owned "$(basename "$f")" && continue    # converge tool owns it
+      _is_converge_source "$(basename "$f")" && continue   # rides that converge call
       cp "$f" "${dest}/$(basename "$f")"
       chown asterisk:asterisk "${dest}/$(basename "$f")" 2>/dev/null || true
       chmod 640 "${dest}/$(basename "$f")" 2>/dev/null || true
@@ -326,6 +391,7 @@ dest="$(pbx_asterisk_dir)"
 for f in "$STAGE_DIR"/*.conf; do
   name="$(basename "$f")"
   _is_converge_owned "$name" && continue
+  _is_converge_source "$name" && continue
   if [ "$PBX_TARGET" = "container" ]; then
     current="$STAGE_DIR/current-${name}"
     docker compose -f "$REPO_ROOT/docker-compose.full.yml" exec -T freepbx \
@@ -366,7 +432,8 @@ for name in $CONVERGE_OWNED; do
     fi
   fi
   [ -f "$host" ] || : > "$host"
-  if ! python3 "$CONVERGE_PY" --target "$host" --source "${STAGE_DIR}/${name}" \
+  converge_sources_for "$name"
+  if ! python3 "$CONVERGE_PY" "${CONVERGE_ARGS[@]}" --target "$host" \
      --owner zeus --append from-internal-custom --check 2>/dev/null; then
     echo "drift: ${name} (shared config)" >&2
     drift=1
@@ -402,7 +469,8 @@ if [ "$drift" = 1 ] || [ "$RELOAD" = 1 ]; then
   for name in $CONVERGE_OWNED; do
     host="${work:+${work}/}${name}"
     [ "$PBX_TARGET" = "container" ] || host="${dest}/${name}"
-    python3 "$CONVERGE_PY" --target "$host" --source "${STAGE_DIR}/${name}" \
+    converge_sources_for "$name"
+    python3 "$CONVERGE_PY" "${CONVERGE_ARGS[@]}" --target "$host" \
       --owner zeus --append from-internal-custom
     if [ "$PBX_TARGET" = "container" ]; then
       docker compose -f "$REPO_ROOT/docker-compose.full.yml" cp \

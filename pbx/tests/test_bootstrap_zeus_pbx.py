@@ -84,9 +84,19 @@ class Rehearsal(unittest.TestCase):
                 # Nothing reads a portal cache here any more; point it at an
                 # absent path so a regression that tried to would say so.
                 "ZEUS_PORTAL_DB": str(self.tmp / "no-portal.db"),
+                # The SMS half falls back to the stack `.env` for the trunk
+                # identity. Point that at an absent path too, or the rehearsal
+                # would read the developer's real .env (and its vault:// tokens).
+                "STACK_ENV_FILE": str(self.tmp / "no-stack.env"),
             }
         )
         self.env.pop("PBX_SYNC_TOKEN", None)
+        # The SMS fragment is conditional on the trunk actually being
+        # configured; clear any leaked host value so the default run stays the
+        # disabled path (see SmsConvergence for the enabled one).
+        for var in ("VOIPMS_SIP_USER", "VOIPMS_SIP_SERVER", "VOIPMS_TRUNK_NAME",
+                    "SMS_IN_CONTEXT", "SMS_OUT_CONTEXT"):
+            self.env.pop(var, None)
 
     def run_bootstrap(self, *args: str) -> subprocess.CompletedProcess:
         proc = subprocess.run(
@@ -114,6 +124,17 @@ class Apply(Rehearsal):
         proc = self.run_bootstrap()
         self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
         self.assertEqual(self.present(), APPLIED)
+
+    def test_unconfigured_sms_contributes_no_contexts(self):
+        """With no sub-account to send as, the SMS half is not rendered at all.
+
+        The contexts would name an empty From user, which reads as working —
+        worse than an absent one. The file is skipped before the converge.
+        """
+        self.run_bootstrap()
+        text = (self.asterisk / "extensions_custom.conf").read_text(encoding="utf-8")
+        self.assertNotIn("[sms-in]", text)
+        self.assertNotIn("[sms-out]", text)
 
     def test_the_entrypoint_owned_fragments_are_never_written(self):
         """The regression this pins: a wholesale copy deleted live AMI users.
@@ -150,6 +171,115 @@ class Idempotence(Rehearsal):
         proc = self.run_bootstrap("--check")
         self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
         self.assertIn("in sync", proc.stdout + proc.stderr)
+
+
+class SmsConvergence(Rehearsal):
+    """The bare-metal SMS dialplan, converged into the shared config.
+
+    scripts/setup.sh wrote [sms-in]/[sms-out] on bare metal and nowhere else, so
+    a containerised estate had the trunk Registered and no dialplan to put an
+    out-of-call MESSAGE on. They must ride the same extensions_custom.conf
+    converge as the portal's contexts — as an extra --source, never as a file of
+    their own — so capstone's contexts survive and the PBX reads exactly one
+    dialplan file for both.
+    """
+
+    def setUp(self):
+        super().setUp()
+        self.env.update(
+            {
+                "VOIPMS_SIP_USER": "235662_rehearsal",
+                "VOIPMS_SIP_SERVER": "newyork1.voip.ms",
+                "VOIPMS_TRUNK_NAME": "voipms_pjsip",
+            }
+        )
+        self.env.pop("SMS_IN_CONTEXT", None)
+        self.env.pop("SMS_OUT_CONTEXT", None)
+
+    def text(self) -> str:
+        return (self.asterisk / "extensions_custom.conf").read_text(encoding="utf-8")
+
+    def test_the_contexts_land_in_the_shared_dialplan(self):
+        proc = self.run_bootstrap()
+        self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+        text = self.text()
+        self.assertIn("[sms-in]", text)
+        self.assertIn("[sms-out]", text)
+
+    def test_the_sms_fragment_is_never_a_file_of_its_own(self):
+        self.run_bootstrap()
+        self.assertNotIn("extensions_sms_custom.conf", self.present())
+        self.assertEqual(self.present(), APPLIED)
+
+    def test_trunk_and_sub_account_are_rendered_into_the_sender(self):
+        self.run_bootstrap()
+        text = self.text()
+        self.assertIn("pjsip:voipms_pjsip/sip:${NUMBER_TO}@newyork1.voip.ms", text)
+        self.assertIn("sip:235662_rehearsal@newyork1.voip.ms", text)
+        for placeholder in ("__SMS_IN_CONTEXT__", "__SMS_OUT_CONTEXT__",
+                            "__VOIPMS_SIP_USER__", "__VOIPMS_SIP_SERVER__",
+                            "__VOIPMS_TRUNK_NAME__"):
+            self.assertNotIn(placeholder, text)
+
+    def test_operator_context_names_are_honoured(self):
+        self.env.update({"SMS_IN_CONTEXT": "inbound-text", "SMS_OUT_CONTEXT": "outbound-text"})
+        self.run_bootstrap()
+        text = self.text()
+        self.assertIn("[inbound-text]", text)
+        self.assertIn("[outbound-text]", text)
+        self.assertNotIn("[sms-in]", text)
+
+    def test_the_apply_stays_idempotent_with_sms(self):
+        self.run_bootstrap()
+        first = self.hashes()
+        proc = self.run_bootstrap()
+        self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+        self.assertEqual(self.hashes(), first, "the SMS converge is not byte-idempotent")
+
+    def test_the_check_agrees_after_the_sms_converge(self):
+        self.run_bootstrap()
+        proc = self.run_bootstrap("--check")
+        self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+        self.assertIn("in sync", proc.stdout + proc.stderr)
+
+
+class StackEnvFallback(Rehearsal):
+    """The trunk identity is read from the stack `.env` when pbx.env lacks it.
+
+    On this estate `scripts/pbx.env` predates the SMS keys — the sub-account and
+    host live in the stack `.env`, which is what compose hands the PBX — so a
+    bootstrap that only looked at pbx.env would render nothing and the SMS
+    dialplan would stay bare-metal-only. The fallback reads just the two keys;
+    it never sources `.env`, whose `vault://` tokens belong to the container
+    entrypoint (a shell that sourced them would carry unresolvable secrets).
+    """
+
+    def setUp(self):
+        super().setUp()
+        stack_env = self.tmp / ".env"
+        stack_env.write_text(
+            "VOIPMS_SIP_USER=235662_stackenv\n"
+            "VOIPMS_SIP_SERVER=stack.voip.ms\n"
+            "FREEPBX_AMI_SECRET=vault://cerulean/zeus#FREEPBX_AMI_SECRET\n",
+            encoding="utf-8",
+        )
+        self.env["STACK_ENV_FILE"] = str(stack_env)
+
+    def test_the_trunk_identity_comes_from_the_stack_env(self):
+        proc = self.run_bootstrap()
+        self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+        text = (self.asterisk / "extensions_custom.conf").read_text(encoding="utf-8")
+        self.assertIn("[sms-in]", text)
+        self.assertIn("pjsip:voipms_pjsip/sip:${NUMBER_TO}@stack.voip.ms", text)
+        self.assertIn("sip:235662_stackenv@stack.voip.ms", text)
+
+    def test_a_vault_token_from_the_stack_env_is_not_rendered(self):
+        """The AMI secret still comes from pbx.env, not the stack `.env`."""
+        self.run_bootstrap()
+        text = (self.asterisk / "extensions_custom.conf").read_text(encoding="utf-8")
+        self.assertNotIn("vault://", text)
+        http = (self.asterisk / "http_custom.conf").read_text(encoding="utf-8")
+        self.assertNotIn("vault://", http)
 
 
 class CheckIsReadOnly(Rehearsal):

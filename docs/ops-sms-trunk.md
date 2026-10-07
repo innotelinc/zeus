@@ -40,11 +40,25 @@ The steps here are what to run by hand when one of them fails, and the send /
 carrier-leg steps are the ones no check can make without spending money.
 
 The `sms-out` context is asserted only when `SMS_OUT_CONTEXT` names one. It is
-the **bare-metal** softphone path (`scripts/setup.sh`): the portal does not
-route through it, because its AMI `MessageSend` names the `To`/`From` URIs and
-no `Context` (`src/lib/sms.ts`), so a missing context cannot swallow a send the
-way a missing endpoint does. On the containerised estate the honest check is
-the endpoint id, which is asserted unconditionally.
+the **softphone** path (a registered phone hands Asterisk a MESSAGE): the portal
+does not route through it, because its AMI `MessageSend` names the `To`/`From`
+URIs and no `Context` (`src/lib/sms.ts`), so a missing context cannot swallow a
+send the way a missing endpoint does. On the containerised estate the honest
+check is the endpoint id, which is asserted unconditionally.
+
+The contexts are no longer bare-metal-only. `pbx/bootstrap-zeus-pbx.sh`
+converges `pbx/asterisk/extensions_sms_custom.conf` **into**
+`extensions_custom.conf` (as a second `--source`, never as a file of its own)
+whenever `VOIPMS_SIP_USER` and `VOIPMS_SIP_SERVER` are set, so a containerised
+estate stops carrying a `Registered` trunk with no dialplan behind it. Confirm
+it landed with:
+
+```bash
+asterisk -rx 'dialplan show sms-in'
+asterisk -rx 'dialplan show sms-out'
+```
+
+and assert it without a PBX via `python3 -m unittest discover -s pbx/tests`.
 
 1. **Trunk registered**
 

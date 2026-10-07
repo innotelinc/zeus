@@ -13,6 +13,7 @@ operational shape.
 | `asterisk/http_custom.conf` | Asterisk HTTP server + WebSocket transport for the WebRTC softphone (genuinely included). Deliberately does **not** set `enablestatic`: FreePBX's http module already owns `[general]` in `http_additional.conf` (included before this file) and ships `enablestatic=no` |
 | `asterisk/rtp_custom.conf` | RTP media plane: canonical `stunaddr`/`icesupport` + `rtpstart`/`rtpend` cap. **Entrypoint-owned** — `bootstrap-zeus-pbx.sh` skips it; `docker-entrypoint-full.sh`/`scripts/setup.sh` derive it from `FREEPBX_RTP_PORT_*` + `PJSIP_STUN_ADDR` (STUN discovery) + `PJSIP_STUN_TURN_ADDR` (TURN) on every boot. Mirrored by the Capstone repo so both products cap one range |
 | `asterisk/extensions_custom.conf` | Portal dialplan context (`[from-zeus-portal]`) — converge-owned |
+| `asterisk/extensions_sms_custom.conf` | Trunk SMS dialplan (`[sms-in]` / `[sms-out]`) — the contexts `scripts/setup.sh` wrote on bare metal and nowhere else, so a containerised estate had the trunk `Registered` with no dialplan to put an out-of-call MESSAGE on. Converged **into** `extensions_custom.conf` as a second `--source` (never applied as a file of its own), and only when `VOIPMS_SIP_USER` **and** `VOIPMS_SIP_SERVER` are set — an unset sub-account would render a `From` URI that addresses nobody. Context names follow `SMS_IN_CONTEXT` / `SMS_OUT_CONTEXT` (default `sms-in` / `sms-out`), which `./scripts/smoke-test.sh sms` reads too — see [docs/ops-sms-trunk.md](../docs/ops-sms-trunk.md) |
 | `setup-cloudonix-trunk.sh` | Peer a Cloudonix domain with this PBX (`pjsip_custom_cloudonix.conf` + `extensions_custom_cloudonix.conf`), **script-owned** — `bootstrap-zeus-pbx.sh` skips both files, and `docker-entrypoint-full.sh` calls this on boot. `--check` drift mode |
 | `bootstrap-zeus-pbx.sh` | Render + apply the fragments idempotently; `--check` drift mode |
 | `asterisk_converge.py` | Per-section merge for the **shared** `extensions_custom.conf` / `ari.conf` (ownership markers) |
@@ -57,6 +58,12 @@ zeus's bootstrap routes it through `pbx/asterisk_converge.py`:
   predates it (legacy entrypoints injected the fragment with no markers), a
   byte-identical legacy copy of the owner's own body is absorbed into the
   marked segment instead of being duplicated.
+
+The bare-metal SMS contexts (`[sms-in]` / `[sms-out]`) ride the **same**
+converge call: `bootstrap-zeus-pbx.sh` passes `asterisk/extensions_sms_custom.conf`
+as an extra `--source` for `extensions_custom.conf`, so the PBX still reads one
+dialplan file for both products and the fragment never lands under its own
+name. It is staged only when the trunk is configured to build a sender.
 
 ### Shared `ari.conf`
 
