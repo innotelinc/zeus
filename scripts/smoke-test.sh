@@ -98,6 +98,15 @@ pass() { printf '\033[1;32m[ok]\033[0m %s\n' "$*"; }
 skip() { printf '\033[1;33m[--]\033[0m %s (skipped: env unset)\n' "$*"; SKIPS=$((SKIPS + 1)); }
 fail() { printf '\033[1;31m[!!]\033[0m %s\n' "$*"; FAILS=$((FAILS + 1)); }
 
+# The first line of an already-captured blob.
+#
+# Not `… | head -1`: `head` exits at the first line and the writer takes SIGPIPE,
+# which `pipefail` turns into a failed pipeline. Under `set -uo pipefail` (no `-e`)
+# that only bites where the pipeline's *status* is read — an `if`, a `&&` — which
+# is exactly how one such check came to fail at random on a healthy trunk. This
+# form has no early-exit reader to report.
+first_line() { printf '%s' "${1%%$'\n'*}"; }
+
 if [ -f .env ]; then
   set -a
   # shellcheck source=/dev/null
@@ -246,8 +255,9 @@ if [ "$SCOPE" = all ] || [ "$SCOPE" = pbx ]; then
   # (the same source the RTP check below uses), and keep the env override for
   # the case where the ports are reached from somewhere else.
   pbx_port_addr() {
-    local port="$1" addr
-    addr="$(docker port "${D7_PBX:-zeus-freepbx}" "$port" 2>/dev/null | head -1)" || true
+    local port="$1" addr lines
+    lines="$(docker port "${D7_PBX:-zeus-freepbx}" "$port" 2>/dev/null || true)"
+    addr="${lines%%$'\n'*}"
     addr="${addr##*-> }"  # "0.0.0.0:5038" or the listing's "5038/tcp -> 0.0.0.0:5038"
     addr="${addr%% *}"
     case "$addr" in
@@ -587,7 +597,7 @@ if [ "$SCOPE" = all ] || [ "$SCOPE" = pbx ]; then
     else
       # The context listed first for this number is the one Asterisk answers it
       # in; it must be an outbound route, not something local.
-      outbound_first="$(sed -nE "s/^\[ Included context '([^']+)'.*/\1/p; s/^\[ Context '([^']+)'.*/\1/p" <<<"$outbound_dp" | head -1)"
+      outbound_first="$(first_line "$(sed -nE "s/^\[ Included context '([^']+)'.*/\1/p; s/^\[ Context '([^']+)'.*/\1/p" <<<"$outbound_dp")")"
       if [[ "$outbound_first" != outrt-* ]]; then
         fail "dialling $outbound_sample is answered by '${outbound_first:-nothing}' before any outbound route — a local pattern shadows the route (an \`_Z.\`/\`_X.\` catch-all in [from-zeus-portal] does this; the trunk stays Registered while the call never leaves the PBX)"
       elif grep -qE 'macro-dialout-trunk,s,1\([0-9]+,1\$\{EXTEN\}' <<<"$outbound_dp"; then
@@ -619,7 +629,7 @@ if [ "$SCOPE" = all ] || [ "$SCOPE" = pbx ]; then
       local num="$1" dp
       dp="$(docker exec "$FBX" asterisk -rx "dialplan show ${num}@from-internal" 2>/dev/null || true)"
       [ -n "$dp" ] || return 1
-      sed -nE "s/^\[ Included context '([^']+)'.*/\1/p; s/^\[ Context '([^']+)'.*/\1/p" <<<"$dp" | head -1
+      first_line "$(sed -nE "s/^\[ Included context '([^']+)'.*/\1/p; s/^\[ Context '([^']+)'.*/\1/p" <<<"$dp")"
     }
 
     # $1 = label, $2 = the number (empty skips)
