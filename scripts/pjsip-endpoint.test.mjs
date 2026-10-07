@@ -298,3 +298,52 @@ describe("removal", () => {
     assert.equal(readFileSync(join(dir, lib.POST_FILE), "utf8"), SMS_BLOCK);
   });
 });
+
+describe("the media append's removal", () => {
+  const TWO = "; header\n\n[101](+)\nmedia_address=10.0.0.1\n[202](+)\nmedia_address=10.0.0.2\n";
+
+  it("cuts this extension's append and leaves every other byte", () => {
+    // The delete half of provisionMediaAddress. An append whose `[<ext>]` is
+    // gone is not inert: Asterisk logs `Category addition requested, but
+    // category '<ext>' does not exist` on every config load, for a number the
+    // PBX no longer has — 256 of them on `.30` for one deleted probe.
+    const dir = confDir({ [lib.MEDIA_FILE]: TWO });
+
+    assert.equal(lib.removeMediaAddress("101", dir), true);
+    const text = readFileSync(join(dir, lib.MEDIA_FILE), "utf8");
+    assert.doesNotMatch(text, /^\[101\]\(\+\)$/m);
+    assert.doesNotMatch(text, /media_address=10\.0\.0\.1/);
+    assert.ok(text.startsWith("; header"), "the tool's header survives");
+    assert.match(text, /^\[202\]\(\+\)$/m, "the neighbour survives");
+    assert.match(text, /^media_address=10\.0\.0\.2$/m);
+    assert.equal(
+      lib.removeMediaAddress("101", dir),
+      false,
+      "the second call has nothing to remove, so the caller must not report one",
+    );
+  });
+
+  it("is a no-op for an extension that has no append", () => {
+    const dir = confDir({ [lib.MEDIA_FILE]: TWO });
+    assert.equal(lib.removeMediaAddress("303", dir), false);
+    assert.equal(readFileSync(join(dir, lib.MEDIA_FILE), "utf8"), TWO);
+  });
+
+  it("is a no-op when there is no media file at all", () => {
+    // A box the boot owner has not converged, or a container the config
+    // directory is not mounted in: nothing of ours is there to remove.
+    const dir = confDir({});
+    assert.equal(lib.removeMediaAddress("101", dir), false);
+  });
+
+  it("leaves the media #include in the shared file alone", () => {
+    // The include is what loads the file at all; cutting it during a delete
+    // would silently drop every remaining endpoint's media address.
+    const dir = confDir({ [lib.MEDIA_FILE]: TWO });
+    lib.provisionWebrtc("101", dir);
+    lib.provisionMediaAddress("101", dir, "192.168.1.30");
+    lib.removeMediaAddress("101", dir);
+    const shared = readFileSync(join(dir, lib.POST_FILE), "utf8");
+    assert.equal(shared.split("\n")[0], lib.MEDIA_INCLUDE);
+  });
+});

@@ -8,6 +8,7 @@ import {
   provisionWebrtc,
   readWebrtcState,
   removeLegacyFragment,
+  removeMediaAddress,
   removeWebrtc,
   sectionHeader,
   type MediaAddressState,
@@ -250,6 +251,12 @@ export async function DELETE(req: Request) {
   // be found by `pjsip_owner_check.py` later.
   removeWebrtc(ext.extension_id);
   const removedLegacyFragment = removeLegacyFragment(ext.extension_id);
+  // And the media append, which is the third thing this route wrote. A section
+  // whose `[<ext>]` no longer exists is not inert — Asterisk answers it with
+  // `Category addition requested, but category '<ext>' does not exist` on every
+  // config load, for a number the PBX no longer has — so the delete takes it
+  // back rather than leaving the boot owner to re-derive the file.
+  const removedMediaAddress = removeMediaAddress(ext.extension_id);
   // The rows are gone by here; the rendered endpoint is not. FreePBX
   // regenerates config only when something applies it, and `deleteExtension`
   // merely sets the reload flag, so without this the extension keeps a live
@@ -268,6 +275,9 @@ export async function DELETE(req: Request) {
     // Named because a stale pjsip_ext_<ext>.conf is the one leftover that can
     // break the PBX for every *other* extension too.
     removed_leftover_endpoint_file: removedLegacyFragment,
+    // Named separately: a row can have a media append without an endpoint file,
+    // and the two are removed by different mechanisms.
+    removed_media_address: removedMediaAddress,
     apply_config: apply,
   });
 }

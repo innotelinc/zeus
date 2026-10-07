@@ -515,6 +515,44 @@ export function readMediaAddress(extensionId: string, dir = confDir()): string {
 }
 
 /**
+ * Remove this extension's `[<ext>](+) media_address=` append, if it has one.
+ *
+ * The delete half of `provisionMediaAddress`, and it has to exist: the append
+ * outlives the endpoint it extends, and an append whose base category is gone is
+ * not inert — Asterisk answers it with `Category addition requested, but category
+ * '<ext>' does not exist` on every configuration load, one line per reload, for
+ * a number the PBX no longer has. Measured on `.30`: a deleted probe extension's
+ * section kept 256 warnings in `/var/log/asterisk/full` and 175 more for the one
+ * that never had a device at all.
+ *
+ * Only this extension's own block is cut — the tool's header comment, every
+ * other endpoint's section and the include the file needs are carried over
+ * untouched, the same contract as `removeWebrtc`.
+ *
+ * Returns whether an append was actually there. The caller reports it rather
+ * than claiming a cleanup it did not make.
+ */
+export function removeMediaAddress(extensionId: string, dir = confDir()): boolean {
+  const path = join(dir, MEDIA_FILE);
+  let text: string;
+  try {
+    text = readFileSync(path, "utf8");
+  } catch {
+    // Not written yet, or the directory is not mounted in this container:
+    // there is nothing of ours to remove either way.
+    return false;
+  }
+  const mine = blocksOf(text)
+    .filter((block) => isOurs(block, extensionId))
+    .sort((a, b) => b.start - a.start);
+  if (mine.length === 0) return false;
+  let next = text;
+  for (const block of mine) next = cutBlock(next, block);
+  writeFileSync(path, next, "utf8");
+  return true;
+}
+
+/**
  * Remove our settings for this extension.
  *
  * Only our block. The file is shared, so the operation is "delete the lines

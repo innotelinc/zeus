@@ -114,6 +114,10 @@ export function removeLegacyFragment(ext) {
   globalThis.__extApplyTest.calls.push(["removeLegacyFragment", ext]);
   return false;
 }
+export function removeMediaAddress(ext) {
+  globalThis.__extApplyTest.calls.push(["removeMediaAddress", ext]);
+  return globalThis.__extApplyTest.mediaRemoved;
+}
 `;
 
 const PJSIP_SECRET_STUB = `
@@ -155,6 +159,7 @@ function configure(over = {}) {
     apply: { applied: true, state: "applied", detail: "", transactionId: "1" },
     pbxSecret: "",
     row: { id: "row-1", user_id: "u1", extension_id: "9998", extension_secret: "portal-issued" },
+    mediaRemoved: true,
     calls: [],
     ...over,
   };
@@ -291,6 +296,21 @@ describe("DELETE /api/phone/extensions — apply config so the endpoint goes too
     assert.equal(body.success, true);
     assert.equal(body.apply_config.applied, false);
     assert.equal(body.apply_config.detail, "reload failed");
+  });
+
+  it("takes back the media append it wrote, and says whether there was one", async () => {
+    // The append outlives its endpoint, and Asterisk answers an append to a
+    // category that no longer exists with `Category addition requested, but
+    // category '<ext>' does not exist` on every config load — so the delete has
+    // to remove it, not leave it for the boot owner to re-derive.
+    configure();
+    const body = await (await del()).json();
+    assert.equal(callNames().includes("removeMediaAddress"), true, callNames().join(" -> "));
+    assert.equal(body.removed_media_address, true);
+
+    configure({ mediaRemoved: false });
+    const none = await (await del()).json();
+    assert.equal(none.removed_media_address, false, "a row with no append must not claim one");
   });
 });
 
