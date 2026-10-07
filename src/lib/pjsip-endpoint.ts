@@ -587,13 +587,16 @@ export function legacyFragmentRemoval(extensionId: string, dir = confDir()): Leg
     return { path, present: true, removed: true, reason: "" };
   } catch (e) {
     const errno = e as { code?: string; message?: string };
+    const message = errno?.message ?? "the remove failed without a message";
     return {
       path,
       present: true,
       removed: false,
-      reason: errno?.code
-        ? `${errno.code}: ${errno.message ?? "the remove failed"}`
-        : errno?.message ?? "the remove failed without a message",
+      // Node's `message` already opens with `"EACCES: "`, so the code is only
+      // prefixed when it is missing — otherwise the operator reads it twice.
+      reason: errno?.code && !message.startsWith(errno.code)
+        ? `${errno.code}: ${message}`
+        : message,
     };
   }
 }

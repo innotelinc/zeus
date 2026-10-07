@@ -79,6 +79,16 @@ describe("removing a leftover endpoint fragment", () => {
     assert.equal(result.removed, false);
     assert.notEqual(result.reason, "", "a refused removal must say why");
     assert.match(result.path, /pjsip_ext_9999\.conf$/);
+    // The errno leads, and it leads *once*: node already opens its own message
+    // with the code, and a doubled "EACCES: EACCES:" is what an operator would
+    // have read off the screen. Measured live, this is `EACCES` on `.30`.
+    const code = result.reason.match(/^([A-Z][A-Z_]*):/)?.[1];
+    assert.ok(code, `the reason must lead with the errno: ${result.reason}`);
+    assert.equal(
+      result.reason.startsWith(`${code}: ${code}:`),
+      false,
+      `the errno must not be repeated: ${result.reason}`,
+    );
   });
 
   it("keeps the boolean form, so a caller that only needs the fact still works", () => {
