@@ -1267,14 +1267,27 @@ auth_message_requests=no
 SIPSMS
 fi
 
-# PJSIP general settings (the trunk is PJSIP) — append, same reason.
-if ! grep -q 'accept_outofcall_message' /etc/asterisk/pjsip_custom.conf 2>/dev/null; then
-  cat >> /etc/asterisk/pjsip_custom.conf <<PJSIPSMS
-[general]
-accept_outofcall_message=yes
-outofcall_message_context=${SMS_IN_CONTEXT}
-auth_message_requests=no
-PJSIPSMS
+# PJSIP inbound MESSAGE routing (the trunk is PJSIP).
+#
+# This used to append the legacy `[general]` block (`accept_outofcall_message` /
+# `outofcall_message_context` / `auth_message_requests`) to pjsip_custom.conf.
+# On Asterisk 22.11 that block does nothing: neither res_pjsip.so nor
+# res_pjsip_messaging.so contains those option strings — the only MESSAGE option
+# either module defines is the endpoint's `message_context` — so a text was
+# accepted and dropped. Converge the real setting instead (the value FreePBX's
+# trunk editor calls "Message Context", stored in the `pjsip` table and rendered
+# onto the endpoint on reload); see pbx/sms_message_context.py and
+# docs/ops-sms-trunk.md.
+#
+# The chan_sip `[general]` block above is left alone: chan_sip does implement
+# those options, and it is a separate (legacy) driver.
+if [ -f "${REPO_ROOT}/pbx/sms_message_context.py" ]; then
+  if python3 "${REPO_ROOT}/pbx/sms_message_context.py" --apply --local \
+       --trunk "${VOIPMS_TRUNK_NAME:-voipms_pjsip}" --context "${SMS_IN_CONTEXT}"; then
+    log "Inbound SMS routed to [${SMS_IN_CONTEXT}] (message_context on ${VOIPMS_TRUNK_NAME:-voipms_pjsip})"
+  else
+    warn "inbound SMS routing not converged — an inbound text is accepted and dropped (pbx/sms_message_context.py)"
+  fi
 fi
 
 # Per-DID endpoints so Asterisk accepts MESSAGE addressed to these numbers

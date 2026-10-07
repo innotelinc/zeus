@@ -192,6 +192,33 @@ if docker exec "$PBX_CONTAINER" test -f /opt/zeus/pbx/outbound_route.py >/dev/nu
   fi
 fi
 
+# ── Inbound SMS: the trunk's Message Context ────────────────────
+# The [sms-in] dialplan converged above is only reached if the trunk names it as
+# its `message_context`. On this Asterisk (22.11) that endpoint option is the
+# only MESSAGE routing there is — the legacy `[general] accept_outofcall_message`
+# block `scripts/setup.sh` wrote does not exist in res_pjsip.so or
+# res_pjsip_messaging.so, so an estate with it set and no message_context accepts
+# the text and drops it. The value is derivable (SMS_IN_CONTEXT), so unlike a DID
+# route the timer converges it rather than only reporting it.
+sms_say() { printf '%s\n' "$1" | sed 's/^sms-message-context: /  sms-message-context: /' >&2; }
+
+if docker exec "$PBX_CONTAINER" test -f /opt/zeus/pbx/sms_message_context.py >/dev/null 2>&1; then
+  sms_rc=0
+  sms_out="$(docker exec "$PBX_CONTAINER" python3 /opt/zeus/pbx/sms_message_context.py \
+    --check --local 2>&1)" || sms_rc=$?
+  [ -n "$sms_out" ] && sms_say "$sms_out"
+  if [ "$sms_rc" = 1 ]; then
+    sms_rc=0
+    sms_out="$(docker exec "$PBX_CONTAINER" python3 /opt/zeus/pbx/sms_message_context.py \
+      --apply --local 2>&1)" || sms_rc=$?
+    [ -n "$sms_out" ] && sms_say "$sms_out"
+    [ "$sms_rc" = 0 ] && echo "zeus-pbx-sync: trunk Message Context re-converged (pbx/sms_message_context.py)" >&2
+  fi
+  if [ "$sms_rc" != 0 ]; then
+    echo "zeus-pbx-sync: inbound SMS routing could not be judged (sms-message-context exit $sms_rc) — check the voipms trunk and the PBX" >&2
+  fi
+fi
+
 # ── Voicemail mailboxes: judged, and converged on drift ─────────
 # `*97` needs the four facts the tool judges to line up, and the one a rebuilt
 # box loses is the caller-id gate: `macro-user-callerid` re-derives the

@@ -491,6 +491,26 @@ if [ -f /opt/zeus/pbx/outbound_route.py ] && [ -n "${VOIPMS_SIP_USER:-}" ]; then
   fi
 fi
 
+# ── The trunk's Message Context (inbound SMS) ───────────────────────────────
+# The [sms-in] dialplan is converged by the sync timer, but a context is only
+# reached if the trunk names it. On this Asterisk (22.11) the routing option is
+# `message_context` on the endpoint — the legacy `[general]`
+# `accept_outofcall_message` block `scripts/setup.sh` wrote does not exist in
+# res_pjsip.so or res_pjsip_messaging.so, so an estate carrying it accepts the
+# text and drops it. FreePBX renders `message_context` from the trunk's own row
+# (`pbx/sms_message_context.py`), so converge it once a carrier is configured.
+if [ -f /opt/zeus/pbx/sms_message_context.py ] && [ -n "${VOIPMS_SIP_USER:-}" ]; then
+  set +e
+  python3 /opt/zeus/pbx/sms_message_context.py --apply --local
+  sms_rc=$?
+  set -e
+  if [ "$sms_rc" = 0 ]; then
+    echo ">>> trunk Message Context converged (inbound MESSAGEs route to [${SMS_IN_CONTEXT:-sms-in}])"
+  else
+    echo ">>> WARNING: trunk Message Context not converged (rc=${sms_rc}); an inbound text is accepted and dropped (pbx/sms_message_context.py)" >&2
+  fi
+fi
+
 # ── Dograh external-media WebSocket ─────────────────────────────────────────
 # The add-on's entrypoint owns this file normally, but it lives on the shared
 # asterisk-config volume and its default URI is `host.docker.internal`, which

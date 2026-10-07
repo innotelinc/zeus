@@ -60,6 +60,17 @@ asterisk -rx 'dialplan show sms-out'
 
 and assert it without a PBX via `python3 -m unittest discover -s pbx/tests`.
 
+The dialplan alone is not enough for **inbound**: the trunk has to name that
+context as its `message_context`, or the MESSAGE is accepted and dropped one
+layer up. `pbx/sms_message_context.py` converges that (`--check` /
+`--apply`), and both the sync timer and the container entrypoint run it:
+
+```bash
+python3 pbx/sms_message_context.py --check
+asterisk -rx 'pjsip show endpoint voipms_pjsip' | grep message_context
+# expect: message_context : sms-in
+```
+
 1. **Trunk registered**
 
    ```bash
@@ -141,10 +152,29 @@ container once (it persists in the `asterisk-config` volume):
    `ghcr.io/innotelinc/zeus:latest-fullstack`).
 2. Write `/etc/asterisk/pjsip_voipms_custom.conf` (auth / registration / aor /
    endpoint / identify) with the sub-account creds from `pbx.env`, then
-   `#include pjsip_voipms_custom.conf` in `pjsip_custom_post.conf` and the
-   PJSIP `[general]` `accept_outofcall_message=yes` block in
-   `pjsip_custom.conf`. `pjsip_custom*.conf` are operator-owned — a
-   `fwconsole reload` does **not** regenerate them (verified).
+   `#include pjsip_voipms_custom.conf` in `pjsip_custom_post.conf`.
+   `pjsip_custom*.conf` are operator-owned — a `fwconsole reload` does **not**
+   regenerate them (verified).
+
+   For **inbound** SMS, the trunk must name the context its MESSAGEs belong in,
+   and on this Asterisk the way to do that is the endpoint's `message_context`,
+   not a `[general]` block:
+
+   ```bash
+   # FreePBX stores per-trunk pjsip settings in the `pjsip` table, keyed by
+   # trunkid; `fwconsole reload` renders message_context= onto the endpoint.
+   python3 pbx/sms_message_context.py --apply --local   # or --apply from the host
+   asterisk -rx 'pjsip show endpoint voipms_pjsip' | grep message_context
+   ```
+
+   The legacy `pjsip_custom.conf` block
+   (`[general] accept_outofcall_message=yes` / `outofcall_message_context=sms-in`
+   / `auth_message_requests=no`) that `scripts/setup.sh` wrote on bare metal is
+   **inert** on Asterisk 22.11: neither `res_pjsip.so` nor
+   `res_pjsip_messaging.so` contains those option strings (`message_context` is
+   the only MESSAGE option either module defines), so an estate carrying the
+   block accepts the text and drops it. `pbx/sms_message_context.py` exists to
+   close that gap; the sync timer and the container entrypoint run it.
 3. Reload with `asterisk -rx "module reload res_pjsip.so"` (Asterisk 22 has no
    `pjsip reload` CLI).
 
