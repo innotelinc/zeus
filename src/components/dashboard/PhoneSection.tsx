@@ -8,6 +8,7 @@ import { PlusIcon, RefreshIcon, CheckCircleIcon, SearchIcon, PhoneIcon, XIcon, T
 import { EmptyState, PageHeader } from "@/components/ui";
 import PbxHealthPanel from "@/components/dashboard/PbxHealthPanel";
 import { mediaAddressLabel, readinessLabel } from "@/lib/extension-readiness";
+import { describeApplyConfig, provisionProgress } from "@/lib/provision-progress";
 
 interface Props {
   numbers: PhoneNumber[];
@@ -38,6 +39,12 @@ export default function PhoneSection({ numbers: initialNumbers, extensions: init
   const [provisionMode, setProvisionMode] = useState(false);
   const [extForm, setExtForm] = useState({ id: "", name: "", email: "" });
   const [provisioning, setProvisioning] = useState(false);
+  // How long the create has been in flight. A create now queues FreePBX's Apply
+  // Config between its write and its credential read, which measures 11-30s, so
+  // the form has to say what it is waiting for rather than hold one word
+  // (src/lib/provision-progress.ts).
+  const [provisionElapsed, setProvisionElapsed] = useState(0);
+  const provisionTickRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const [deletingExt, setDeletingExt] = useState<string | null>(null);
   const [confirmDeleteExt, setConfirmDeleteExt] = useState<string | null>(null);
   const [repairing, setRepairing] = useState<string | null>(null);
@@ -108,6 +115,25 @@ export default function PhoneSection({ numbers: initialNumbers, extensions: init
     };
   }, []);
 
+  // The clock behind that sentence. Ticks while a create is in flight and is
+  // torn down with it, so a finished request leaves no interval behind.
+  useEffect(() => {
+    if (!provisioning) return;
+    const startedAt = Date.now();
+    // The clock is zeroed where the create *starts* (`provisionExtension`), not
+    // here: writing state during the commit of an effect is the render loop
+    // `react-hooks/set-state-in-effect` exists to catch, and the start of the
+    // request is the only place that knows when the clock really began.
+    provisionTickRef.current = setInterval(
+      () => setProvisionElapsed(Date.now() - startedAt),
+      500,
+    );
+    return () => {
+      if (provisionTickRef.current) clearInterval(provisionTickRef.current);
+      provisionTickRef.current = null;
+    };
+  }, [provisioning]);
+
   // ── Actions ─────────────────────────────────────────────
 
   async function searchDIDs() {
@@ -153,8 +179,14 @@ export default function PhoneSection({ numbers: initialNumbers, extensions: init
   async function provisionExtension() {
     if (!extForm.id || !extForm.name || !extForm.email) { toast.error("Please fill in all fields"); return; }
     setProvisioning(true);
+    setProvisionElapsed(0);
     try {
-      const res = await api<{ success: boolean; extensionId: string; secret: string }>("/api/phone/extensions", {
+      const res = await api<{
+        success: boolean;
+        extensionId: string;
+        secret: string;
+        apply_config?: { applied?: boolean; state?: string; detail?: string };
+      }>("/api/phone/extensions", {
         method: "POST",
         body: JSON.stringify({ extensionId: extForm.id, name: extForm.name, email: extForm.email }),
       });
@@ -166,6 +198,12 @@ export default function PhoneSection({ numbers: initialNumbers, extensions: init
         // and "ready" is not something this side can assume.
         await refresh();
         toast.success("Extension provisioned.");
+        // A create whose reload did not run is not a failed create — the rows
+        // are live — but its credential was never rendered, so the softphone
+        // would sit Offline with nothing on screen to say why. Name the state
+        // and the remedy instead of reporting a bare success.
+        const applyNotice = describeApplyConfig(res.apply_config);
+        if (applyNotice) toast.info(applyNotice);
       }
     } catch (e) {
       // The preflight's refusals are structured (`reason` + `repair`): a number
@@ -608,8 +646,28 @@ export default function PhoneSection({ numbers: initialNumbers, extensions: init
           </div>
           <div className="flex gap-3">
             <button type="button" onClick={provisionExtension} disabled={provisioning} className="btn-primary px-6 py-2.5 text-sm">{provisioning ? "Provisioning..." : "Provision"}</button>
-            <button type="button" onClick={() => setProvisionMode(false)} className="btn-ghost px-6 py-2.5 text-sm">Cancel</button>
+            <button type="button" onClick={() => setProvisionMode(false)} disabled={provisioning} className="btn-ghost px-6 py-2.5 text-sm">Cancel</button>
           </div>
+          {/* The wait, named. FreePBX's Apply Config is 11-30s of the request,
+              and a button holding one word for that long reads as hung. */}
+          {provisioning && (
+            <div
+              role="status"
+              aria-live="polite"
+              className="rounded-xl border border-white/[0.08] bg-white/[0.02] px-4 py-3"
+            >
+              <div className="flex items-center gap-2 text-sm font-medium text-white">
+                <span className="h-2 w-2 animate-pulse rounded-full bg-brand-400" aria-hidden />
+                {provisionProgress(provisionElapsed).title}
+                <span className="ml-auto font-mono text-xs text-white/40">
+                  {provisionProgress(provisionElapsed).seconds}s
+                </span>
+              </div>
+              <p className="mt-1 text-xs text-white/50">
+                {provisionProgress(provisionElapsed).detail}
+              </p>
+            </div>
+          )}
         </div>
       )}
     </div>

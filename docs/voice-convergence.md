@@ -1440,3 +1440,27 @@ preference.
    `src/lib/extension-readiness.ts`, and removed by
    `POST /api/phone/extensions/repair`. `pbx/pjsip_owner_check.py --live` (§8 P3)
    remains the live measurement, and now judges the append shape as clean.
+
+   **That removal can be refused, and now says so.** `removeLegacyFragment`
+   answers two different questions with one `false` — "nothing was there" and "it
+   is there and this process may not unlink it" — and only the second is a fault:
+   two `[<ext>]` objects make res_pjsip refuse the whole configuration. Unlinking
+   needs a write bit on the *directory*, not on the file, and the portal's server
+   runs as `1001:1001` while `/etc/asterisk` is `0775` owned by the PBX's own uid,
+   so the portal is "other" on it. Measured live, 2026-10-07: Repair on a
+   root-owned leftover returned 200 with the fragment still on disk. The detailed
+   form (`legacyFragmentRemoval`) carries the errno, and the repair route reports
+   it as `legacy_fragment_reason` beside `removed_leftover_endpoint_file`. Closing
+   it for real is a PBX-side ownership or removal decision, not a portal one.
+
+6. **How a wait is described** — **DECIDED 2026-10-07: a create names the wait it
+   is actually in, because the wait is now 11–30s of Apply Config.**
+   `POST /api/phone/extensions` queues `doreload` between its write and its
+   credential read (§11.5 above), so the form's one word held for half a minute —
+   which reads as a hung request, and the operator's instinct is to click again.
+   `src/lib/provision-progress.ts` maps elapsed time to the stage, the panel
+   renders it in a live region with a seconds count, and the answer's
+   `apply_config` becomes a notice naming the consequence (no rendered secret, so
+   the phone cannot register) and the remedy (Repair). The clock lives in a pure
+   module rather than in the JSX because the thresholds are measurements, and a
+   measurement is worth pinning.

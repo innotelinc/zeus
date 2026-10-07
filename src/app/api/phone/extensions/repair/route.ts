@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 import { requireUser, badRequest } from "@/lib/api-helpers";
 import db from "@/lib/db";
-import { MEDIA_FILE, POST_FILE, provisionMediaAddress, provisionWebrtc, readWebrtcState, removeLegacyFragment, sectionHeader, type MediaAddressState, type SoftphoneState } from "@/lib/pjsip-endpoint";
+import { MEDIA_FILE, POST_FILE, legacyFragmentRemoval, provisionMediaAddress, provisionWebrtc, readWebrtcState, sectionHeader, type MediaAddressState, type SoftphoneState } from "@/lib/pjsip-endpoint";
 import { pbxSecretFor } from "@/lib/pjsip-secret";
 import { reloadPjsipIfLive } from "@/lib/pjsip-reload";
 import { assessSoftphone } from "@/lib/extension-readiness";
@@ -50,8 +50,12 @@ export async function POST(req: Request) {
 
   // The leftover endpoint file is removed even when there is no secret to
   // repair with: it is a second object with this extension's id, so it is a
-  // hazard to the whole PBX, not just to this softphone.
-  const removedLegacy = removeLegacyFragment(ext.extension_id);
+  // hazard to the whole PBX, not just to this softphone. The detailed form is
+  // used because a bare `false` cannot tell "nothing was there" from "it is
+  // still there and this process may not unlink it" — and only the second one is
+  // something the operator has to act on (src/lib/pjsip-endpoint.ts).
+  const legacy = legacyFragmentRemoval(ext.extension_id);
+  const removedLegacy = legacy.removed;
 
   if (!secret) {
     const after = readWebrtcState(ext.extension_id);
@@ -153,6 +157,12 @@ export async function POST(req: Request) {
     // Named so a half-repair is visible: the WebRTC settings landed and the
     // media address did not, which is a different story from "repair failed".
     media_address_reason: media.written ? "" : media.reason,
+    // A duplicate fragment this process could not unlink is the third half-repair,
+    // and the most dangerous one: two `[<ext>]` objects make res_pjsip refuse the
+    // whole configuration, so the row must not read as repaired while it stands.
+    // Empty when there was nothing to remove or it is gone.
+    legacy_fragment_reason: legacy.present && !legacy.removed ? legacy.reason : "",
+    legacy_fragment_path: legacy.present && !legacy.removed ? legacy.path : "",
     softphone: readiness,
   });
 }

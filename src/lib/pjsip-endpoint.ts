@@ -547,12 +547,53 @@ export function removeWebrtc(extensionId: string, dir = confDir()): SoftphoneSta
  * Returns whether a file was actually removed.
  */
 export function removeLegacyFragment(extensionId: string, dir = confDir()): boolean {
+  return legacyFragmentRemoval(extensionId, dir).removed;
+}
+
+/** What became of the fragment: present, gone, or still there and why. */
+export interface LegacyRemoval {
+  /** The fragment this names, whether or not it is on disk. */
+  path: string;
+  /** Whether it was on disk when this ran. */
+  present: boolean;
+  /** Whether this call is the one that removed it. */
+  removed: boolean;
+  /** Empty unless it is on disk and still is. */
+  reason: string;
+}
+
+/**
+ * Remove the fragment, and say why when it cannot be.
+ *
+ * `removeLegacyFragment`'s bare `false` conflates two very different answers —
+ * "there was nothing to remove" and "there is something here and I am not
+ * allowed to touch it" — and only the second one is a fault the operator has to
+ * act on. Measured on `.30`: the portal's server runs as `1001:1001` while
+ * `/etc/asterisk` is `0775` owned by the PBX's own uid, so the portal is "other"
+ * on that directory and cannot unlink anything in it — including the leftover
+ * fragment it has to unlink, because unlinking needs a write bit on the
+ * *directory*, not on the file. That is a fact about the box, so it is reported
+ * rather than swallowed.
+ *
+ * The errno is carried, not paraphrased: `EACCES` and `EROFS` need different
+ * things from whoever reads this, and the readiness summary beside it already
+ * says what the duplicate costs.
+ */
+export function legacyFragmentRemoval(extensionId: string, dir = confDir()): LegacyRemoval {
   const path = join(dir, legacyFragmentName(extensionId));
-  if (!existsSync(path)) return false;
+  if (!existsSync(path)) return { path, present: false, removed: false, reason: "" };
   try {
     rmSync(path, { force: true });
-    return true;
-  } catch {
-    return false;
+    return { path, present: true, removed: true, reason: "" };
+  } catch (e) {
+    const errno = e as { code?: string; message?: string };
+    return {
+      path,
+      present: true,
+      removed: false,
+      reason: errno?.code
+        ? `${errno.code}: ${errno.message ?? "the remove failed"}`
+        : errno?.message ?? "the remove failed without a message",
+    };
   }
 }
