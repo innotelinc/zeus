@@ -64,9 +64,20 @@ export async function POST(req: Request) {
     const channels = [...remote, ...local];
 
     if (channels.length === 0) {
+      // Logged, not silent: this is also what a hang-up that ran *after* the
+      // browser's own BYE looks like, and the caller decides what to do with it
+      // (`hung_up_local: 0` means the BYE still has to be sent —
+      // src/lib/call-teardown.ts).
+      console.log(
+        `AMI Hangup: ${ext.extension_id} — no active channel to clear ` +
+          `(${rows.length} on the PBX) (user: ${user.id})`,
+      );
       return NextResponse.json({
         success: true,
         hung_up: 0,
+        hung_up_local: 0,
+        hung_up_remote: 0,
+        channels: [],
         message: "No active channels found for this extension",
       });
     }
@@ -86,6 +97,8 @@ export async function POST(req: Request) {
     return NextResponse.json({
       success: true,
       hung_up: channels.length,
+      hung_up_local: local.length,
+      hung_up_remote: remote.length,
       channels,
     });
   } catch (e) {

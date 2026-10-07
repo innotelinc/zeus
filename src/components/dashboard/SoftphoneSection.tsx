@@ -5,7 +5,8 @@ import { createPortal } from "react-dom";
 import Link from "next/link";
 import { Registerer, RegistererState, SessionState, UserAgent } from "sip.js";
 import type { FreePBXExtension, PhoneNumber } from "@/lib/types";
-import { api } from "@/lib/client-api";
+import { api, apiErrorMessage } from "@/lib/client-api";
+import { teardownCall } from "@/lib/call-teardown";
 import { PhoneIcon } from "@/components/icons";
 import { Select } from "@/components/ui";
 import { connectable, notConnectable } from "@/lib/extension-readiness";
@@ -390,10 +391,14 @@ export default function SoftphoneSection({ extensions, phoneNumbers }: Props) {
       // Notify PhoneSection to refresh device states immediately
       window.dispatchEvent(new CustomEvent("pbx:extension-state-changed"));
     } catch (e) {
+      // The fallback is a sentence, not the word "unknown": a failure here is
+      // most often the WebSocket never opening, and `apiErrorMessage`'s own
+      // fallback is the only case where the caught value says nothing at all.
       toast.error(
-        `Extension ${extNumber} did not register — ${
-          e instanceof Error ? e.message : "unknown error"
-        }`,
+        `Extension ${extNumber} did not register — ${apiErrorMessage(
+          e,
+          `the WebSocket to ${wssUrl} could not be opened (check Settings → Softphone)`,
+        )}`,
       );
       setRegistration("failed");
       setCallState("disconnected");
@@ -480,7 +485,7 @@ export default function SoftphoneSection({ extensions, phoneNumbers }: Props) {
         throw new Error("Originate request failed");
       }
     } catch (e) {
-      toast.error(e instanceof Error ? e.message : "Call failed");
+      toast.error(apiErrorMessage(e, "Call failed"));
       setCallState("idle");
       originatingRef.current = false;
       remotePartyRef.current = "";
@@ -508,7 +513,7 @@ export default function SoftphoneSection({ extensions, phoneNumbers }: Props) {
         },
       });
     } catch (e) {
-      toast.error(e instanceof Error ? e.message : "Failed to answer call");
+      toast.error(apiErrorMessage(e, "Failed to answer call"));
       endCallToIdle();
     }
   }
@@ -544,25 +549,38 @@ export default function SoftphoneSection({ extensions, phoneNumbers }: Props) {
     const call = activeCallRef.current;
     const extId = selectedExt?.id;
 
-    // Send SIP BYE (primary hangup — terminates the signaling)
-    if (call?.session) {
+    const sendBye = () => {
       try {
-        call.session.bye?.();
+        call?.session?.bye?.();
       } catch {
-        // ignore
+        // The session is already gone; nothing is left to clear.
       }
-    }
+    };
 
-    // Also request AMI channel hangup as a best-effort cleanup
-    // for any lingering channels (fire-and-forget)
-    if (extId) {
-      api("/api/ami/hangup", {
-        method: "POST",
-        body: JSON.stringify({ extension_id: extId }),
-      }).catch(() => {});
-    }
-
+    // The panel goes idle at once; the PBX is asked behind it. See
+    // src/lib/call-teardown.ts for why the PBX is asked *before* this leg's BYE:
+    // the extension's own channel is the only handle on the far end, so a BYE
+    // sent first is how the other party ends up still connected.
     endCallToIdle();
+
+    if (!extId) {
+      sendBye();
+      return;
+    }
+
+    void teardownCall({
+      requestPbxTeardown: () =>
+        api<{ success?: boolean; hung_up_local?: number }>("/api/ami/hangup", {
+          method: "POST",
+          body: JSON.stringify({ extension_id: extId }),
+        }),
+      sendBye,
+      onError: (error) => {
+        // Was `.catch(() => {})`: an unreachable PBX read exactly like a hang-up
+        // that worked, which is half of why a stranded far end was invisible.
+        console.warn("AMI hangup failed — falling back to a SIP BYE:", error);
+      },
+    });
   }
 
   function sendDtmf(digit: string) {
@@ -628,7 +646,7 @@ export default function SoftphoneSection({ extensions, phoneNumbers }: Props) {
       if (!next) setMicEnabled(!call.muted);
     } catch (e) {
       if (next) setMicEnabled(!call.muted);
-      toast.error(e instanceof Error ? e.message : "Hold failed");
+      toast.error(apiErrorMessage(e, "Hold failed"));
     } finally {
       setPrivateHoldBusy(false);
     }

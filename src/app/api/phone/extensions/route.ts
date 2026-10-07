@@ -143,7 +143,7 @@ export async function POST(req: Request) {
         provisioned: false,
         reason:
           `the extension was created, but its WebRTC settings could not be written: ` +
-          `${e instanceof Error ? e.message : "unknown error"}. The endpoint FreePBX owns has ` +
+          `${e instanceof Error ? e.message : "the write failed without a message"}. The endpoint FreePBX owns has ` +
           `no DTLS/ICE media until ${POST_FILE} carries ${sectionHeader(extensionId)}.`,
       };
     }
@@ -163,7 +163,7 @@ export async function POST(req: Request) {
         address: "",
         reason:
           `the extension was created, but its media address could not be written: ` +
-          `${e instanceof Error ? e.message : "unknown error"}. The boot owner ` +
+          `${e instanceof Error ? e.message : "the write failed without a message"}. The boot owner ` +
           `(pbx/media_address.py) will converge it at the next restart.`,
       };
     }

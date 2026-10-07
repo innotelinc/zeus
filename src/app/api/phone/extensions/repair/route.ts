@@ -88,7 +88,7 @@ export async function POST(req: Request) {
         error: "webrtc_settings_not_writable",
         reason:
           `could not write ${POST_FILE} for Ext ${ext.extension_id}: ` +
-          `${e instanceof Error ? e.message : "unknown error"}`,
+          `${e instanceof Error ? e.message : "the write failed without a message"}`,
         repair:
           "the portal must be able to write the operator-owned PJSIP files it extends. " +
           "On the PBX run `python3 pbx/portal_config_access.py --apply` (the PBX entrypoint " +
@@ -121,7 +121,7 @@ export async function POST(req: Request) {
       address: "",
       reason:
         `the WebRTC settings were written, but the media address could not be: ` +
-        `${e instanceof Error ? e.message : "unknown error"}. ` +
+        `${e instanceof Error ? e.message : "the write failed without a message"}. ` +
         `Make ${MEDIA_FILE} group-writable by the asterisk group (pbx/portal_config_access.py).`,
     };
   }
