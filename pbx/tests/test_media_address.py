@@ -9,6 +9,12 @@ writer's two jobs are pinned here rather than only measured on `.30`:
   * **A reachable address.** A docker, loopback or link-local address is refused
     by name — an empty or wrong value is exactly the bug being fixed, so writing
     it is worse than refusing.
+  * **Direct Media off.** The same append carries `direct_media=no`. FreePBX
+    defaults every endpoint to `yes`, which makes Asterisk tell the two phones
+    to talk to each other directly; a hold then has no music to play and a
+    resume can fail to re-establish the path ("hold does not work, and after
+    hold it does not reconnect"). The line is written with the address, so the
+    media plane stays the PBX's — the premise `media_address` already assumes.
   * **The shared file survives.** The file it keeps its `#include` in is also
     the portal's (`[<ext>](+)` softphone blocks). The include is added once and
     every other byte is carried over untouched.
@@ -72,6 +78,18 @@ class RenderMediaFileTest(unittest.TestCase):
         self.assertLess(text.index("[9999](+)"), text.index("[12000](+)"))
         self.assertLess(text.index("[12000](+)"), text.index("[4135612020](+)"))
         self.assertEqual(text.count("media_address=192.168.1.30"), 3)
+
+    def test_every_endpoint_disables_direct_media(self):
+        # Hold/MOH and resume need Asterisk in the media path; FreePBX's own
+        # default (`direct_media=yes`) leaves it out and is the reported bug.
+        text = ma.render_media_file(["12000", "9999", "4135612020"], "192.168.1.30")
+        self.assertEqual(text.count("direct_media=no\n"), 3)
+
+    def test_the_section_is_the_exact_bytes_the_portal_mirrors(self):
+        self.assertEqual(
+            ma.render_media_section("12000", "192.168.1.30"),
+            "[12000](+)\nmedia_address=192.168.1.30\ndirect_media=no\n",
+        )
 
     def test_it_appends_rather_than_defines(self):
         # `(+)` is the whole mechanism: a bare `[<ext>]` would be a second

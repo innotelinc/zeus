@@ -383,15 +383,23 @@ export function readWebrtcState(extensionId: string, dir = confDir()): Softphone
 }
 
 /**
- * The `[<ext>](+) media_address=<addr>` append this estate gives an endpoint.
+ * The `[<ext>](+)` append this estate gives an endpoint: `media_address` and
+ * `direct_media=no`.
  *
  * Byte-for-byte the section `pbx/media_address.py` renders, so a file the portal
  * has touched is a fixed point of the tool's next boot rewrite —
  * `scripts/pjsip-endpoint.test.mjs` pins the two together. It is an append, so
  * it extends the endpoint FreePBX owns; it defines nothing.
+ *
+ * `direct_media=no` is the other half of the media plane. FreePBX defaults every
+ * endpoint to `yes`, which hands the two phones each other's address and takes
+ * Asterisk out of the media path: a hold then has no music to inject and a
+ * resume can fail to re-establish the path. Keeping Asterisk in the stream is
+ * what makes hold, MOH, transfers and DTMF work, and it is the premise
+ * `media_address` already assumes.
  */
 export function renderMediaSection(extensionId: string, address: string): string {
-  return `[${extensionId}](+)\nmedia_address=${address}\n`;
+  return `[${extensionId}](+)\nmedia_address=${address}\ndirect_media=no\n`;
 }
 
 /**

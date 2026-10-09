@@ -13,6 +13,16 @@ Measured on `.30` with `rtp set debug on`: 1119 RTP packets sent to the phone,
 on me", and every other check — dialplan, mailbox, DSN, trunks — is green,
 because the trunks are the half that works.
 
+The same endpoint carries `direct_media`, and FreePBX leaves it at `yes` for
+every endpoint it generates. That tells Asterisk to hand each phone the other's
+address and step out of the media path — so a hold has no music to inject
+(Asterisk is not in the stream) and a resume may not re-establish the direct
+path at all, which reaches an operator as "hold does not work, and after hold it
+does not reconnect". This tool writes `direct_media=no` beside the address, for
+the same reason it writes the address: the media plane for this PBX's own LAN
+endpoints belongs to the PBX, not to two phones negotiating it themselves. Like
+the address, it is a fact about the box, rendered rather than remembered.
+
 ## Why it is per endpoint, and where it therefore goes
 
 `external_media_address` (the trunk half) is the WAN address and is right for
@@ -144,14 +154,21 @@ def _ext_key(extension: str) -> tuple[int, int, str]:
 
 
 def render_media_section(extension: str, address: str) -> str:
-    """One `[<ext>](+) media_address=<addr>` append, ending in a newline.
+    """One `[<ext>](+)` append: `media_address=<addr>` and `direct_media=no`.
 
     The unit the portal mirrors in `src/lib/pjsip-endpoint.ts`
     (`renderMediaSection`) — same bytes, pinned by `scripts/pjsip-endpoint.test.mjs`.
     It is an append (`(+)`), so it extends the endpoint FreePBX owns; it defines
     no object.
+
+    `direct_media=no` is the other half of the same fact. FreePBX defaults every
+    endpoint to `yes`, which makes Asterisk tell the two phones to talk to each
+    other directly; a hold then has no music to play because Asterisk is not in
+    the stream, and a resume can fail to re-establish that direct path. Turning
+    it off keeps Asterisk in the media path — the premise `media_address` already
+    assumes — so hold, MOH, transfers and DTMF keep working.
     """
-    return f"[{extension}](+)\nmedia_address={address}\n"
+    return f"[{extension}](+)\nmedia_address={address}\ndirect_media=no\n"
 
 
 def render_media_file(endpoints: Collection[str], address: str) -> str:
@@ -173,6 +190,10 @@ def render_media_file(endpoints: Collection[str], address: str) -> str:
         ";",
         "; The trunks are deliberately absent: they are outside local_net and need the",
         "; WAN address (external_media_address). One value cannot serve both halves.",
+        ";",
+        "; `direct_media=no` is written beside the address. Keeping Asterisk in the",
+        "; media path is what makes hold, music-on-hold, transfers and DTMF work on a",
+        "; physical phone that would otherwise be told to talk to its peer directly.",
         "",
     ]
     for ext in sorted(endpoints, key=_ext_key):
