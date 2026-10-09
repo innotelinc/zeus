@@ -43,6 +43,11 @@ It flags:
      advertises — and without it the whole-tree scan can never be green, which
      is how a gate gets bypassed rather than satisfied.
 
+One exemption is impossible to infer from a path: a private-key *fixture*. A
+leaked PEM and a deliberate one are byte-identical at the header, so it is
+listed by path in ALLOWLIST together with the single rule it silences — every
+other rule still runs on that file.
+
 Matched values are masked in the output, so a finding never re-prints the
 secret it found.
 
@@ -170,6 +175,33 @@ TEST_PATH = re.compile(
     r"(^|/)(tests?|__tests__|spec|fixtures?)/|\.(test|spec)\.[A-Za-z]+$", re.IGNORECASE
 )
 
+# A deliberately committed *private-key* fixture cannot be told apart from a
+# leaked one by its shape — the PEM header is byte-identical — so the exemption
+# has to be explicit and per-file rather than inferred from the path. This is
+# the one place the `fixtures/` relaxation above is not enough: that relaxation
+# only covers the literal-assignment rule, while a PEM keeps tripping the
+# `private-key-block` shape rule. Each entry names the path and exactly the one
+# rule it silences; every other rule still applies to that file, so a provider
+# key committed into the same fixture is still caught.
+#
+# scripts/fixtures/cerulean-api-fixture.key is a throwaway key generated for the
+# Cerulean trust-plane test (vendored with the MS Teams Direct Routing wizard).
+ALLOWLIST: dict[str, frozenset[str]] = {
+    "scripts/fixtures/cerulean-api-fixture.key": frozenset({"private-key-block"}),
+}
+
+
+def is_allowlisted(label: str, rule: str) -> bool:
+    """Is `rule` explicitly silenced for the file `label` names?
+
+    History labels carry a revision prefix (`0caf908:path`), so match either the
+    bare path or a `:<path>` suffix.
+    """
+    for path, rules in ALLOWLIST.items():
+        if rule in rules and (label == path or label.endswith(":" + path)):
+            return True
+    return False
+
 BINARY_SUFFIXES = {
     ".png", ".jpg", ".jpeg", ".gif", ".ico", ".webp", ".pdf", ".zip", ".gz",
     ".woff", ".woff2", ".ttf", ".otf", ".mp4", ".webm", ".wasm", ".node",
@@ -256,6 +288,8 @@ def scan_text(label: str, text: str) -> list[Finding]:
         for rule, pattern in SHAPES:
             match = pattern.search(line)
             if match:
+                if is_allowlisted(label, rule):
+                    continue
                 findings.append((label, number, rule, mask(match.group(0))))
 
         if relaxed:
