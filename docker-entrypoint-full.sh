@@ -13,7 +13,50 @@ echo ">>> Starting Zeus Full Stack..."
 # Start MariaDB (FreePBX database) — must run before OAuth2 client registration
 # shellcheck disable=SC2015 # best-effort dir prep, non-fatal on failure
 mkdir -p /var/run/mysqld && chown mysql:mysql /var/run/mysqld 2>/dev/null || true
-service mariadb start
+
+# The init script reports "failure" whenever mariadbd is up but not yet
+# answering — which is exactly what an unclean shutdown looks like. InnoDB
+# replays its redo log before it serves a single query, and that replay is
+# measured in minutes while the script's own wait is measured in seconds. Under
+# `set -e` that non-zero exit ended this entrypoint, the container restart then
+# SIGKILLed mariadbd *mid-replay*, so the volume never got clean and the
+# container restart-looped with no way out (seen 2026-10-08 after a host
+# reboot). So the script's exit status is advisory: start it best-effort, then
+# wait until the server actually answers a query. Bounded, so a genuinely
+# broken database still fails loudly instead of hanging the boot forever.
+service mariadb start || true
+
+# Guard against a non-numeric override killing the deadline arithmetic.
+MARIADB_READY_TIMEOUT="${MARIADB_READY_TIMEOUT:-300}"
+case "$MARIADB_READY_TIMEOUT" in
+  ''|*[!0-9]*) MARIADB_READY_TIMEOUT=300 ;;
+esac
+MARIADB_READY_DEADLINE=$(( $(date +%s) + MARIADB_READY_TIMEOUT ))
+# Seconds between retries of the start itself, so a daemon that truly will not
+# come up isn't hammered every 2s.
+MARIADB_START_RETRY=30
+MARIADB_LAST_START=$(date +%s)
+
+# A real query (not `mysqladmin ping`, which exits 0 even on "Access denied")
+# proves the server both accepts the socket and can execute — the state every
+# later `mysql -u root` step in this script depends on.
+until mysql --user=root --connect-timeout=2 -e 'SELECT 1' >/dev/null 2>&1; do
+  NOW=$(date +%s)
+  # A daemon that is gone is not a slow one: retry the start, throttled.
+  if ! pgrep -x mariadbd >/dev/null 2>&1 && [ $(( NOW - MARIADB_LAST_START )) -ge "$MARIADB_START_RETRY" ]; then
+    echo ">>> MariaDB is not running — retrying 'service mariadb start'"
+    service mariadb start >/dev/null 2>&1 || true
+    MARIADB_LAST_START=$(date +%s)
+  fi
+  if [ "$NOW" -ge "$MARIADB_READY_DEADLINE" ]; then
+    echo ">>> ERROR: MariaDB not answering after ${MARIADB_READY_TIMEOUT}s — InnoDB may still be"
+    echo ">>>        recovering the pbx-mariadb-data volume; raise MARIADB_READY_TIMEOUT if so."
+    service mariadb status 2>&1 | tail -n 20 || true
+    exit 1
+  fi
+  sleep 2
+done
+echo ">>> MariaDB is answering."
 
 # ── Ensure FreePBX CDR/CEL tables exist ──────────────────────
 # FreePBX creates asteriskcdrdb.cdr/.cel only when the database is empty at
