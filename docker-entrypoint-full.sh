@@ -36,11 +36,18 @@ MARIADB_READY_DEADLINE=$(( $(date +%s) + MARIADB_READY_TIMEOUT ))
 # come up isn't hammered every 2s.
 MARIADB_START_RETRY=30
 MARIADB_LAST_START=$(date +%s)
+# Time the wait so a slow volume is visible *before* it hits the timeout: a
+# clean boot answers on the first probe, while InnoDB redo replay shows up as
+# seconds (or minutes) of recovery. Printed on success and included in the
+# timeout message, so the next outage has a number instead of a guess.
+MARIADB_WAIT_BEGAN=$(date +%s)
+MARIADB_PROBES=0
 
 # A real query (not `mysqladmin ping`, which exits 0 even on "Access denied")
 # proves the server both accepts the socket and can execute — the state every
 # later `mysql -u root` step in this script depends on.
 until mysql --user=root --connect-timeout=2 -e 'SELECT 1' >/dev/null 2>&1; do
+  MARIADB_PROBES=$(( MARIADB_PROBES + 1 ))
   NOW=$(date +%s)
   # A daemon that is gone is not a slow one: retry the start, throttled.
   if ! pgrep -x mariadbd >/dev/null 2>&1 && [ $(( NOW - MARIADB_LAST_START )) -ge "$MARIADB_START_RETRY" ]; then
@@ -49,14 +56,20 @@ until mysql --user=root --connect-timeout=2 -e 'SELECT 1' >/dev/null 2>&1; do
     MARIADB_LAST_START=$(date +%s)
   fi
   if [ "$NOW" -ge "$MARIADB_READY_DEADLINE" ]; then
-    echo ">>> ERROR: MariaDB not answering after ${MARIADB_READY_TIMEOUT}s — InnoDB may still be"
-    echo ">>>        recovering the pbx-mariadb-data volume; raise MARIADB_READY_TIMEOUT if so."
+    echo ">>> ERROR: MariaDB not answering after $(( NOW - MARIADB_WAIT_BEGAN ))s (limit ${MARIADB_READY_TIMEOUT}s,"
+    echo ">>>        ${MARIADB_PROBES} probes) — InnoDB may still be recovering the pbx-mariadb-data"
+    echo ">>>        volume; raise MARIADB_READY_TIMEOUT if so."
     service mariadb status 2>&1 | tail -n 20 || true
     exit 1
   fi
   sleep 2
 done
-echo ">>> MariaDB is answering."
+MARIADB_RECOVERY_SECS=$(( $(date +%s) - MARIADB_WAIT_BEGAN ))
+if [ "$MARIADB_RECOVERY_SECS" -ge 30 ]; then
+  echo ">>> MariaDB is answering after ${MARIADB_RECOVERY_SECS}s (${MARIADB_PROBES} probes) — the pbx-mariadb-data volume was recovering."
+else
+  echo ">>> MariaDB is answering (${MARIADB_RECOVERY_SECS}s, ${MARIADB_PROBES} probes)."
+fi
 
 # ── Ensure FreePBX CDR/CEL tables exist ──────────────────────
 # FreePBX creates asteriskcdrdb.cdr/.cel only when the database is empty at
