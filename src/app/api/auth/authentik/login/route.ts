@@ -1,5 +1,8 @@
 import { NextResponse, type NextRequest } from "next/server";
 import {
+  OIDC_NEXT_COOKIE,
+  OIDC_STATE_COOKIE,
+  OIDC_VERIFIER_COOKIE,
   discoverOidc,
   makePkcePair,
   makeState,
@@ -8,11 +11,10 @@ import {
   redirectUri,
 } from "@/lib/oidc";
 
+// A route file may export only its HTTP handlers and a few segment options, so
+// the flow's cookie names come from `@/lib/oidc` (the callback reads the same
+// three). Next 16 fails the build on any other export from this module.
 export const dynamic = "force-dynamic";
-
-export const OIDC_STATE_COOKIE = "oidc_state";
-export const OIDC_VERIFIER_COOKIE = "oidc_verifier";
-export const OIDC_NEXT_COOKIE = "oidc_next";
 
 /** Only allow same-site relative paths to avoid open redirects. */
 function safeNext(value: string | null): string {

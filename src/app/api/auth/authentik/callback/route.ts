@@ -1,6 +1,9 @@
 import { NextResponse, type NextRequest } from "next/server";
 import { cookies, headers } from "next/headers";
 import {
+  OIDC_NEXT_COOKIE,
+  OIDC_STATE_COOKIE,
+  OIDC_VERIFIER_COOKIE,
   exchangeCode,
   getUserInfo,
   oidcEnabled,
@@ -11,7 +14,6 @@ import { createSessionToken, SESSION_COOKIE, getSessionCookieOptions } from "@/l
 import db from "@/lib/db";
 import { findResellerByHost } from "@/lib/resellers";
 import { buildWelcomeEmail } from "@/lib/mail-templates";
-import { OIDC_STATE_COOKIE, OIDC_VERIFIER_COOKIE, OIDC_NEXT_COOKIE } from "@/app/api/auth/authentik/login/route";
 
 export const dynamic = "force-dynamic";
 

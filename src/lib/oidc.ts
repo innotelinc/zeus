@@ -28,6 +28,23 @@ import db from "./db";
  *                           are set, "freepbx" otherwise.
  */
 
+/**
+ * The three one-time cookies the authorization-code flow carries from the login
+ * route to the callback: the CSRF state, the PKCE verifier and the page to land
+ * on afterwards.
+ *
+ * They live here rather than in `/api/auth/authentik/login` — which is where the
+ * callback used to import them from — because Next validates a route file's
+ * exports against a fixed set (the HTTP handlers plus a handful of segment
+ * options), and a constant exported "for the callback" fails that validation:
+ * `next build` refuses the module with
+ * `Type 'OmitWithTag<typeof import(".../login/route")...>' does not satisfy ...`.
+ * The flow's cookie names are the flow's, so they belong with it.
+ */
+export const OIDC_STATE_COOKIE = "oidc_state";
+export const OIDC_VERIFIER_COOKIE = "oidc_verifier";
+export const OIDC_NEXT_COOKIE = "oidc_next";
+
 export type AuthMode = "authentik" | "freepbx" | "both";
 
 /** Whether the Authentik OIDC client is fully configured. */
