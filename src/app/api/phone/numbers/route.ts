@@ -3,6 +3,7 @@ import { requireUserOrService, badRequest } from "@/lib/api-helpers";
 import { SCOPE } from "@/lib/service-auth";
 import db from "@/lib/db";
 import * as voipms from "@/lib/voipms";
+import { maxNumbersForPlan } from "@/lib/phone-provisioning";
 import { randomUUID } from "node:crypto";
 import type { PhoneNumber } from "@/lib/types";
 
@@ -80,9 +81,10 @@ export async function POST(req: Request) {
       return badRequest("did is required");
     }
 
-    // Check plan limits
+    // Check plan limits — the same allowance an assignment from a purchase
+    // uses, so the two ways to get a number cannot disagree.
     const plan = user.plan;
-    const maxDids = plan === "business" ? 5 : 1;
+    const maxDids = maxNumbersForPlan(plan);
     const currentCount = (
       db.prepare("SELECT COUNT(*) as c FROM phone_numbers WHERE user_id = ?").get(user.id) as { c: number }
     ).c;

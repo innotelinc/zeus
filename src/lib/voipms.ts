@@ -76,6 +76,11 @@ export interface VoipMsDid {
   setup: string;
   monthly: string;
   status: string;
+  /** Account-side fields `getDIDsInfo` answers with for DIDs the account owns. */
+  description?: string | null;
+  routing?: string | null;
+  sms_available?: string | number | null;
+  sms_enabled?: string | number | null;
 }
 
 export interface VoipMsServer {
@@ -96,14 +101,22 @@ export async function getServersInfo(): Promise<{ servers: VoipMsServer[] }> {
   return call("getServersInfo");
 }
 
-/** Search available DIDs. */
+/**
+ * The DIDs on this account.
+ *
+ * Read the response before trusting the name: VoIP.ms answers with the lines the
+ * account already holds — each entry carries its `routing`, `next_billing` and
+ * `order_date` — not a catalogue of numbers for sale. The `areacode`/
+ * `ratecenter` parameters are passed through unchanged and are not a filter this
+ * endpoint honours. `src/lib/phone-provisioning.ts` allocates from this list.
+ */
 export async function getDIDsInfo(params: {
   province?: string;
   ratecenter?: string;
   areacode?: string;
   quantity?: number;
   type?: "local" | "tollfree";
-}): Promise<{ dids: VoipMsDid[] }> {
+} = {}): Promise<{ dids: VoipMsDid[] }> {
   return call("getDIDsInfo", {
     province: params.province,
     ratecenter: params.ratecenter,

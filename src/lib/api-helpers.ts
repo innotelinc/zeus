@@ -6,6 +6,7 @@ import {
   serviceAllows,
   serviceUser,
   type Scope,
+  type ServiceToken,
 } from "./service-auth";
 import type { User } from "./types";
 
@@ -78,6 +79,54 @@ export async function requireUserOrService(
     };
   }
   return { user, error: null };
+}
+
+/**
+ * Authenticate a **machine client acting on an account named in the request**.
+ *
+ * `requireUserOrService` deliberately cannot do this: a service token carries an
+ * `email` and acts *as* that account, which is the right shape for a caller that
+ * reads and writes its own rows (Genesis filing a fax). A purchase is the
+ * opposite case — the account does not exist yet, and the token has no rows of
+ * its own to act from — so this helper resolves no user at all. The route takes
+ * the target from its body and is responsible for refusing what the scope does
+ * not cover.
+ *
+ * There is no session fallback: a browser session belongs to one operator, and
+ * "create an account for this other address and give it a number" is not
+ * something the portal offers a cookie. A caller with no `Authorization` header
+ * is a 401 here, exactly as an unknown token is.
+ */
+export function requireServiceScope(
+  req: Request,
+  scope: Scope,
+): { entry: ServiceToken; error: null } | { entry: null; error: NextResponse } {
+  const presented = bearerCredential(req);
+  if (!presented) {
+    return {
+      entry: null,
+      error: NextResponse.json({ error: "Unauthorized" }, { status: 401 }),
+    };
+  }
+
+  const entry = matchServiceToken(presented);
+  if (!entry) {
+    return {
+      entry: null,
+      error: NextResponse.json({ error: "Unauthorized" }, { status: 401 }),
+    };
+  }
+  if (!serviceAllows(entry, scope)) {
+    return {
+      entry: null,
+      error: NextResponse.json(
+        { error: `This token is not scoped for ${scope}` },
+        { status: 403 },
+      ),
+    };
+  }
+
+  return { entry, error: null };
 }
 
 export function badRequest(message: string): NextResponse {

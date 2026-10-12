@@ -56,6 +56,12 @@ export const SCOPE = {
   faxRead: "fax:read",
   numbersRead: "numbers:read",
   numbersOrder: "numbers:order",
+  /**
+   * Assign a number to an account named in the request — not to the token's own
+   * account. A purchase creates the account, so there is nothing for the token
+   * to act *as*; see `requireServiceScope` in ./api-helpers.
+   */
+  numbersProvision: "numbers:provision",
 } as const;
 
 export type Scope = (typeof SCOPE)[keyof typeof SCOPE];

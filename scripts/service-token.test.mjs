@@ -167,6 +167,17 @@ describe("the routes declare the scope they need", () => {
     }
   });
 
+  it("the provisioning route acts on a named account, and names its scope", () => {
+    // This route is the one machine call that does not act *as* its token's
+    // account — a purchase creates the account — so it authenticates with
+    // `requireServiceScope` instead. Whichever helper a route uses, it must name
+    // the scope it requires; a route copied without one would show up here.
+    const source = read("src/app/api/service/provision/route.ts");
+    assert.match(source, /requireServiceScope\(req, SCOPE\.numbersProvision\)/);
+    assert.doesNotMatch(source, /requireUserOrService\(/,
+      "a session or an acting-account token must not reach the provisioning route");
+  });
+
   it("the decoy of a read scope cannot order a number", () => {
     const source = read("src/app/api/phone/numbers/route.ts");
     // The action decides the scope, and an unknown action must land on the
