@@ -30,7 +30,18 @@ COPY . .
 RUN echo "build-cache-buster: v5"
 
 ENV NEXT_TELEMETRY_DISABLED=1
-RUN npm run build
+# Cap the JS heap so `next build` cannot OOM-kill the build on a memory-shared
+# host (this box also runs the PBX/voice stack and has been measured with under
+# 1.5 GB free). Tunable so a build fits the host — the sibling Magnate image
+# carries the same pair of knobs for the same reason.
+ARG NODE_HEAP=3072
+ENV NODE_OPTIONS=--max-old-space-size=${NODE_HEAP}
+# Bundler flags for `next build`. Turbopack is Next's default and sizes its
+# native memory to the core count, ignoring NODE_OPTIONS — a host smaller than
+# the build needs should pass `--build-arg NEXT_BUILD_FLAGS=--webpack`, which
+# runs the webpack pipeline and honours the heap cap above.
+ARG NEXT_BUILD_FLAGS=
+RUN npm run build -- ${NEXT_BUILD_FLAGS}
 
 # Remove devDependencies from the standalone output
 RUN cd .next/standalone && npm prune --omit=dev
