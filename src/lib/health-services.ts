@@ -25,6 +25,7 @@ export const SERVICE_KEYS = [
   "database",
   "freepbx_api",
   "asterisk_ami",
+  "private_hold",
   "stripe",
   "voipms_api",
   "avantfax",
@@ -70,6 +71,12 @@ export const SERVICE_META: Record<ServiceKey, ServiceMeta> = {
     label: "Asterisk AMI",
     desc: "Manager interface for call control",
     icon: "🔌",
+    product: "asterisk",
+  },
+  private_hold: {
+    label: "Private Hold (ARI)",
+    desc: "Whether the softphone's hold can reach the PBX — ARI, not AMI",
+    icon: "⏸️",
     product: "asterisk",
   },
   stripe: {

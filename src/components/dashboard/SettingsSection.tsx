@@ -35,6 +35,11 @@ const INTEGRATIONS: Array<{ label: string; key: string }> = [
   // authorities (FreePBX's API, AMI, the mounted `/etc/asterisk`). Reported so
   // the 503 a create would return is visible before anyone clicks.
   { label: "Extension provisioning", key: "extension_preflight" },
+  // The softphone's hold button holds nothing without ARI, and ARI's
+  // credentials are not AMI's — so a healthy "Asterisk AMI" row can sit beside
+  // a Private Hold that answers 503. Probed live, because the question is
+  // whether the PBX answers now.
+  { label: "Private Hold (ARI)", key: "private_hold" },
 ];
 
 export default function SettingsSection({ user }: Props) {

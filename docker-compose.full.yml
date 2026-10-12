@@ -332,6 +332,16 @@ services:
       ASTERISK_AMI_USERNAME: ${FREEPBX_AMI_USER:-pbxportal}
       ASTERISK_AMI_SECRET: ${FREEPBX_AMI_SECRET:-}
 
+      # ── Asterisk ARI (Private Hold) ──
+      # AMI can list a channel and hang it up but cannot hold it, so the
+      # softphone's Private Hold puts the bridged caller on music through ARI
+      # (POST/DELETE /channels/{id}/hold). The user is the portal's own ARI
+      # user, rendered into ari.conf from pbx.env by pbx/bootstrap-zeus-pbx.sh
+      # (FREEPBX_ARI_USER, default pbxportal); ARI's HTTP door is LAN-only.
+      ASTERISK_ARI_BASE_URL: ${ASTERISK_ARI_BASE_URL:-http://${LAN_IP:-127.0.0.1}:8088}
+      ASTERISK_ARI_USERNAME: ${FREEPBX_ARI_USER:-pbxportal}
+      ASTERISK_ARI_PASSWORD: ${FREEPBX_ARI_SECRET:-}
+
       # ── The media address a newly created softphone is handed ──
       # When the portal creates a softphone it writes the same
       # `[<ext>](+) media_address=` section the boot owner converges

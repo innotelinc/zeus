@@ -51,6 +51,10 @@ export default function SoftphoneSection({ extensions, phoneNumbers }: Props) {
   const [muted, setMuted] = useState(false);
   const [privateHold, setPrivateHold] = useState(false);
   const [privateHoldBusy, setPrivateHoldBusy] = useState(false);
+  // What the PBX says about the caller, which is the only thing that can be
+  // right. `active: null` means it could not be asked (ARI unreachable) and is
+  // rendered as "unknown" rather than as "connected".
+  const [pbxHold, setPbxHold] = useState<{ active: boolean | null; ari?: string } | null>(null);
 
   const userAgentRef = useRef<UserAgent | null>(null);
   const registererRef = useRef<Registerer | null>(null);
@@ -538,22 +542,63 @@ export default function SoftphoneSection({ extensions, phoneNumbers }: Props) {
     setMuted(muted);
   }
 
+  // Hold state is the PBX's fact, so read it while a call is up. The console's
+  // own boolean cannot know about a hold engaged at the far end, from a desk
+  // phone, or by another operator — and those are exactly the calls where a
+  // caller hears music while the screen says "Connected".
+  useEffect(() => {
+    if (callState !== "in-call" || !selectedExt) return;
+    let cancelled = false;
+    const read = async () => {
+      try {
+        const state = await api<{ active: boolean | null; ari?: string }>(
+          `/api/ami/private-hold?extension_id=${encodeURIComponent(selectedExt.id)}`,
+        );
+        if (!cancelled) setPbxHold(state);
+      } catch {
+        // An unreadable state must not clear a hold the operator is watching.
+      }
+    };
+    void read();
+    const timer = setInterval(read, 4000);
+    return () => {
+      cancelled = true;
+      clearInterval(timer);
+    };
+  }, [callState, selectedExt]);
+
+  // Gated on the call: a state read outlives its call, and a stale "caller is
+  // on hold" must not survive into the next one.
+  const holdState = callState === "in-call" ? pbxHold : null;
+  // The PBX's answer when it has one; the request's own value only while the
+  // held channel is being read back (and if ARI cannot be asked at all).
+  const holdActive = holdState?.active ?? privateHold;
+  const holdUnavailableReason = holdState?.ari ?? "";
+
   async function togglePrivateHold() {
     const call = activeCallRef.current;
     if (!call || !selectedExt || privateHoldBusy || callState !== "in-call") return;
-    const next = !privateHold;
+    // The toggle follows what is displayed, which is the PBX's state: if the
+    // caller was held from somewhere else, the button says "Resume" and this has
+    // to release them rather than ask for a second hold.
+    const next = !holdActive;
     setPrivateHoldBusy(true);
 
     // Gate the microphone before asking the PBX for MOH so no speech can leak
     // during the network round-trip. On a failed enter we restore manual mute.
     if (next) setMicEnabled(false);
     try {
-      await api("/api/ami/private-hold", {
+      const res = await api<{ active?: boolean | null }>("/api/ami/private-hold", {
         method: "POST",
         body: JSON.stringify({ extension_id: selectedExt.id, active: next }),
       });
-      setPrivateHold(next);
-      if (!next) setMicEnabled(!call.muted);
+      // The PBX's read-back wins over the request: Asterisk is what started or
+      // stopped the music, and an engage it refused must not leave the console
+      // claiming the caller is on hold.
+      const held = typeof res.active === "boolean" ? res.active : next;
+      setPrivateHold(held);
+      setPbxHold((prev) => ({ active: held, ari: prev?.ari }));
+      setMicEnabled(!held && !call.muted);
     } catch (e) {
       if (next) setMicEnabled(!call.muted);
       toast.error(e instanceof Error ? e.message : "Private hold failed");
@@ -577,6 +622,7 @@ export default function SoftphoneSection({ extensions, phoneNumbers }: Props) {
     setActiveRemoteId("");
     activeCallRef.current = null;
     setMuted(false);
+    setPbxHold(null);
     setPrivateHold(false);
     setPrivateHoldBusy(false);
     setDialNumber("");
@@ -927,7 +973,7 @@ export default function SoftphoneSection({ extensions, phoneNumbers }: Props) {
                     </div>
                     <div>
                       <div className="text-lg font-semibold text-[var(--foreground)]">
-                        {privateHold ? "PRIVATE HOLD — Caller hears hold music" : callState === "ringing-out" ? "Ringing..." : "Connected"}
+                        {holdActive ? "PRIVATE HOLD — Caller hears hold music" : callState === "ringing-out" ? "Ringing..." : "Connected"}
                       </div>
                       <div className="text-sm text-[var(--text-secondary)]">
                         {activeRemoteId || "In call"}
@@ -978,11 +1024,11 @@ export default function SoftphoneSection({ extensions, phoneNumbers }: Props) {
                           )}
                         </svg>
                       </button>
-                      <button type="button" onClick={togglePrivateHold} disabled={privateHoldBusy} className={`flex h-12 w-12 items-center justify-center rounded-full border transition ${
-                        privateHold
+                      <button type="button" onClick={togglePrivateHold} disabled={privateHoldBusy || (Boolean(holdUnavailableReason) && !holdActive)} className={`flex h-12 w-12 items-center justify-center rounded-full border transition ${
+                        holdActive
                           ? "bg-sun-400/20 border-sun-400/50 text-sun-400"
                           : "border-[var(--input-border)] bg-[var(--input-bg)] text-[var(--text-secondary)] hover:text-[var(--foreground)] hover:bg-[var(--btn-ghost-hover-bg)]"
-                      }`} title={privateHold ? "Resume" : "Private Hold"}>
+                      }`} title={holdUnavailableReason ? `Private Hold unavailable — ${holdUnavailableReason}` : holdActive ? "Resume" : "Private Hold"}>
                         <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
                           <line x1="6" x2="6" y1="4" y2="20"/><line x1="18" x2="18" y1="4" y2="20"/>
                         </svg>

@@ -10,6 +10,7 @@ import {
 } from "@/lib/dograh";
 import { preflightReadiness, preflightReadinessError } from "@/lib/extension-preflight-live";
 import { softphoneMediaReadiness } from "@/lib/softphone-media-live";
+import { ariReachable } from "@/lib/ari";
 
 export const dynamic = "force-dynamic";
 
@@ -86,6 +87,25 @@ async function probeDograhVoice(): Promise<ProbeResult> {
     return { status: "degraded", latency_ms, error: stack.error };
   }
   return { status: "ok", latency_ms, detail: describeVoiceStack(stack.data) };
+}
+
+/**
+ * Private Hold's only path to the PBX, checked live.
+ *
+ * The softphone's hold button cannot work without ARI: holding a channel is
+ * `POST /ari/channels/{id}/hold`, and AMI has no action for it whatsoever (see
+ * lib/ari.ts). Worse, the credentials ARI needs are not the AMI ones, so an
+ * install can have a perfectly healthy `asterisk_ami` and a Private Hold that
+ * answers 503 every time. Degraded rather than down: one softphone feature being
+ * unavailable does not take the voice plane with it.
+ */
+async function probePrivateHold(): Promise<ProbeResult> {
+  const t0 = Date.now();
+  const reason = await ariReachable();
+  const latency_ms = Date.now() - t0;
+  return reason
+    ? { status: "degraded", latency_ms, error: `Private Hold cannot hold a call — ${reason}` }
+    : { status: "ok", latency_ms };
 }
 
 /**
@@ -191,6 +211,7 @@ interface HealthResponse {
     extension_preflight: ProbeResult;
     softphone_media: ProbeResult;
     dograh_voice: ProbeResult;
+    private_hold: ProbeResult;
   };
 }
 
@@ -224,7 +245,7 @@ export async function GET() {
   //    Voice screens use, so the two agree about whether it is in play here.
   const voiceExpected = dograhConfigured();
 
-  const [dbResult, freepbxResult, amiResult, stripeResult, avantfaxResult, engineResult, adminResult, preflightResult, voiceSettingsResult] =
+  const [dbResult, freepbxResult, amiResult, stripeResult, avantfaxResult, engineResult, adminResult, preflightResult, voiceSettingsResult, privateHoldResult] =
     await Promise.all([
       // ── Database (SQLite) ──────────────────────────────────
       probe("database", async () => {
@@ -343,6 +364,12 @@ export async function GET() {
             latency_ms: 0,
             detail: "voice engine not configured on this deployment",
           }),
+
+      // ── Private Hold's reachability ───────────────────────
+      // Appended last for the position reason above. This is a network probe,
+      // not a config check: the question is whether ARI answers *now* with the
+      // credentials the portal holds.
+      probePrivateHold(),
     ]);
 
   // ── VoIP.ms REST API credentials ───────────────────────────
@@ -381,6 +408,7 @@ export async function GET() {
     extension_preflight: preflightResult,
     softphone_media: softphoneMediaResult,
     dograh_voice: voiceSettingsResult,
+    private_hold: privateHoldResult,
   };
 
   const downCount = Object.values(services).filter((s) => s.status === "down").length;
