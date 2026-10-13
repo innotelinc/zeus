@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 """pbx/media_address.py — the address Asterisk hands a LAN phone, kept on disk.
 
 Asterisk puts the address it wants media sent to in the answer SDP. Inside this
@@ -8,20 +7,15 @@ SDP, sends its talk path and every DTMF digit into a subnet it cannot reach,
 Asterisk receives none of it, and `rtp_timeout=30` hangs the call up at exactly
 thirty seconds. Nobody notices the missing direction: Asterisk keeps sending
 *toward the phone's real address*, so the caller still **hears** the prompts.
-Measured on `.30` with `rtp set debug on`: 1119 RTP packets sent to the phone,
-0 received. It arrives as "my voicemail touchtone does not work and it hangs up
-on me", and every other check — dialplan, mailbox, DSN, trunks — is green,
-because the trunks are the half that works.
 
 The same endpoint carries `direct_media`, and FreePBX leaves it at `yes` for
 every endpoint it generates. That tells Asterisk to hand each phone the other's
 address and step out of the media path — so a hold has no music to inject
 (Asterisk is not in the stream) and a resume may not re-establish the direct
-path at all, which reaches an operator as "hold does not work, and after hold it
-does not reconnect". This tool writes `direct_media=no` beside the address, for
-the same reason it writes the address: the media plane for this PBX's own LAN
-endpoints belongs to the PBX, not to two phones negotiating it themselves. Like
-the address, it is a fact about the box, rendered rather than remembered.
+path at all, which reaches an operator as "hold does not work, and after hold
+it does not reconnect". This tool writes `direct_media=no` beside the address,
+for the same reason it writes the address: the media plane for this PBX's own
+LAN endpoints belongs to the PBX, not to two phones negotiating it themselves.
 
 ## Why it is per endpoint, and where it therefore goes
 
@@ -32,14 +26,14 @@ endpoint is the address Asterisk advertises for *that* endpoint's media. The
 trunks deliberately get no such line.
 
 It cannot be a static file in this repo either. It is a fact about the running
-host — the LAN address and the set of endpoints FreePBX currently has — so it is
-rendered from the box, exactly like `rtp_custom.conf` and the `local_net` lines.
-`docker-entrypoint-full.sh` runs this tool on every boot (the address from
-`LAN_IP`/`PJSIP_MEDIA_ADDRESS`); `scripts/setup.sh` runs it on bare metal. A
-rebuilt box therefore gets the lines back without a person re-adding them, which
-is the gap this tool closes: before it, the lines lived only in the
-`pbx-asterisk-config` volume and an image rebuild lost them, with nothing but the
-smoke check to say so.
+host — the LAN address and the set of endpoints FreePBX currently has — so it
+is rendered from the box, exactly like `rtp_custom.conf` and the `local_net`
+lines. `docker-entrypoint-full.sh` runs this tool on every boot (the address
+from `LAN_IP`/`PJSIP_MEDIA_ADDRESS`); `scripts/setup.sh` runs it on bare metal.
+A rebuilt box therefore gets the lines back without a person re-adding them,
+which is the gap this tool closes: before it, the lines lived only in the
+`pbx-asterisk-config` volume and an image rebuild lost them, with nothing but
+the smoke check to say so.
 
 ## The file, and why it is not `pjsip.endpoint_custom_post.conf`
 
@@ -69,14 +63,15 @@ per line.
     python3 pbx/media_address.py --address 192.168.1.30 --apply
 
     # off-host / inside the container: judge a device-table dump
-    mysql -N -B -u root asterisk \\
-        -e "SELECT id FROM devices WHERE tech IN ('sip','pjsip')" \\
+    mysql -N -B -u root asterisk \
+        -e "SELECT id FROM devices WHERE tech IN ('sip','pjsip')" \
       | python3 pbx/media_address.py --devices-tsv - --address 192.168.1.30 --apply
 
-Exit codes follow `pbx/dograh_routes.py`: 1 means an apply converges the estate,
-and 2 means the question could not be answered (no address, no endpoints, no
-config dir) — never a pass.
+Exit codes follow `pbx/dograh_routes.py`: 1 means an apply converges the
+estate, and 2 means the question could not be answered (no address, no
+endpoints, no config dir) — never a pass.
 """
+
 from __future__ import annotations
 
 import argparse
@@ -92,8 +87,15 @@ import pbx_db  # noqa: E402
 
 # The file this tool owns, and the ones it only touches through one #include.
 MEDIA_FILE = "pjsip_media_custom.conf"
-INCLUDE_HOST = "pjsip.endpoint_custom_post.conf"
+# Single source of truth for what the PBX loads (pjsip.endpoint_custom_post.conf)
+# — Asterisk reads this file after the generated endpoints, and the portal
+# itself never rewrites it, so it is the correct place for the include; and it
+# is the file this tool's own include check is judged against below. Writing
+# the include elsewhere (for example into a separate pjsip_custom_post.conf
+# copy) would be a second object the PBX has to load and a second place for
+# the two products to drift.
 INCLUDE_LINE = "#include pjsip_media_custom.conf"
+INCLUDE_HOST = INCLUDE_LINE
 
 # FreePBX's device table. Both technologies are desk phones the PBX routes to
 # and both are handed an SDP address, so both need the line.
@@ -168,6 +170,10 @@ def render_media_section(extension: str, address: str) -> str:
     it off keeps Asterisk in the media path — the premise `media_address` already
     assumes — so hold, MOH, transfers and DTMF keep working.
     """
+    # 'media_address' is the IP Asterisk advertises for this endpoint's media.
+    # The peer (a LAN phone) is on the host subnet and must never be handed
+    # the Docker bridge again, so it is just below the header — not behind a
+    # per-profile restart of the full endpoint block.
     return f"[{extension}](+)\nmedia_address={address}\ndirect_media=no\n"
 
 
@@ -204,12 +210,12 @@ def render_media_file(endpoints: Collection[str], address: str) -> str:
 def with_include(text: str) -> str:
     """`text` with one `#include pjsip_media_custom.conf`, prepended when absent.
 
-    Never duplicated, and never appended. The host file is the portal's: the
-    portal parses it into `[<name>]` blocks and cuts them, and its last block
-    extends to end-of-file — so an include appended *after* the portal's own
-    block would be cut away with it the next time a softphone is provisioned. A
-    prelude line before the first section is never inside any block, so it
-    survives; every other byte is carried over untouched.
+    Never duplicated, and never appended. The PBX's live endpoint-custom-post
+    file is the portal's: the portal parses it into `[<name>]` blocks and cuts
+    them, and its last block extends to end-of-file — so an include appended
+    *after* the portal's own block would be cut away with it the next time a
+    softphone is provisioned. A prelude line before the first section is never
+    inside any block, so it survives; every other byte is carried over untouched.
     """
     if any(line.strip() == INCLUDE_LINE for line in text.splitlines()):
         return text
