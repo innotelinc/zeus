@@ -114,13 +114,22 @@ const NOT_CONFIGURED =
 async function request<T>(
   path: string,
   parse: (body: unknown) => T,
+  init: { method?: string; body?: unknown } = {},
 ): Promise<DograhResult<T>> {
   if (!dograhConfigured()) return failure("not_configured", NOT_CONFIGURED);
 
   let resp: Response;
   try {
     resp = await fetch(`${DOGRAH_BASE}${path}`, {
-      headers: { "X-API-Key": DOGRAH_KEY, Accept: "application/json" },
+      method: init.method ?? "GET",
+      headers: {
+        "X-API-Key": DOGRAH_KEY,
+        Accept: "application/json",
+        // Only a request with a body is JSON; a GET must not claim a content
+        // type it is not sending.
+        ...(init.body === undefined ? {} : { "Content-Type": "application/json" }),
+      },
+      body: init.body === undefined ? undefined : JSON.stringify(init.body),
       cache: "no-store",
       signal: AbortSignal.timeout(TIMEOUT_MS),
     });
@@ -245,50 +254,107 @@ export function getWorkflow(id: number): Promise<DograhResult<DograhWorkflowDeta
 // rather than from this repo's `.env`, because that is the value in force: a
 // deployment that changed the voice in Dograh's UI and not here would
 // otherwise be described by the screen, wrongly.
+//
+// The endpoint is `POST /api/v1/model-connections/resolve` with no override —
+// the supported way to read the *effective* configuration. It replaced the v2
+// byok endpoint this used to call (Dograh removed it), which is why the shape
+// changed: a role now names a provider *connection* and keeps only its own
+// settings, so the provider and its `base_url` appear only after resolution.
 
-const pipelineSchema = z
+/** The flat, display-ready shape the screens already consume. */
+export interface DograhPipeline {
+  provider: string | null;
+  model: string | null;
+  voice: string | null;
+  language: string | null;
+  base_url: string | null;
+  speed: number | null;
+}
+
+const resolvedServiceSchema = z
   .object({
     provider: z.string().nullable().optional(),
-    model: z.string().nullable().optional(),
-    voice: z.string().nullable().optional(),
-    language: z.string().nullable().optional(),
-    base_url: z.string().nullable().optional(),
-    speed: z.number().nullable().optional(),
+    connection_settings: z
+      .object({ base_url: z.string().nullable().optional() })
+      .passthrough()
+      .nullable()
+      .optional(),
+    settings: z
+      .object({
+        model: z.string().nullable().optional(),
+        voice: z.string().nullable().optional(),
+        language: z.string().nullable().optional(),
+        speed: z.number().nullable().optional(),
+      })
+      .passthrough()
+      .nullable()
+      .optional(),
   })
   .passthrough();
 
-const voiceStackSchema = z.object({
-  effective_configuration: z
-    .object({
-      stt: pipelineSchema.nullable().optional(),
-      tts: pipelineSchema.nullable().optional(),
-      llm: pipelineSchema.nullable().optional(),
-      is_realtime: z.boolean().nullable().optional(),
-    })
-    .passthrough(),
-  source: z.string().nullable().optional(),
-});
+type ResolvedService = z.infer<typeof resolvedServiceSchema> | null | undefined;
+
+const voiceStackSchema = z
+  .object({
+    configuration: z
+      .object({
+        mode: z.string().nullable().optional(),
+        services: z
+          .object({
+            stt: resolvedServiceSchema.nullable().optional(),
+            tts: resolvedServiceSchema.nullable().optional(),
+            llm: resolvedServiceSchema.nullable().optional(),
+            realtime: resolvedServiceSchema.nullable().optional(),
+          })
+          .passthrough(),
+      })
+      .passthrough(),
+    provenance: z
+      .array(z.object({ source: z.string().nullable().optional() }).passthrough())
+      .nullable()
+      .optional(),
+  })
+  .passthrough();
+
+/** One resolved service → the flat shape the screens read, or null if absent. */
+function toPipeline(service: ResolvedService): DograhPipeline | null {
+  if (!service) return null;
+  const settings = service.settings ?? {};
+  return {
+    provider: service.provider ?? null,
+    model: settings.model ?? null,
+    voice: settings.voice ?? null,
+    language: settings.language ?? null,
+    base_url: service.connection_settings?.base_url ?? null,
+    speed: settings.speed ?? null,
+  };
+}
 
 export interface DograhVoiceStack {
-  stt: z.infer<typeof pipelineSchema> | null;
-  tts: z.infer<typeof pipelineSchema> | null;
-  llm: z.infer<typeof pipelineSchema> | null;
-  /** Where the configuration came from — `organization_v2`, a workflow, a default. */
+  stt: DograhPipeline | null;
+  tts: DograhPipeline | null;
+  llm: DograhPipeline | null;
+  /** Where the configuration came from — `organization`, `api`, a workflow. */
   source: string | null;
   is_realtime: boolean;
 }
 
 export function getVoiceStack(): Promise<DograhResult<DograhVoiceStack>> {
-  return request("/api/v1/organizations/model-configurations/v2", (body) => {
-    const parsed = voiceStackSchema.parse(body);
-    return {
-      stt: parsed.effective_configuration.stt ?? null,
-      tts: parsed.effective_configuration.tts ?? null,
-      llm: parsed.effective_configuration.llm ?? null,
-      source: parsed.source ?? null,
-      is_realtime: parsed.effective_configuration.is_realtime ?? false,
-    };
-  });
+  return request(
+    "/api/v1/model-connections/resolve",
+    (body) => {
+      const parsed = voiceStackSchema.parse(body);
+      const services = parsed.configuration.services;
+      return {
+        stt: toPipeline(services.stt),
+        tts: toPipeline(services.tts),
+        llm: toPipeline(services.llm),
+        source: parsed.provenance?.[0]?.source ?? null,
+        is_realtime: parsed.configuration.mode === "realtime",
+      };
+    },
+    { method: "POST", body: {} },
+  );
 }
 
 /**
