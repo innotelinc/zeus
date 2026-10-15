@@ -23,7 +23,7 @@ provides, and explicitly does not own.
 
 ## Provides
 
-- Telephony to Capstone (voice plane)
+- Telephony to Capstone and OnTrak (voice plane)
 
 ## Consumes
 
