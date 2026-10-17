@@ -3,6 +3,7 @@
 import { useState, useEffect, useRef, useCallback } from "react";
 import { api, fmtTime } from "@/lib/client-api";
 import type { SmsConversation, SmsMessage, PhoneNumber, Contact } from "@/lib/types";
+import type { SmsTransportChoice } from "@/lib/sms";
 import { useToast } from "@/components/ToastProvider";
 import { SendIcon, PlusIcon, MessageIcon, PhoneIcon, UserIcon, XIcon } from "@/components/icons";
 import { Select } from "@/components/ui";
@@ -11,9 +12,22 @@ interface Props {
   conversations: SmsConversation[];
   numbers: PhoneNumber[];
   prefillPhone?: string;
+  localSmsConfigured: boolean;
+  defaultTransport: SmsTransportChoice;
 }
 
-export default function MessagesSection({ conversations: initialConvs, numbers, prefillPhone }: Props) {
+/** Human label for the path a message actually left through. */
+function sentVia(transport: "freepbx" | "opensms"): string {
+  return transport === "opensms" ? "the local phone" : "the provider trunk";
+}
+
+export default function MessagesSection({
+  conversations: initialConvs,
+  numbers,
+  prefillPhone,
+  localSmsConfigured,
+  defaultTransport,
+}: Props) {
   const { toast } = useToast();
   const [conversations, setConversations] = useState(initialConvs);
   const [activeConv, setActiveConv] = useState<SmsConversation | null>(null);
@@ -21,6 +35,33 @@ export default function MessagesSection({ conversations: initialConvs, numbers, 
   const [msgText, setMsgText] = useState("");
   const [sending, setSending] = useState(false);
   const [loadingMsgs, setLoadingMsgs] = useState(false);
+  // Per-send pick: the provider trunk, the local OpenSMS phone, or local-first.
+  // The local choices only exist once OPENSMS_URL/OPENSMS_API_KEY are set.
+  const [transport, setTransport] = useState<SmsTransportChoice>(defaultTransport);
+  // Whether the local gateway can send right now — the phone may be offline.
+  const [gateway, setGateway] = useState<{
+    ok: boolean;
+    backend: string | null;
+    detail: string;
+  } | null>(null);
+  const transportOptions = [
+    { value: "provider", label: "Provider", hint: "VoIP.ms" },
+    ...(localSmsConfigured
+      ? [
+          { value: "local", label: "Local", hint: "phone" },
+          { value: "auto", label: "Auto", hint: "local → provider" },
+        ]
+      : []),
+  ];
+
+  useEffect(() => {
+    if (!localSmsConfigured) return;
+    let live = true;
+    api<{ configured: boolean; health: typeof gateway }>("/api/sms/gateway")
+      .then(r => { if (live) setGateway(r.health); })
+      .catch(() => {});
+    return () => { live = false; };
+  }, [localSmsConfigured]);
 
   // New conversation
   const [showNew, setShowNew] = useState(false);
@@ -77,17 +118,19 @@ export default function MessagesSection({ conversations: initialConvs, numbers, 
     if (!msgText.trim() || !activeConv) return;
     setSending(true);
     try {
-      const res = await api<{ message: SmsMessage }>("/api/messages/send", {
+      const res = await api<{ message: SmsMessage; transport: "freepbx" | "opensms" }>("/api/messages/send", {
         method: "POST",
         body: JSON.stringify({
           conversation_id: activeConv.id,
           to_number: activeConv.contact_phone,
           from_did_id: activeConv.phone_number_id ?? numbers[0]?.id,
           body: msgText.trim(),
+          transport,
         }),
       });
       setMessages(prev => [...prev, res.message]);
       setMsgText("");
+      if (res.transport) toast.success("Sent via " + sentVia(res.transport));
       setConversations(prev => prev.map(c => c.id === activeConv.id
         ? { ...c, last_message_text: msgText.trim(), last_message_at: new Date().toISOString(), updated_at: new Date().toISOString() }
         : c
@@ -103,10 +146,11 @@ export default function MessagesSection({ conversations: initialConvs, numbers, 
     if (!newPhone.trim() || !newBody.trim() || !toDid) { toast.error("Please fill in all fields"); return; }
     setSending(true);
     try {
-      const res = await api<{ message: SmsMessage; conversation: SmsConversation }>("/api/messages/send", {
+      const res = await api<{ message: SmsMessage; conversation: SmsConversation; transport: "freepbx" | "opensms" }>("/api/messages/send", {
         method: "POST",
-        body: JSON.stringify({ to_number: newPhone.trim(), from_did_id: toDid, body: newBody.trim() }),
+        body: JSON.stringify({ to_number: newPhone.trim(), from_did_id: toDid, body: newBody.trim(), transport }),
       });
+      if (res.transport) toast.success("Sent via " + sentVia(res.transport));
       setConversations(prev => [res.conversation, ...prev]);
       setActiveConv(res.conversation);
       setMessages([res.message]);
@@ -181,6 +225,23 @@ export default function MessagesSection({ conversations: initialConvs, numbers, 
                   onChange={e => { setNewPhone(e.target.value); lookupContact(e.target.value); }} />
                 {matchedContact && <p className="text-xs text-mint-400 flex items-center gap-1"><span className="inline-block h-1 w-1 rounded-full bg-mint-400" />{matchedContact.name}</p>}
               </label>
+              <div className="block space-y-1.5">
+                <span className="text-xs font-medium text-white/50">Send via</span>
+                <Select ariaLabel="SMS transport" value={transport} onChange={v => setTransport(v as SmsTransportChoice)}
+                  options={transportOptions} />
+                {!localSmsConfigured && (
+                  <p className="text-[11px] text-white/30">
+                    Local SMS appears once OPENSMS_URL and OPENSMS_API_KEY are set on the server.
+                  </p>
+                )}
+                {localSmsConfigured && gateway && (
+                  <p className={`text-[11px] ${gateway.ok ? "text-mint-400/80" : "text-amber-300/80"}`}>
+                    {gateway.ok
+                      ? `Local gateway ready${gateway.backend ? ` — ${gateway.backend}` : ""}`
+                      : `Local gateway not ready: ${gateway.detail}`}
+                  </p>
+                )}
+              </div>
               <label className="block space-y-1.5">
                 <span className="text-xs font-medium text-white/50">Message</span>
                 <textarea className="w-full rounded-xl border border-white/[0.08] bg-white/[0.04] px-4 py-3 text-sm text-white placeholder:text-white/20 focus:border-brand-500/50 focus:outline-none resize-none min-h-[100px]"
@@ -240,6 +301,12 @@ export default function MessagesSection({ conversations: initialConvs, numbers, 
                   onChange={e => setMsgText(e.target.value)}
                   onKeyDown={e => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); sendMessage(); } }}
                 />
+                {/* Remembered per operator while the tab is open; SMS_PROVIDER sets the initial pick. */}
+                <div className="w-36 shrink-0">
+                  <Select ariaLabel="SMS transport" size="sm" value={transport}
+                    onChange={v => setTransport(v as SmsTransportChoice)} options={transportOptions}
+                    className="mt-1" />
+                </div>
                 <button type="button" onClick={sendMessage} disabled={sending || !msgText.trim()}
                   className="btn-primary px-4 py-2.5 flex items-center"><SendIcon size={16} /></button>
               </div>

@@ -1,17 +1,94 @@
 /**
  * SMS message handling module.
  *
- * Outbound SMS is sent over the FreePBX/Asterisk PJSIP trunk (AMI
- * `MessageSend`, mirroring the sms-out dialplan); inbound SMS arrives via the
- * VoIP.ms SMS URL callback webhook (the sms-in side of the trunk forwards to
- * internal extensions). Maintains the local conversation/message store for
- * the full messaging UI.
+ * Outbound SMS leaves through one of two transports, selected by
+ * `SMS_PROVIDER`:
+ *   freepbx (default) — the FreePBX/Asterisk PJSIP trunk (AMI `MessageSend`,
+ *                       mirroring the sms-out dialplan)
+ *   opensms           — a local OpenSMS Android gateway (POST /sms/)
+ *   auto              — OpenSMS when configured, falling back to the trunk
+ *
+ * Inbound SMS is unaffected: it arrives via the VoIP.ms SMS URL callback
+ * webhook (the sms-in side of the trunk forwards to internal extensions).
+ * Maintains the local conversation/message store for the full messaging UI.
  */
 
 import { randomUUID } from "node:crypto";
 import db from "./db";
 import { getAmiClient } from "./ami";
+import { isOpenSmsConfigured, sendOpenSms } from "./opensms";
 import type { SmsConversation, SmsMessage } from "./types";
+
+export type SmsProvider = "freepbx" | "opensms" | "auto";
+export type SmsTransport = "freepbx" | "opensms";
+
+/**
+ * The operator-facing transport choice, as the Messages composer sends it.
+ * `provider` is the VoIP.ms trunk, `local` the OpenSMS Android gateway.
+ */
+export type SmsTransportChoice = "provider" | "local" | "auto";
+
+/** The configured outbound transport (`SMS_PROVIDER`, default `freepbx`). */
+export function smsProvider(): SmsProvider {
+  const raw = (process.env.SMS_PROVIDER ?? "").trim().toLowerCase();
+  if (raw === "freepbx" || raw === "opensms" || raw === "auto") return raw;
+  if (raw) {
+    console.warn(
+      `[SMS] Unknown SMS_PROVIDER "${raw}" — using the FreePBX trunk`,
+    );
+  }
+  return "freepbx";
+}
+
+/** Map the composer's choice onto a transport; unset = `SMS_PROVIDER`. */
+export function resolveProvider(choice?: SmsTransportChoice): SmsProvider {
+  if (choice === "provider") return "freepbx";
+  if (choice === "local") return "opensms";
+  if (choice === "auto") return "auto";
+  return smsProvider();
+}
+
+/**
+ * Send one message over the selected transport and report which one carried it.
+ *
+ * `auto` exists for the phone-off-the-charger case: an OpenSMS gateway is a
+ * single Android device on the LAN, while the trunk is the carrier path, so a
+ * failed gateway keeps the message moving instead of failing the send.
+ */
+async function sendOutbound(
+  params: {
+    did: string;
+    to_number: string;
+    body: string;
+  },
+  choice?: SmsTransportChoice,
+): Promise<SmsTransport> {
+  const provider = resolveProvider(choice);
+
+  if (provider !== "freepbx") {
+    if (!isOpenSmsConfigured()) {
+      if (provider === "opensms") {
+        throw new Error(
+          "SMS_PROVIDER=opensms but OPENSMS_URL / OPENSMS_API_KEY are not set",
+        );
+      }
+    } else {
+      try {
+        await sendOpenSms({ to: params.to_number, body: params.body });
+        return "opensms";
+      } catch (e) {
+        if (provider === "opensms") throw e;
+        const reason = e instanceof Error ? e.message : String(e);
+        console.warn(
+          `[SMS] OpenSMS send failed — falling back to the FreePBX trunk: ${reason}`,
+        );
+      }
+    }
+  }
+
+  await sendViaFreepbxTrunk(params);
+  return "freepbx";
+}
 
 /**
  * SMS is sent over the FreePBX/Asterisk PJSIP trunk (SIP MESSAGE via the
@@ -62,13 +139,22 @@ export async function sendMessage(params: {
   did: string;
   to_number: string;
   body: string;
-}): Promise<SmsMessage> {
-  // Send over the FreePBX trunk (no VoIP.ms REST per-message fee)
-  await sendViaFreepbxTrunk({
-    did: params.did,
-    to_number: params.to_number,
-    body: params.body,
-  });
+  /** Per-send override; unset = `SMS_PROVIDER`. */
+  transport?: SmsTransportChoice;
+}): Promise<{ message: SmsMessage; transport: SmsTransport }> {
+  // Send over the selected transport (FreePBX trunk by default — no VoIP.ms
+  // REST per-message fee). Inbound replies still come back through the webhook.
+  const transport = await sendOutbound(
+    {
+      did: params.did,
+      to_number: params.to_number,
+      body: params.body,
+    },
+    params.transport,
+  );
+  console.log(
+    `[SMS] sent to ${params.to_number} via ${transport} (from ${params.did})`,
+  );
 
   // Find or create conversation. sms_conversations.phone_number_id is an FK to
   // phone_numbers(id), so resolve the row for this DID rather than storing the
@@ -104,9 +190,10 @@ export async function sendMessage(params: {
      WHERE id = ?`,
   ).run(params.body, conv.id);
 
-  return db
+  const message = db
     .prepare("SELECT * FROM sms_messages WHERE id = ?")
     .get(msgId) as SmsMessage;
+  return { message, transport };
 }
 
 /** Record an inbound SMS message (from webhook or poll). */

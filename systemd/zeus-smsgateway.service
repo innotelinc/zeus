@@ -1,0 +1,29 @@
+# Zeus — Linux SMS gateway (OpenSMS-compatible API for a USB modem / phone)
+#
+# Installed by scripts/install-smsgateway.sh, which rewrites WorkingDirectory
+# and EnvironmentFile to the real checkout. Runs on the host (not in a
+# container) because it owns /dev/ttyUSB* and talks to the host's ModemManager.
+[Unit]
+Description=Zeus SMS gateway — OpenSMS-compatible API over a local modem
+Documentation=file:///PATH/TO/ZEUS/smsgateway/README.md
+Wants=network-online.target
+# Not Requires=: a modem is hot-pluggable, and the gateway reports 503 from
+# /health until one appears instead of failing to start.
+After=network-online.target ModemManager.service
+
+[Service]
+Type=simple
+WorkingDirectory=/PATH/TO/ZEUS
+EnvironmentFile=/etc/zeus-smsgateway.env
+# -u: unbuffered so journal lines appear as sends happen.
+ExecStart=/usr/bin/python3 -u -m smsgateway
+Restart=always
+RestartSec=3
+# The modem's serial port needs the dialout group; ModemManager's D-Bus socket
+# needs to be reachable (it is, for any local user).
+SupplementaryGroups=dialout
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

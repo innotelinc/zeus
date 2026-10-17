@@ -29,6 +29,69 @@ Inbound can arrive two ways:
 | `VOIPMS_TRUNK_NAME` | `voipms_pjsip` (default) | must equal the PJSIP **endpoint id** — res_pjsip resolves the id before the `/sip:` suffix (`sms-out` semantics, and the AMI sender) |
 | `SMS_TRUNK_FROM_USER` | unset (defaults to `VOIPMS_SIP_USER`) | From URI user; set to the DID if VoIP.ms requires the sender to be the DID |
 
+## Alternative outbound transport: OpenSMS (Android gateway)
+
+[OpenSMS](https://github.com/daslearning-org/OpenSMS) turns an Android phone into
+an SMS API server: the app listens on `:9292` and sends through its own SIM.
+The portal can use it instead of the trunk, or ahead of it.
+
+This repo ships a Linux replacement for the app in [`smsgateway/`](../smsgateway/README.md):
+the same API over a USB modem or AT-capable phone, installed with
+`scripts/install-smsgateway.sh --apt` (which also writes `OPENSMS_URL` and
+`OPENSMS_API_KEY` into `.env`). Point the portal at either one — the client
+below does not know the difference.
+
+| `SMS_PROVIDER` | Behaviour |
+| --- | --- |
+| `freepbx` (default) | AMI `MessageSend` over the PJSIP trunk — unchanged |
+| `opensms` | every outbound message goes to the OpenSMS gateway |
+| `auto` | OpenSMS when configured; on any gateway failure the trunk carries the message |
+
+The Messages composer also offers a **per-send pick** — *Provider* or *Local*
+(plus *Auto* when the gateway is configured) — sent as the optional `transport`
+field on `POST /api/messages/send`. `SMS_PROVIDER` only sets the initial pick;
+the composer's choice wins for that message, and the response names the
+transport that actually carried it. The Local choice stays hidden until
+`OPENSMS_URL` and `OPENSMS_API_KEY` are set on the server.
+
+```
+portal ──POST /sms/──▶ gateway (smsgateway/ or the Android app) ──▶ carrier
+        (src/lib/opensms.ts)
+```
+
+Env (portal `.env`; `OPENSMS_API_KEY` is Vault-resolvable):
+
+| Var | Value | Purpose |
+| --- | --- | --- |
+| `SMS_PROVIDER` | `freepbx` · `opensms` · `auto` | outbound transport |
+| `OPENSMS_URL` | `http://<phone-lan-ip>:9292` | gateway root (with or without `/sms`) |
+| `OPENSMS_API_KEY` | `osms_…` | key generated in the app; prefer `vault://cerulean/zeus#OPENSMS_API_KEY` |
+| `OPENSMS_TIMEOUT_MS` | `15000` (default) | request budget |
+
+In the app: grant SMS permission, **Start Server**, generate the key (shown
+once — copy it), and keep the phone on the same LAN as this host. Test it:
+
+```bash
+curl -i -X POST 'http://192.168.1.50:9292/sms/' \
+  -H 'Content-Type: application/json' \
+  -H "Authorization: Bearer $OPENSMS_API_KEY" \
+  -d '{"number": "+15551234567", "text": "test from zeus"}'
+# {"stat":true}
+```
+
+What it does **not** do:
+
+- **No inbound.** OpenSMS only sends; replies still arrive through the VoIP.ms
+  webhook (`/api/webhooks/voipms`), which is why inbound is unchanged in every
+  mode.
+- **No delivery receipt.** `stat: true` means the phone handed the message to
+  Android's `SmsManager`; the carrier leg is unobservable from here.
+- **No health probe.** The gateway exposes no GET endpoint, so `/api/health`
+  does not report it — a failed send is the signal.
+- **One device, one SIM.** Sender identity is the phone's SIM, so the portal's
+  DID (`from_did_id`) is recorded on the thread but is not presented on the
+  wire.
+
 ## Voice-host verification (run on the group-2 host, after `setup.sh`)
 
 The first checks below are automated — `./scripts/smoke-test.sh sms`

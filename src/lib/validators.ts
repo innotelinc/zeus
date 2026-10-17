@@ -25,6 +25,9 @@ export const smsSchema = z.object({
   to_number: z.string().min(5, "Destination number is required"),
   from_did_id: z.string().min(1, "Source phone number is required"),
   body: z.string().min(1, "Message body is required").max(1600),
+  // Per-send transport pick: provider (VoIP.ms trunk) or local (OpenSMS
+  // gateway). Unset falls back to SMS_PROVIDER.
+  transport: z.enum(["provider", "local", "auto"]).optional(),
 });
 
 export const faxSchema = z.object({

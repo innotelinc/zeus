@@ -112,6 +112,14 @@ plan list lives at `subscribe.innotel.us`; `MAGNATE_SUBSCRIBE_URL` points at it.
 - SMS send over the FreePBX PJSIP trunk (AMI `MessageSend`, same path as the
   `sms-out` dialplan — no VoIP.ms REST per-message fee) + inbound webhook
   (`/api/webhooks/voipms`)
+- Optional **OpenSMS** transport: a local SMS gateway (`POST /sms/`) — the
+  Android app, or this repo's own Linux gateway (`smsgateway/`, a USB modem or
+  AT-capable phone: `scripts/install-smsgateway.sh --apt`) — selectable with
+  `SMS_PROVIDER=opensms`, or `auto` to fall back to the trunk when the gateway
+  is offline, and pickable per message in the Messages composer (*Provider* /
+  *Local*) — outbound only, see
+  [docs/ops-sms-trunk.md](docs/ops-sms-trunk.md#alternative-outbound-transport-opensms-android-gateway)
+  and [smsgateway/README.md](smsgateway/README.md)
 - Voicemail-to-email, fax-to-email notifications
 
 ### 📠 Fax
@@ -389,6 +397,8 @@ Templates: `.env.example` (npm/dev), `.env.docker.example` (Docker). Key groups:
 | `NEXT_PUBLIC_BRAND_NAME` | White-label brand override |
 | `SESSION_SECRET` | Session signing key (auto-generated if unset) |
 | `VOIPMS_API_USERNAME` / `_PASSWORD` / `VOIPMS_WEBHOOK_SECRET` | VoIP.ms API + SMS webhook |
+| `SMS_PROVIDER` | Outbound SMS transport: `freepbx` (default) · `opensms` (local gateway — Android app or `smsgateway/`) · `auto` (OpenSMS, then trunk) |
+| `OPENSMS_URL` / `OPENSMS_API_KEY` / `OPENSMS_TIMEOUT_MS` | SMS gateway root and key (Vault-resolvable) + request budget; `scripts/install-smsgateway.sh` fills these in |
 | `FREEPBX_URL` / `FREEPBX_CLIENT_ID` / `FREEPBX_CLIENT_SECRET` | FreePBX OAuth2 |
 | `ASTERISK_AMI_HOST` / `_PORT` / `_USERNAME` / `_SECRET` | Real-time AMI monitoring |
 | `NEXT_PUBLIC_FREEPBX_WSS_URL` | WebRTC softphone WSS endpoint |

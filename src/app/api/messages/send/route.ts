@@ -17,7 +17,7 @@ export async function POST(req: Request) {
     return badRequest(parsed.error.issues[0]?.message ?? "Invalid input");
   }
 
-  const { to_number, from_did_id, body: msgBody } = parsed.data;
+  const { to_number, from_did_id, body: msgBody, transport } = parsed.data;
 
   // Get the DID
   const did = db
@@ -29,11 +29,12 @@ export async function POST(req: Request) {
   }
 
   try {
-    const message = await sendMessage({
+    const { message, transport: used } = await sendMessage({
       user_id: user.id,
       did: did.did,
       to_number,
       body: msgBody,
+      transport,
     });
 
     // Return the conversation too
@@ -41,7 +42,10 @@ export async function POST(req: Request) {
       .prepare("SELECT * FROM sms_conversations WHERE id = ?")
       .get(message.conversation_id) as SmsConversation;
 
-    return NextResponse.json({ message, conversation }, { status: 201 });
+    return NextResponse.json(
+      { message, conversation, transport: used },
+      { status: 201 },
+    );
   } catch (e) {
     return NextResponse.json(
       { error: e instanceof Error ? e.message : "Failed to send SMS" },

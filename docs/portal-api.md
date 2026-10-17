@@ -110,16 +110,18 @@ Body (JSON):
 | `from_did_id` | string | Id of one of the account's DIDs. Required. |
 | `body` | string | ≤1600 chars. Required. |
 | `conversation_id` | string | Optional; accepted for routing. |
+| `transport` | string | Optional per-send pick: `provider` (VoIP.ms trunk) · `local` (OpenSMS phone) · `auto` (local, then provider). Unset uses the server's `SMS_PROVIDER`. |
 
-Responses: `201` on enqueue with the created message and its conversation;
-`400` for a bad source DID or invalid body; `502` when the upstream SMS
-delivery (VoIP.ms) fails (the message is *not* stored in that case).
+Responses: `201` on enqueue with the created message, its conversation and the
+transport that carried it; `400` for a bad source DID or invalid body; `502`
+when the selected transport fails (the message is *not* stored in that case).
 
 ```json
 201
 { "message": { "id": "…", "conversation_id": "…", "direction": "outbound",
     "from_number": "+1…", "to_number": "+13025551002", "body": "…" },
-  "conversation": { "id": "…", "contact_phone": "+13025551002" } }
+  "conversation": { "id": "…", "contact_phone": "+13025551002" },
+  "transport": "freepbx" }
 ```
 
 ### `POST /api/messages/:conversationId/read` — mark thread read
