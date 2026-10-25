@@ -236,6 +236,12 @@ services:
       start_period: 60s
     networks:
       - pbx-net
+      # Capstone's `pbx-sso` gateway forwards to `http://zeus-freepbx:80` from
+      # capstone's pinned bridge, so this container has to be ON that bridge:
+      # an attachment made by hand with `docker network connect` disappears the
+      # next time compose recreates this service, and the gate then 502s for
+      # every signed-in user while still redirecting anonymous ones.
+      - interview-net
 
   # ── AvantFax (fax web UI) ──────────────────────────────────
   # Shares the freepbx image — AvantFax runs inside the same container
@@ -587,3 +593,7 @@ volumes:
 networks:
   pbx-net:
     name: pbx-net
+  # Created by the capstone compose (pinned name, not project-prefixed).
+  interview-net:
+    name: interview-net
+    external: true
