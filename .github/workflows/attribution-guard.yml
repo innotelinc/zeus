@@ -11,6 +11,15 @@
 # The actual patterns live in .githooks/guard-lib (shared with the local
 # commit-msg/pre-commit hooks), so this workflow just sources that file and
 # feeds it the streams above. It never inspects author/committer identity.
+#
+# Every run also scans the whole reachable history — messages and every added
+# line — so a trailer that entered before the guard existed, or through a
+# rewritten branch, cannot sit in the repository unnoticed. Repositories that
+# imported history from an upstream (a fork, a vendored tree) cannot hold that
+# inherited history to this policy, so they may name the commit before which
+# the policy did not exist here in .githooks/attribution-baseline; the scan then
+# starts there. The file is per-repository state, not part of the vendored
+# guard, so it is deliberately absent from the drift check's file list.
 # A self-test step first proves the guard still rejects and allows what it
 # must — including that the real pre-commit hook fires — so a silently
 # broken guard fails CI instead of passing everything.
@@ -22,6 +31,11 @@ on:
   push:
   pull_request:
     types: [opened, synchronize, reopened, edited]
+  workflow_dispatch:
+  schedule:
+    # Daily, so a history that goes bad without a push (a force-push race, a
+    # rewritten ref) is still caught the next morning.
+    - cron: "17 6 * * *"
 
 permissions:
   contents: read
@@ -134,3 +148,42 @@ jobs:
             exit 1
           fi
           echo "attribution guard: clean"
+
+      # ── The whole repository, not just this event ─────────────────────────
+      # The step above checks what this push or pull request introduced. This
+      # one holds every commit the default branch can reach to the same policy,
+      # so "all commits" means all of them: an old message, or a line added to a
+      # file years ago, fails the build until history is rewritten.
+      - name: Check the entire history
+        run: |
+          set -uo pipefail
+          source .githooks/guard-lib
+          fail=0
+
+          # Where the repository imported history it does not own — a fork of an
+          # upstream, a vendored tree — a trailer in those commits is not this
+          # repository's to rewrite, and a future upstream sync would bring it
+          # back. Such a repository names the commit before which the policy did
+          # not exist here; every commit after it is checked.
+          range=HEAD
+          if [ -s .githooks/attribution-baseline ]; then
+            baseline="$(head -n 1 .githooks/attribution-baseline | tr -d '[:space:]')"
+            if ! git cat-file -e "${baseline}^{commit}" 2>/dev/null; then
+              echo "::error::.githooks/attribution-baseline names ${baseline}, which this checkout does not contain"
+              exit 1
+            fi
+            range="${baseline}..HEAD"
+          fi
+
+          git log --format=%B "$range" | guard_check_stream || fail=1
+
+          added="$(git log -p --format= --no-color "$range" | grep '^+' | grep -v '^+++' | sed 's/^+//' || true)"
+          if [ -n "$added" ]; then
+            printf '%s\n' "$added" | guard_check_stream || fail=1
+          fi
+
+          if [ "$fail" -ne 0 ]; then
+            echo "::error::Attribution guard failed on history — only Darnel Hunter <dhunter@innotel.us> may be credited. Rewrite the offending commits."
+            exit 1
+          fi
+          echo "attribution guard: full history clean"
