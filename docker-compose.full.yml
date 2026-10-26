@@ -399,8 +399,11 @@ services:
       # not a hostname in any usable sense (it is 0.0.0.0 in the container) and
       # hardcoded the http scheme, overriding the correct value documented in
       # .env.example. An explicit NEXT_PUBLIC_AVANTFAX_URL wins; the default is
-      # the edge hostname NPM already terminates TLS for.
-      NEXT_PUBLIC_AVANTFAX_URL: ${NEXT_PUBLIC_AVANTFAX_URL:-https://fax.zeus.innotel.us/fax}
+      # the hostname the fax product actually answers on. fax.pbx.services and
+      # fax.pbx.technology both serve AvantFAX at their root (the /fax path still
+      # resolves, so links built either way land on the app); fax.zeus.innotel.us
+      # is now only a 301 to it and pbx.zeus.innotel.us serves nothing at all.
+      NEXT_PUBLIC_AVANTFAX_URL: ${NEXT_PUBLIC_AVANTFAX_URL:-https://fax.pbx.services/fax}
 
       # ── Atlas integration ──
       ATLAS_API_URL: ${ATLAS_API_URL:-http://atlas-server:3000}

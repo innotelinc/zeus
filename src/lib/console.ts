@@ -281,7 +281,7 @@ export const CONSOLE_SURFACES: ConsoleSurface[] = [
     kind: "proxied",
     answers: "AvantFax's own archive: covers, resolutions, resend",
     baseEnv: "NEXT_PUBLIC_AVANTFAX_URL",
-    baseDefault: "https://pbx.zeus.innotel.us/fax",
+    baseDefault: "https://fax.pbx.services/fax",
   },
   {
     id: "messages",

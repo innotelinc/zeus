@@ -42,7 +42,7 @@ export default function FaxSection({ faxAccount, faxes: initialFaxes, numbers }:
   // POSTs to <url>/index.php and the client pages live under <url>/ after
   // sign-in. There is no /client/ subdirectory on this deployment (it 404s), so
   // link the entry point rather than a path that does not exist.
-  const avantfaxUrl = (process.env.NEXT_PUBLIC_AVANTFAX_URL ?? "https://pbx.zeus.innotel.us/fax")
+  const avantfaxUrl = (process.env.NEXT_PUBLIC_AVANTFAX_URL ?? "https://fax.pbx.services/fax")
     .replace(/\/+$/, "");
   const IS_DONE = (s: string) => s === "completed" || s === "success" || s === "sent" || s === "received" || s === "scheduled";
 
