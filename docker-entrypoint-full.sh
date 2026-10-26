@@ -683,7 +683,9 @@ fi
 
 # Override AMI secret from env var if provided
 if [ -n "${FREEPBX_AMI_SECRET:-}" ]; then
-  sed -i "s/secret = .*/secret = ${FREEPBX_AMI_SECRET}/" /etc/asterisk/manager_custom.conf
+  # `|` as the delimiter: the secret is a secret, and a `/` in it used to close
+  # the `s/…/…/` expression and abort the whole boot under `set -e`.
+  sed -i "s|secret = .*|secret = ${FREEPBX_AMI_SECRET}|" /etc/asterisk/manager_custom.conf
 fi
 
 # Ensure ucp_events AMI user exists (may be missing from persisted volumes)
@@ -946,7 +948,9 @@ fi
 
 # Replace DB password placeholder in local_config.php
 if [ -f /var/www/html/fax/includes/local_config.php ]; then
-  sed -i "s/define('AFDB_PASS',.*/define('AFDB_PASS',     '${AVANTFAX_DB_PASS}');/" /var/www/html/fax/includes/local_config.php
+  # Same reason as the AMI secret above: a `/` in the password (or a
+  # `vault://…` reference resolving to one) must not close the expression.
+  sed -i "s|define('AFDB_PASS',.*|define('AFDB_PASS',     '${AVANTFAX_DB_PASS}');|" /var/www/html/fax/includes/local_config.php
   sed -i "s/define('ADMIN_EMAIL',.*/define('ADMIN_EMAIL', '${FAX_EMAIL:-fax@zeus.innotel.us}');/" /var/www/html/fax/includes/local_config.php
   sed -i "s|AVANTFAX_HOSTNAME|${HOSTNAME:-fax.zeus.innotel.us}|g" /var/www/html/fax/includes/local_config.php
 fi
