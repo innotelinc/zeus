@@ -101,6 +101,21 @@ jobs:
             base=""
           fi
 
+          # ── Fallback range ────────────────────────────────────────────
+          # A repository that imported history (a fork, a vendored tree) names
+          # the commit before which the policy did not exist. Every path that
+          # falls back to "everything" must honour that the way the full-history
+          # step does: a scheduled run has no before/after SHAs, and scanning
+          # `git log` bare would re-read inherited commits this repository does
+          # not own and fail on them.
+          history_range=HEAD
+          if [ -s .githooks/attribution-baseline ]; then
+            baseline="$(head -n 1 .githooks/attribution-baseline | tr -d '[:space:]')"
+            if git cat-file -e "${baseline}^{commit}" 2>/dev/null; then
+              history_range="${baseline}..HEAD"
+            fi
+          fi
+
           # ── 1. Commit messages in the range ───────────────────────────
           if [ -n "$base" ] && [ -n "$head" ]; then
             # The "before" SHA must not only resolve but be an ancestor of the
@@ -116,7 +131,7 @@ jobs:
               git log -1 --format=%B "$head" | guard_check_stream || fail=1
             fi
           else
-            git log --format=%B | guard_check_stream || fail=1
+            git log --format=%B "$history_range" | guard_check_stream || fail=1
           fi
 
           # ── 2. PR title + body (content check only) ───────────────────
@@ -137,7 +152,7 @@ jobs:
               added="$(git show --format= --no-color -U0 "$head" -- . 2>/dev/null | grep '^+' | grep -v '^+++' | sed 's/^+//' || true)"
             fi
           else
-            added="$(git log -p --format= --no-color HEAD 2>/dev/null | grep '^+' | grep -v '^+++' | sed 's/^+//' || true)"
+            added="$(git log -p --format= --no-color "$history_range" 2>/dev/null | grep '^+' | grep -v '^+++' | sed 's/^+//' || true)"
           fi
           if [ -n "$added" ]; then
             printf '%s\n' "$added" | guard_check_stream || fail=1
